@@ -22,7 +22,7 @@ async function fixture({ pendingFinish = false, completedCount = pendingFinish ?
     implementationSHA256: identity.implementationSHA256, outputCanonical: await realpath(output) };
   const visit = { source: 'normal-native-mount-response', runId: uuid(1), workspaceId: uuid(2), appointmentRef: ref };
   const admission = { ...visit, source: 'normal-native-admission-response', sessionId: uuid(3) };
-  const native = { ...admission, source: 'normal-native-recording-response', nativeRevision: 3, phase: 'recording', busy: false,
+  const native = { ...admission, source: 'normal-native-recording-response', recorderId: uuid(10), nativeRevision: 3, phase: 'recording', busy: false,
     observedAtMonotonicMs: 1, browserTimeOriginMs: Date.now() - 1 };
   const journal = await Journal.load(resolve(output, 'run.json'), identity, false);
   const observe = action => ({ origin: 'product-ui', executionKind: 'mock', action, targetId: scenario.targetId,
@@ -46,11 +46,15 @@ async function fixture({ pendingFinish = false, completedCount = pendingFinish ?
   const events = [];
   const inspection = () => ({ source: 'current-native-recovery-observation', executionKind: 'mock', runId: scenario.runId,
     recoveryStage: 'capture', targetId: scenario.targetId, observedAtEpochMs: Date.now(), currentVisit: visit, currentNote: null,
-    nativeObservation: { ...admission, source: 'normal-native-recording-response', nativeRevision: 4, phase: 'sealed', busy: false,
+    nativeObservation: { ...admission, source: 'normal-native-recording-response', recorderId: uuid(10), nativeRevision: 4, phase: 'sealed', busy: false,
       observedAtMonotonicMs: 1, browserTimeOriginMs: Date.now() - 1 }, observerPendingReplies: 0, unresolvedOwnedResources: [] });
   const adapter = { lockIdentity: async () => scenario.targetId,
     doctor: async () => ({ ready: true, executionKind: 'mock', targetId: scenario.targetId }),
-    recoveryInspect: async args => { events.push('inspect'); assert.equal(args.output, await realpath(output)); assert(!JSON.stringify(args).includes('2147483647')); return inspection(); },
+    recoveryInspect: async args => { events.push('inspect'); assert.equal(args.output, await realpath(output)); assert(!JSON.stringify(args).includes('2147483647'));
+      assert.equal(args.recoveryAuthority.leasePath, leasePath);
+      assert.equal(args.recoveryAuthority.leaseSHA256, sha256(await readFile(leasePath)));
+      assert.equal(args.recoveryAuthority.guardOwnerSHA256, sha256(await readFile(args.recoveryAuthority.guardOwnerPath)));
+      return inspection(); },
     recoveryCleanup: async args => { events.push(['cleanup', args.preserveForRecovery]); return { ownedResourcesSettled: true, nativeAppTerminated: false }; } };
   return { output, scenario, runIdentity, owner, leasePath, events, inspection, adapter, observe, journal, observations,
     dispose: async () => { await rm(leasePath, { force: true }); await rm(leasePath + '.acquiring', { recursive: true, force: true }); await rm(output, { recursive: true, force: true }); } };
@@ -114,7 +118,7 @@ test('any Record attempt requires strict capture proof and an unexpectedly activ
 test('recovery rejects a lower native revision or different source than recorded Record and Finish', async () => {
   const f = await fixture();
   try {
-    for (const prior of [{ nativeRevision: 5 }, { source: 'normal-desktop-recording-response' }]) {
+    for (const prior of [{ nativeRevision: 5 }, { source: 'normal-desktop-recording-response' }, { recorderId: uuid(11) }]) {
       const observations = { ...f.observations, record: { nativeObservation: { ...f.observations.record.nativeObservation, ...prior } } };
       assert.throws(() => validateRecoveryInspection(f.inspection(), f.scenario, observations, f.journal.state), /native_revision_regressed/);
     }

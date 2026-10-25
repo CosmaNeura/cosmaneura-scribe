@@ -5,6 +5,7 @@ import { resolve, basename } from 'node:path';
 import { ACTIONS, atomicJSON, consumeTargetLease, Journal, lockTarget, sha256 } from './journal.mjs';
 import { implementationReceipt, journalIdentity } from './tool-identity.mjs';
 import { publishExclusiveJSON } from './guard.mjs';
+import { closedLifecycleProvesStopped } from './closed-lifecycle.mjs';
 
 export const JOURNEY = ACTIONS;
 export const ENGINEERING_BUDGETS = Object.freeze({ coldLaunchMs: 10000, warmLaunchMs: 3000,
@@ -89,6 +90,10 @@ export async function loadObservations(output, state) {
 /** Resource shutdown and capture settlement are separate facts. A receipt read
  * during this cleanup may justify release only for the exact admitted session. */
 export function nativeCleanupProvesStopped(proof, scenario, observations, notBeforeEpochMs) {
+  if (proof?.closedLifecycle) return proof.source === 'current-native-cleanup-observation' && proof.executionKind === 'live'
+    && proof.runId === scenario.runId && proof.targetId === scenario.targetId
+    && Number.isFinite(notBeforeEpochMs) && proof.observedAtEpochMs >= notBeforeEpochMs
+    && proof.observedAtEpochMs <= Date.now() + 50 && closedLifecycleProvesStopped(proof, scenario, observations);
   const admitted = observations.consent?.admission, visit = proof?.currentVisit, native = proof?.nativeObservation;
   const fields = ['runId', 'workspaceId', 'appointmentRef', 'sessionId'];
   if (!Number.isFinite(notBeforeEpochMs) || proof?.source !== 'current-native-cleanup-observation' || proof.executionKind !== 'live'
@@ -99,11 +104,12 @@ export function nativeCleanupProvesStopped(proof, scenario, observations, notBef
       || visit?.source !== 'normal-native-mount-response'
       || fields.slice(0,3).some(key => !admitted[key] || visit[key] !== admitted[key])
       || fields.some(key => !admitted[key] || native?.[key] !== admitted[key])
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(native?.recorderId ?? '')
       || !Number.isSafeInteger(native.nativeRevision) || native.nativeRevision < 0
       || !Number.isFinite(native.observedAtMonotonicMs) || !Number.isFinite(native.browserTimeOriginMs)
       || Math.abs(proof.observedAtEpochMs - native.browserTimeOriginMs - native.observedAtMonotonicMs) > 15000) return false;
   for (const prior of [observations.record?.nativeObservation, observations.finish?.nativeTerminal].filter(Boolean)) {
-    if (prior.source !== native.source || fields.some(key => prior[key] !== native[key])
+    if (prior.source !== native.source || prior.recorderId !== native.recorderId || fields.some(key => prior[key] !== native[key])
         || !Number.isSafeInteger(prior.nativeRevision) || prior.nativeRevision > native.nativeRevision) return false;
   }
   return native.source === 'normal-native-recording-response' ? native.busy === false && native.phase === 'sealed'
@@ -184,7 +190,7 @@ export async function runJourney({ scenario, adapter, output, labRoot = process.
     await atomicJSON(resolve(output, preflightFile), preflight);
     if (preflight.targetId !== scenario.targetId || preflight.executionKind !== scenario.executionKind || preflight.ready !== true) throw Error('preflight_blocked');
     await journal.event('preflight', { evidenceSHA256: sha256(JSON.stringify(preflight)), evidenceFile: preflightFile, budgets: ENGINEERING_BUDGETS });
-    await tracked('connect', signal => adapter.connect(scenario, { signal }), Math.min(deadline, 180000));
+    await tracked('connect', signal => adapter.connect(scenario, { signal, output: runIdentity.outputCanonical }), Math.min(deadline, 180000));
     if (adapter.restore) await tracked('restore', signal => adapter.restore(journal.state, { output, signal, observations }), Math.min(deadline, 30000));
     if (journal.state.pending) {
       const action = journal.state.pending;

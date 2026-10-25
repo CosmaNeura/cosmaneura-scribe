@@ -22,7 +22,13 @@ function adapter(s, overrides = {}) {
     reconcile: async () => { throw Error('reconciliation_required'); }, cleanup: async () => ({ ownedResourcesSettled: true }), ...overrides };
 }
 test('complete mocked journey is never reported as live acceptance', async () => {
-  const output = await mkdtemp(join(tmpdir(), 'scribe-coordinator-')), s = scenario(), driver = adapter(s);
+  const output = await mkdtemp(join(tmpdir(), 'scribe-coordinator-')), s = scenario();
+  const driver = adapter(s, { connect: async (actual, { output: ownedOutput, signal }) => {
+    assert.equal(actual, s); assert.equal(ownedOutput, await realpath(output));
+    assert.equal(signal.aborted, false);
+    const journal = JSON.parse(await readFile(join(ownedOutput, 'run.json')));
+    assert.equal(journal.identity.runId, s.runId); assert.equal(journal.pending, null);
+  } });
   const state = await runJourney({ scenario: s, adapter: driver, labRoot: output, output });
   assert.equal(state.status, 'MOCK_JOURNEY_PASS'); assert.deepEqual(driver.calls, JOURNEY);
   assert.equal(ENGINEERING_BUDGETS.recordReadyMs, 3000);
@@ -184,7 +190,8 @@ function livePolicyFixture() {
   const s = { ...scenario(), executionKind: 'live', adapterSHA256: 'f'.repeat(64), admissionBinding: { runId: randomUUID() } };
   const visit = { source: 'normal-native-mount-response', runId: s.admissionBinding.runId, workspaceId: randomUUID(), appointmentRef: 'appointment_01m5q8r3kzeng9szb5frh6ppk3' };
   const admission = { ...visit, source: 'normal-native-admission-response', sessionId: randomUUID() };
-  const native = () => ({ ...admission, source: 'normal-native-recording-response', nativeRevision: 2, phase: 'sealed', busy: false,
+  const recorderId = randomUUID();
+  const native = () => ({ ...admission, source: 'normal-native-recording-response', recorderId, nativeRevision: 2, phase: 'sealed', busy: false,
     observedAtMonotonicMs: 1, browserTimeOriginMs: Date.now() - 1 });
   const observe = action => ({ ...observation(action, s), executionKind: 'live',
     ...(action === 'create_visit' ? { visitScope: visit } : {}), ...(action === 'consent' ? { admission } : {}),
@@ -240,4 +247,10 @@ test('cleanup policy rejects foreign sessions, pending work, stale proof and pau
       source: 'normal-desktop-recording-response', phase: 'stopped', captureState: 'paused', pendingMutation: false }; }]) {
     const value = proof(); change(value); assert.equal(nativeCleanupProvesStopped(value, s, observations, start), false);
   }
+});
+test('fresh cleanup rejects a replacement recorder even inside the same session', () => {
+  const { s, admission, native, proof } = livePolicyFixture(), value = proof();
+  const observations = { consent: { admission }, record: { nativeObservation: native() } };
+  value.nativeObservation.recorderId = randomUUID(); value.nativeObservation.nativeRevision = 20;
+  assert.equal(nativeCleanupProvesStopped(value, s, observations, Date.now()), false);
 });
