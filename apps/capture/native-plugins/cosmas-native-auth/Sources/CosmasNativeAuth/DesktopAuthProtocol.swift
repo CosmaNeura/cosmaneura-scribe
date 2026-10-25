@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// Dedicated parent/child pipes only. There is no TCP or renderer entry point.
 public struct DesktopAuthRequest: Sendable {
@@ -50,6 +51,13 @@ public struct DesktopAuthFrames: Sendable {
 }
 
 public enum NativeAuthPayload {
+    /// Optional public account correlation metadata, never authority or a session grant.
+    /// The exact Clerk user ID is hashed before crossing the desktop renderer boundary.
+    public static func accountIdentitySHA256(_ state: NativeAuthState) -> String? {
+        guard state.phase == .ready, let identity = state.identity else { return nil }
+        return SHA256.hash(data: Data(identity.userID.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
     public static func state(_ state: NativeAuthState) -> [String: Any] {
         let identity: Any = state.identity.map { $0.bridgePayload } ?? NSNull()
         return ["phase": state.phase.rawValue, "revision": state.revision, "identity": identity]

@@ -46,6 +46,8 @@ export function sessionState(value: unknown): ProviderSessionState {
   if (typeof state.phase !== "string" || !["disabled", "loading", "signedOut", "signingIn", "ready", "signOutPending", "unavailable"].includes(state.phase)) throw unavailable();
   const name = state.phase === "ready" ? speakerNameSuggestion(state.providerDisplayName) : undefined;
   return { phase: state.phase as ProviderSessionState["phase"], revision: uuid(state.revision),
+    ...(state.phase === "ready" && typeof state.accountIdentitySHA256 === "string"
+      && /^[a-f0-9]{64}$/u.test(state.accountIdentitySHA256) ? { accountIdentitySHA256: state.accountIdentitySHA256 } : {}),
     ...(name !== undefined ? { providerDisplayName: name } : {}),
     ...(state.phase === "ready" && state.recordingSignInPreparationVersion === 1 ? { recordingSignInPreparationVersion: 1 as const } : {}) };
 }
