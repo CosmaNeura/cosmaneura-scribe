@@ -47,14 +47,19 @@ function stopped(input) {
   const value = later(input), observation = value.observation;
   for (const side of ['before', 'after']) {
     observation.core[side].meetingStatus = 'ended';
-    observation.core[side].meetingRuntime = {botIdSHA256: null, occurrenceDigest: null};
+    observation.core[side].meetingRuntime = {botIdSHA256: null, occurrenceDigest: null, mergeGeneration: null};
   }
   observation.provider.statusChanges.push({code: 'call_ended', subCode: null, createdAt: timestamp(60000)},
     {code: 'done', subCode: null, createdAt: timestamp(60010)});
   observation.provider.recordings[0].statusCode = 'done'; observation.provider.recordings[0].completedAt = timestamp(60000);
-  observation.teardown = {source: 'scoped-core-teardown-rows', botIdSHA256: observation.scope.botIdSHA256,
-    occurrenceDigest: observation.scope.occurrenceDigest, matchingRowCount: 1, rows: [{id: typed('webhook_delivery'),
-      eventType: 'internal.zoom_bot_release', state: 'completed', processedAt: timestamp(60020), leaseExpiresAt: null, lastErrorCode: null}]};
+  observation.teardown = {source: 'scoped-core-canonical-meeting-end-release', botIdSHA256: observation.scope.botIdSHA256,
+    occurrenceDigest: observation.scope.occurrenceDigest, generation: null, inventory: 'UNKNOWN',
+    hostEnd: {source: 'normal-zoom-host-end-ui', action: 'end_meeting_for_all', actionId: randomUUID(), artifactSHA256: digest('4'),
+      hostIdSHA256: observation.scope.hostIdSHA256, meetingIdSHA256: observation.scope.meetingIdSHA256,
+      occurrenceDigest: observation.scope.occurrenceDigest, actionStartedAtEpochMs: start + 59995, observedAtEpochMs: start + 60005},
+    canonicalIntent: {action: 'release', stopRecording: true, cleanupSession: true, markMeetingEnded: true},
+    release: {id: typed('webhook_delivery'), eventType: 'internal.zoom_bot_release', providerEventDigest: digest('5'),
+      state: 'completed', receivedAt: timestamp(60010), processedAt: timestamp(60020), leaseExpiresAt: null, lastErrorCode: null}};
   return value;
 }
 const check = (gate, input, state = 'recording') => gate.validate(input.observation, state, {request: input.request, now: input.now});
@@ -158,7 +163,7 @@ test('future provider times or impossible start/consumption/completion chronolog
   for (const mutate of [v => {v.provider.recordings[0].completedAt = timestamp(120000);},
     v => {v.provider.recordings[0].completedAt = 'invalid';},
     v => {v.provider.recordings[0].completedAt = timestamp(1000);},
-    v => {v.teardown.rows[0].processedAt = timestamp(120000);}]) {
+    v => {v.teardown.release.processedAt = timestamp(120000);}]) {
     const value = fixture(), gate = new BotCaptureProofGate(value.expected); check(gate, value);
     const done = stopped(value); mutate(done.observation); assert.throws(() => check(gate, done, 'stopped'));
   }
@@ -195,7 +200,7 @@ test('property order is immaterial while provider event ordering and the expecte
   next.observation.provider.statusChanges = next.observation.provider.statusChanges.map(row => ({createdAt: row.createdAt, subCode: row.subCode, code: row.code}));
   assert.equal(check(gate, next), next.observation);
 });
-test('stop needs a previously admitted exact recording, terminal provider state, completion and settled release', () => {
+test('stop needs the admitted recording, terminal provider, normal End and one completed canonical release; inventory remains unknown', () => {
   const value = fixture(), done = stopped(value);
   assert.throws(() => check(new BotCaptureProofGate(value.expected), done, 'stopped'), /bot_stop_not_confirmed/);
   const gate = new BotCaptureProofGate(value.expected); check(gate, value);
@@ -204,11 +209,11 @@ test('stop needs a previously admitted exact recording, terminal provider state,
   for (const mutate of [v => {v.provider.statusChanges = v.provider.statusChanges.slice(0, 3);},
     v => {v.provider.recordings[0].statusCode = 'processing';}, v => {v.provider.recordings[0].completedAt = null;},
     v => {v.core.after.meetingStatus = 'started';}, v => {v.core.after.meetingRuntime.botIdSHA256 = digest('9');},
-    v => {v.core.after.recordingMapping = null;}, v => {v.teardown = null;}, v => {v.teardown.rows = [];},
-    v => {v.teardown.matchingRowCount = 2;},
-    v => {v.teardown.rows[0].state = 'retry_wait';}, v => {v.teardown.rows[0].leaseExpiresAt = timestamp(90000);},
-    v => {v.teardown.rows[0].lastErrorCode = 'provider_operation_uncertain';},
-    v => {v.teardown.rows[0].eventType = 'internal.zoom_bot_pause';}]) {
+    v => {v.core.after.recordingMapping = null;}, v => {v.teardown = null;}, v => {v.teardown.release = null;},
+    v => {v.teardown.inventory = 'COMPLETE';},
+    v => {v.teardown.release.state = 'retry_wait';}, v => {v.teardown.release.leaseExpiresAt = timestamp(90000);},
+    v => {v.teardown.release.lastErrorCode = 'provider_operation_uncertain';},
+    v => {v.teardown.release.eventType = 'internal.zoom_bot_pause';}]) {
     const initial = fixture(), testGate = new BotCaptureProofGate(initial.expected); check(testGate, initial);
     const stoppedValue = stopped(initial); mutate(stoppedValue.observation);
     assert.throws(() => check(testGate, stoppedValue, 'stopped'));
@@ -246,4 +251,56 @@ test('explicit participant proof union preserves native checks and rejects eithe
   assert.throws(() => createCaptureProofGate({kind: 'zoom-bot'}));
   assert.throws(() => createCaptureProofGate({kind: 'native', expected: value.expected}));
   assert.throws(() => createCaptureProofGate({kind: 'unknown'}));
+});
+
+test('canonical End receipt refuses wrong bot, occurrence, generation, flags and unsettled rows', () => {
+  for (const mutate of [
+    v => {v.teardown.botIdSHA256 = digest('9');}, v => {v.teardown.occurrenceDigest = digest('9');},
+    v => {v.teardown.generation = 1;}, v => {v.core.before.meetingRuntime.mergeGeneration = 1;},
+    v => {v.core.after.meetingRuntime.mergeGeneration = 1;}, v => {delete v.core.before.meetingRuntime.mergeGeneration;},
+    v => {v.teardown.generation = -1;}, v => {v.teardown.generation = 0.5;},
+    v => {v.teardown.canonicalIntent.cleanupSession = false;}, v => {v.teardown.canonicalIntent.markMeetingEnded = false;},
+    v => {v.teardown.canonicalIntent.stopRecording = false;}, v => {v.teardown.canonicalIntent.action = 'pause';},
+    v => {v.teardown.release.state = 'processing';}, v => {v.teardown.release.state = 'dead_letter';},
+    v => {v.teardown.release.processedAt = null;}, v => {v.teardown.release.receivedAt = timestamp(62000);},
+    v => {v.teardown.release.processedAt = timestamp(59900);}, v => {v.teardown.release.providerEventDigest = 'unknown';},
+    v => {v.teardown.matchingRowCount = 1;}, v => {v.teardown.source = 'scoped-core-teardown-rows';},
+  ]) {
+    const initial = fixture(), gate = new BotCaptureProofGate(initial.expected); check(gate, initial);
+    const done = stopped(initial); mutate(done.observation);
+    assert.throws(() => check(gate, done, 'stopped'));
+    assert.throws(() => check(gate, later(initial)), /bot_recording_restart_forbidden/);
+  }
+});
+test('host End must be actual same-scope normal End after the latest admitted recording observation', () => {
+  for (const mutate of [
+    v => {v.teardown.hostEnd = null;}, v => {v.teardown.hostEnd.source = 'operator_verified';},
+    v => {v.teardown.hostEnd.action = 'leave_meeting';}, v => {v.teardown.hostEnd.actionId = 'unknown';},
+    v => {v.teardown.hostEnd.artifactSHA256 = '';}, v => {v.teardown.hostEnd.hostIdSHA256 = digest('9');},
+    v => {v.teardown.hostEnd.meetingIdSHA256 = digest('9');}, v => {v.teardown.hostEnd.occurrenceDigest = digest('9');},
+    v => {v.teardown.hostEnd.actionStartedAtEpochMs = start + 50000;},
+    v => {v.teardown.hostEnd.actionStartedAtEpochMs = start + 60006;},
+    v => {v.teardown.hostEnd.observedAtEpochMs = start + 65000;},
+    v => {v.teardown.release.receivedAt = timestamp(52000);},
+  ]) {
+    const initial = fixture(), gate = new BotCaptureProofGate(initial.expected); check(gate, initial);
+    const done = stopped(initial); mutate(done.observation);
+    assert.throws(() => check(gate, done, 'stopped'));
+  }
+});
+test('an exact canonical End can prove this capture stopped while other release inventory remains UNKNOWN', () => {
+  const initial = fixture(), gate = new BotCaptureProofGate(initial.expected); check(gate, initial);
+  const done = stopped(initial);
+  for (const side of ['before', 'after']) done.observation.core[side].meetingRuntime.mergeGeneration = 2;
+  done.observation.teardown.generation = 2;
+  const accepted = check(gate, done, 'stopped');
+  assert.equal(accepted.teardown.inventory, 'UNKNOWN');
+  assert.equal('matchingRowCount' in accepted.teardown, false);
+  assert.equal('allResourcesSettled' in accepted, false);
+  // Another pending generation-3 release cannot be inferred absent from this
+  // exact generation-2 receipt; this gate makes no exhaustive queue assertion.
+  const repeated = later(done); assert.equal(check(gate, repeated, 'stopped'), repeated.observation);
+  const swappedEnd = later(repeated); swappedEnd.observation.teardown.hostEnd.actionId = randomUUID();
+  assert.throws(() => check(gate, swappedEnd, 'stopped'), /bot_end_evidence_changed/);
+  assert.throws(() => check(gate, later(initial)), /bot_recording_restart_forbidden/);
 });

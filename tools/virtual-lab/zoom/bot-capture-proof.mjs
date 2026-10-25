@@ -31,9 +31,9 @@ const same = (a, b) => canonical(a) === canonical(b);
  * The collector must verify artifact bytes and project the real response.
  * Unknown fields/states are refused rather than retained as tokens or content.
  *
- * Core writes recording:{id}:doctor_id/appointment_id/patient_id before
- * recording.done, after a best-effort chat send, in three separate SETs.
- * A provider recording may therefore be real while this gate remains closed.
+ * Full Core recording correspondence remains necessary, even when a
+ * provider recording exists first. Stop proves this exact capture and one
+ * canonical normal-End release; it never claims an exhaustive inbox inventory.
  */
 export class BotCaptureProofGate {
   #expected; #accepted = null; #closed = false; #recordingBlocked = false; #requestPins = new Map();
@@ -71,7 +71,7 @@ export class BotCaptureProofGate {
     need(keys(mapping, ['doctorRef', 'appointmentRef', 'patientRefSHA256'])
       && mapping.doctorRef === scope.doctorRef && mapping.appointmentRef === scope.appointmentRef
       && mapping.patientRefSHA256 === scope.patientRefSHA256, 'bot_recording_mapping_pending_or_foreign');
-    need(keys(runtime, ['botIdSHA256', 'occurrenceDigest']), 'bot_runtime_mapping_unknown');
+    need(keys(runtime, ['botIdSHA256', 'occurrenceDigest', ...(state === 'stopped' ? ['mergeGeneration'] : [])]), 'bot_runtime_mapping_unknown');
     if (state === 'recording') need(row.meetingStatus === 'started' && runtime.botIdSHA256 === scope.botIdSHA256
       && runtime.occurrenceDigest === scope.occurrenceDigest, 'bot_runtime_mapping_changed');
     else need(row.meetingStatus === 'ended'
@@ -176,15 +176,44 @@ export class BotCaptureProofGate {
       need(previous && terminal.has(current) && recordings[0].statusCode === 'done'
         && iso(recordings[0].completedAt), 'bot_stop_not_confirmed');
       const teardown = value.teardown;
-      need(keys(teardown, ['source', 'botIdSHA256', 'occurrenceDigest', 'matchingRowCount', 'rows']) && teardown.source === 'scoped-core-teardown-rows'
+      need(keys(teardown, ['source', 'botIdSHA256', 'occurrenceDigest', 'generation', 'inventory', 'hostEnd', 'canonicalIntent', 'release'])
+        && teardown.source === 'scoped-core-canonical-meeting-end-release'
         && teardown.botIdSHA256 === scope.botIdSHA256 && teardown.occurrenceDigest === scope.occurrenceDigest
-        && Array.isArray(teardown.rows) && teardown.rows.length > 0 && teardown.rows.length <= 8
-        && Number.isSafeInteger(teardown.matchingRowCount) && teardown.matchingRowCount === teardown.rows.length
-        && new Set(teardown.rows.map(row => row.id)).size === teardown.rows.length, 'bot_teardown_unconfirmed');
-      for (const row of teardown.rows) need(keys(row, ['id', 'eventType', 'state', 'processedAt', 'leaseExpiresAt', 'lastErrorCode'])
-        && typeId(row.id, 'webhook_delivery') && row.eventType === 'internal.zoom_bot_release' && row.state === 'completed'
-        && iso(row.processedAt) && Date.parse(row.processedAt) <= request.receivedAtEpochMs + BOT_CLOCK_SKEW_ALLOWANCE_MS
+        && (teardown.generation === null || Number.isSafeInteger(teardown.generation) && teardown.generation >= 0)
+        && core.before.meetingRuntime.mergeGeneration === teardown.generation
+        && core.after.meetingRuntime.mergeGeneration === teardown.generation
+        && teardown.inventory === 'UNKNOWN', 'bot_teardown_unconfirmed');
+      // The pinned collector computes the existing event HMAC privately from
+      // this exact scope/generation and these canonical flags. No payload is
+      // decrypted, and a known row does not establish total matching rows.
+      const intent = teardown.canonicalIntent;
+      need(keys(intent, ['action', 'stopRecording', 'cleanupSession', 'markMeetingEnded'])
+        && intent.action === 'release' && intent.stopRecording === true
+        && intent.cleanupSession === true && intent.markMeetingEnded === true, 'bot_end_intent_mismatch');
+      const end = teardown.hostEnd, row = teardown.release, skew = BOT_CLOCK_SKEW_ALLOWANCE_MS;
+      need(keys(end, ['source', 'action', 'actionId', 'artifactSHA256', 'hostIdSHA256', 'meetingIdSHA256',
+        'occurrenceDigest', 'actionStartedAtEpochMs', 'observedAtEpochMs'])
+        && end.source === 'normal-zoom-host-end-ui' && end.action === 'end_meeting_for_all'
+        && uuid(end.actionId) && digest(end.artifactSHA256)
+        && end.hostIdSHA256 === scope.hostIdSHA256 && end.meetingIdSHA256 === scope.meetingIdSHA256
+        && end.occurrenceDigest === scope.occurrenceDigest
+        && Number.isFinite(end.actionStartedAtEpochMs) && Number.isFinite(end.observedAtEpochMs)
+        && end.actionStartedAtEpochMs >= previous.lastRecordingReceivedAtEpochMs
+        && end.observedAtEpochMs >= end.actionStartedAtEpochMs
+        && end.observedAtEpochMs <= request.receivedAtEpochMs + 50
+        && Date.parse(recordings[0].completedAt) >= end.actionStartedAtEpochMs - skew
+        && Date.parse(provider.statusChanges.at(-1).createdAt) >= end.actionStartedAtEpochMs - skew,
+      'bot_normal_host_end_missing_or_stale');
+      need(!previous.hostEnd || same(previous.hostEnd, end), 'bot_end_evidence_changed');
+      need(keys(row, ['id', 'eventType', 'providerEventDigest', 'state', 'receivedAt', 'processedAt', 'leaseExpiresAt', 'lastErrorCode'])
+        && typeId(row.id, 'webhook_delivery') && row.eventType === 'internal.zoom_bot_release'
+        && digest(row.providerEventDigest) && row.state === 'completed' && iso(row.receivedAt) && iso(row.processedAt)
+        && Date.parse(row.receivedAt) >= end.actionStartedAtEpochMs - skew
+        && Date.parse(row.processedAt) >= Date.parse(row.receivedAt)
+        && Date.parse(row.processedAt) >= Date.parse(recordings[0].completedAt) - skew
+        && Date.parse(row.processedAt) <= request.receivedAtEpochMs + skew
         && row.leaseExpiresAt === null && row.lastErrorCode === null, 'bot_teardown_unsettled');
+      need(!previous.release || same(previous.release, row) && previous.generation === teardown.generation, 'bot_end_evidence_changed');
     }
     const requestPin = hash(canonical({request, observation: value})), existingPin = this.#requestPins.get(request.requestNonce);
     need(!existingPin || existingPin === requestPin, 'bot_nonce_replayed_with_changed_observation');
@@ -192,7 +221,11 @@ export class BotCaptureProofGate {
     if (state === 'stopped') { this.#closed = true; this.#recordingBlocked = true; }
     if (this.#requestPins.size < 4096) this.#requestPins.set(request.requestNonce, requestPin);
     this.#accepted = {identity, history: structuredClone(provider.statusChanges), consent: structuredClone(consent),
-      authorization: structuredClone(core.before.authorization), startedAt: recordings[0].startedAt};
+      authorization: structuredClone(core.before.authorization), startedAt: recordings[0].startedAt,
+      lastRecordingReceivedAtEpochMs: state === 'recording' ? Math.max(previous?.lastRecordingReceivedAtEpochMs ?? 0, request.receivedAtEpochMs)
+        : previous.lastRecordingReceivedAtEpochMs,
+      ...(state === 'stopped' ? {hostEnd: structuredClone(value.teardown.hostEnd), release: structuredClone(value.teardown.release),
+        generation: value.teardown.generation} : {})};
     return value;
   }
 }

@@ -119,3 +119,18 @@ claim the remote bot stopped. The live collector, normal host actions and
 actual media/note verification remain necessary. Revert this tooling for new
 runs and preserve frozen existing run inputs; no service deployment or schema
 change is part of this increment.
+
+
+The canonical End proof follow-up is Tier 2 lab tooling. It replaces the
+unavailable exhaustive release-inventory assumption with positive same-capture
+terminal/completion, fresh same-occurrence ended/mapping reads, actual normal
+host End evidence, and one exact canonical End release row. The pinned
+collector derives the existing HMAC selector privately; no plaintext payload
+scan, decryption, provider mutation or broader account lookup is introduced.
+Generation must match fresh reads before/after. The full release inventory
+remains UNKNOWN, and this proof does not settle other owned resources or itself
+authorize changing host bindings. Native proof handling is unchanged. Recovery
+retains evidence and forbids source restart after any unsafe admitted state.
+Tests use synthetic metadata only, including wrong scope/generation, leased or
+unprocessed receipt, old/absent host End and terminal-with-incomplete-recording
+adversaries. A real producer and exact normal End remain live prerequisites.

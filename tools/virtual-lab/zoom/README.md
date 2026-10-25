@@ -145,12 +145,11 @@ chronology are refused with a provisional five-second cross-system clock-skew
 margin. That margin is an engineering refusal rule, not measured clock precision;
 the provider event list is never sorted to repair inconsistent observations.
 
-Core writes the three recording-scoped owner keys before `recording.done`, but
-after a best-effort disclosure send and in separate writes. Missing/partial
-keys keep playback closed. The current official Start Recording response is a
-Bot; Core's use of its top-level ID as a recording ID is a separate integration
-prerequisite that must be verified/fixed. The proof never borrows a bot ID to
-work around a missing recording mapping.
+Missing/partial recording-scoped owner keys keep playback closed. The official
+Start Recording response is a Bot; the actual Recording comes from its recording
+list and its exact Recording GET. The collector must pin and verify the deployed
+Core implementation and complete mapping; it never borrows a Bot ID to work
+around missing correspondence.
 
 After admission, changed identity/history or an unsafe observation permanently
 blocks source restart in that gate. A producer/transport exception after
@@ -158,8 +157,23 @@ admission has the same effect, even when no receipt reached the validator.
 The original exception is preserved; a later fresh stop can still be proved.
 `validate(observation,'stopped',{request,now})` additionally requires the same
 previous recording, terminal bot status, completed recording, ended Core
-meeting and exact completed release-intent rows. Missing Redis state is not
-stop proof. A stopped gate cannot record again; bot fixture reload requires a
+meeting and one exact completed canonical meeting-End release receipt. The
+collector computes its existing event HMAC privately using the actual bot,
+meeting, occurrence and freshly observed merge generation (integer or null),
+with `release/stop=true/cleanup=true/ended=true`. Both Core reads must observe
+that same generation. The release row must be completed, processed, without
+an active lease/error, and causal to normal host `end_meeting_for_all` evidence.
+That actual artifact's action bracket must follow the last admitted recording
+observation; a generic Leave, old End, launch release or guessed event ID fails.
+
+The receipt explicitly reports `inventory:'UNKNOWN'`. It does not claim a total
+matching delivery count or that every worker/teardown resource has settled.
+Core stores only event HMACs and encrypted payloads; a pending next-generation
+pause intent can exist before its counter is published, so a known-row list
+cannot establish completeness. This proof concerns the admitted capture's
+physical stop and its canonical End release. Separately observed outstanding
+resources remain outstanding. Missing Redis state alone is never stop proof.
+A stopped gate cannot record again; bot fixture reload requires a
 new participant. Source pause/resume controls are not evidence that the product
 supports resuming a stopped bot recording.
 
