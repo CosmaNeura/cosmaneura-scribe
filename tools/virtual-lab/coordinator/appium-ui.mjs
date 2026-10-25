@@ -16,6 +16,7 @@ import { createDesktopObserver } from './desktop-observer.mjs';
 import { projectNoteObservation } from '../native/note-observation.mjs';
 import { verifyDashboard } from './dashboard.mjs';
 import { buildNativeTimingMeasurement, projectNativeTimingHistory } from './native-timing.mjs';
+import { selectOwnedIOSWebview, IOS_CONTEXT_DISCOVERY, IOS_CONTEXT_ATTESTATION } from './ios-webview.mjs';
 import { inspectParticipantResources } from '../zoom/resource-owner.mjs';
 import { createSessionAttempt, recoverSessionCreations, sessionReturned, sessionClosed, sessionNotDispatched,
   sessionCapsMatch, SESSION_ATTEMPT_CAPABILITY, SESSION_CREATION_TIMEOUT_MS } from './session-attempt.mjs';
@@ -177,11 +178,12 @@ export class AppiumUI {
     return this.withUIContext(async () => {
       const previous = await this.rawRequest('/context', 'GET', undefined, signal);
       if (previous !== 'NATIVE_APP') throw Error('native_context_unconfirmed');
-      const contexts = (await this.rawRequest('/contexts', 'GET', undefined, signal)).filter(item => item.startsWith('WEBVIEW'));
-      if (contexts.length !== 1) throw Error('owned_webview_ambiguous');
+      const context = selectOwnedIOSWebview(await this.rawRequest('/execute/sync', 'POST', IOS_CONTEXT_DISCOVERY, signal), this.config.app?.bundleId);
       this.contextUncertain = true;
       try {
-        await this.rawRequest('/context', 'POST', { name: contexts[0] }, signal);
+        await this.rawRequest('/context', 'POST', { name: context }, signal);
+        if (await this.rawRequest('/execute/sync', 'POST', { script: IOS_CONTEXT_ATTESTATION, args: [] }, signal) !== true)
+          throw Error('owned_webview_identity_changed');
         return await this.rawRequest('/execute/sync', 'POST', { script, args }, signal, { observerInstallation });
       }
       finally {
@@ -753,9 +755,11 @@ export class AppiumUI {
     let previous;
     try {
       previous = await request('/context');
-      const contexts = (await request('/contexts')).filter(value => value.startsWith('WEBVIEW'));
-      if (contexts.length !== 1) throw Error('observer_cleanup_webview_ambiguous');
-      await request('/context', 'POST', { name: contexts[0] });
+      if (previous !== 'NATIVE_APP') throw Error('native_context_unconfirmed');
+      const context = selectOwnedIOSWebview(await request('/execute/sync', 'POST', IOS_CONTEXT_DISCOVERY), this.config.app?.bundleId);
+      await request('/context', 'POST', { name: context });
+      if (await request('/execute/sync', 'POST', { script: IOS_CONTEXT_ATTESTATION, args: [] }) !== true)
+        throw Error('owned_webview_identity_changed');
       return await request('/execute/sync', 'POST', { args: [this.config.admissionBinding.runId, preserveForRecovery, IOS_OBSERVER_HASHES], script: `
         const [runId, preserve, hashes] = arguments;
         const admission = window.__scribeLabAdmissionObserver, visit = window.__scribeLabVisitObserver;

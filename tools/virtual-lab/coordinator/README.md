@@ -71,6 +71,17 @@ original tooling for same-run recovery when those files change, then start a
 new run for changed tooling. Test files, docs and modification times do not
 affect the digest.
 
+iOS observer access uses XCUITest's fresh `mobile: getContexts` metadata to
+select exactly one page with the verified app bundle ID and local Capacitor
+root URL. Hosted sign-in may retain a separate SafariViewService page. The
+adapter does not select that page, cache a process ID, or choose by title.
+After switching it checks the current root URL and Capacitor bridge before
+reading or changing observers, including during cleanup. Missing metadata,
+multiple matching app pages, changed page identity or failed restoration keep
+the operation blocked. Native controls and the entire context transaction
+remain serialized. This uses the detailed bundle metadata provided by the
+lab's pinned XCUITest driver; older drivers without it are unsupported.
+
 Failures save private screenshots plus metadata-only receipts. Cleanup closes
 only owned participant browser processes and the newly created Appium session,
 with native no-reset/no-terminate capabilities. An uncertain recorder stays

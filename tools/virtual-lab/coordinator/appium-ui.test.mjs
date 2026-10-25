@@ -6,6 +6,7 @@ import { hostname, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { AppiumUI, IOS_OBSERVER_HASHES } from './appium-ui.mjs';
+import { IOS_CONTEXT_ATTESTATION, IOS_CONTEXT_DISCOVERY } from './ios-webview.mjs';
 import { atomicJSON, sha256 } from './journal.mjs';
 import { journalIdentity } from './tool-identity.mjs';
 import { normalizedSessionCaps } from './session-attempt.mjs';
@@ -18,6 +19,8 @@ const admission = { source: 'normal-native-admission-response', runId: '11111111
   observedAtMonotonicMs: 1, browserTimeOriginMs: Date.now() - 1 };
 const recording = () => ({ ...admission, source: 'normal-native-recording-response', recorderId: '55555555-5555-4555-8555-555555555555', nativeRevision: 1, phase: 'recording', busy: false,
   observedAtMonotonicMs: 1, browserTimeOriginMs: Date.now() - 1 });
+const appContexts = () => [{ id: 'NATIVE_APP' }, { id: 'WEBVIEW_123.1', bundleId: 'mock.app', url: 'capacitor://localhost' },
+  { id: 'WEBVIEW_456.1', bundleId: 'com.apple.SafariViewService', url: 'https://example.invalid/account' }];
 test('simulator microphone evidence must progress from captured silence to nonzero native input and conversion', () => {
   const ui = new AppiumUI('/unused');
   ui.config = { target: { role: 'owned-ios-simulator' }, sources: { participants: [{ kind: 'virtual-microphone' }] } };
@@ -45,7 +48,7 @@ async function recoveryRun(ui, output) {
 }
 function driver() {
   const ui = new AppiumUI('/unused');
-  ui.config = { sourceReaders: { state: { name: 'state' }, elapsed: { name: 'elapsed' } } };
+  ui.config = { app: { bundleId: 'mock.app' }, sourceReaders: { state: { name: 'state' }, elapsed: { name: 'elapsed' } } };
   ui.scenario = { targetId: 'test-only' }; ui.admission = admission;
   ui.binding = admission; ui.assertVisit = async () => admission;
   ui.value = async reader => reader.name === 'state' ? 'Recording' : '00:03';
@@ -556,13 +559,13 @@ test('a transport-lost native click retains quarantine even after successful ses
 });
 test('full iOS cleanup removes nested owned observers and permits a different subsequent run', async () => {
   const original = () => Promise.resolve(null), native = () => {};
-  globalThis.window = { Capacitor: { nativePromise: original, fromNative: native } };
+  globalThis.window = { location: { href: 'capacitor://localhost' }, Capacitor: { nativePromise: original, fromNative: native } };
   installVisitScopeObserver({ runId: admission.runId, observerSHA256: IOS_OBSERVER_HASHES.visit });
   installAdmissionObserver(admission, null, IOS_OBSERVER_HASHES.admission);
   const server = createServer(async (request, response) => {
     let raw = ''; for await (const chunk of request) raw += chunk;
     const body = raw ? JSON.parse(raw) : null; let value = null;
-    if (request.url.endsWith('/contexts')) value = ['NATIVE_APP', 'WEBVIEW_owned'];
+    if (body?.script === IOS_CONTEXT_DISCOVERY.script) value = appContexts();
     else if (request.url.endsWith('/context') && request.method === 'GET') value = 'NATIVE_APP';
     else if (request.url.endsWith('/execute/sync')) value = new Function(body.script)(...body.args);
     response.end(JSON.stringify({ value }));
@@ -618,16 +621,17 @@ test('ambiguous or missing native controls cannot choose an arbitrary first matc
 test('concurrent participant observations and native clicks share the complete webview context transaction', async () => {
   const ui = new AppiumUI('/unused');
   ui.binding = admission; ui.admission = admission; ui.scenario = { targetId: 'mock-ios' };
-  ui.config = { target: { role: 'owned-ios-simulator' }, admissionBinding: { runId: admission.runId }, sourceReaders: {
+  ui.config = { app: { bundleId: 'mock.app' }, target: { role: 'owned-ios-simulator' }, admissionBinding: { runId: admission.runId }, sourceReaders: {
     state: { locator: { using: 'accessibility id', value: 'Recording' }, kind: 'text' },
     elapsed: { locator: { using: 'accessibility id', value: 'elapsed' }, kind: 'text' } } };
   let context = 'NATIVE_APP', recordingReads = 0; const nativeContexts = [];
   ui.rawRequest = async (path, method = 'GET', body) => {
     if (path === '/context' && method === 'GET') return context;
-    if (path === '/contexts') return ['NATIVE_APP', 'WEBVIEW_owned'];
+    if (body?.script === IOS_CONTEXT_DISCOVERY.script) { assert.equal(context, 'NATIVE_APP'); return appContexts(); }
     if (path === '/context') { context = body.name; return null; }
     if (path === '/execute/sync') {
-      assert.equal(context, 'WEBVIEW_owned');
+      assert.equal(context, 'WEBVIEW_123.1');
+      if (body.script === IOS_CONTEXT_ATTESTATION) return true;
       if (body.script.includes('readCurrent')) return { ...admission, source: 'normal-native-mount-response' };
       if (body.script.includes('readRecording')) {
         if (++recordingReads === 2) await new Promise(resolve => setTimeout(resolve, 35));
@@ -651,11 +655,11 @@ test('concurrent participant observations and native clicks share the complete w
 });
 
 test('unexpected initial context and failed restoration block later native controls', async () => {
-  const ui = new AppiumUI('/unused'); ui.config = { target: { role: 'owned-ios-simulator' } };
+  const ui = new AppiumUI('/unused'); ui.config = { app: { bundleId: 'mock.app' }, target: { role: 'owned-ios-simulator' } };
   let context = 'WEBVIEW_foreign', controls = 0;
   ui.rawRequest = async (path, method = 'GET', body) => {
     if (path === '/context' && method === 'GET') return context;
-    if (path === '/contexts') return ['NATIVE_APP', 'WEBVIEW_owned'];
+    if (body?.script === IOS_CONTEXT_DISCOVERY.script) return appContexts();
     if (path === '/context') {
       if (body.name === 'NATIVE_APP') throw Error('restore_response_lost');
       context = body.name; return null;
