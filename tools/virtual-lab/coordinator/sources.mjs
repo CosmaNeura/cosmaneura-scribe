@@ -67,7 +67,7 @@ export class SourceGroup {
     // The resident collector admits one in-flight request. Use one combined
     // fixture; parallel graphs and bot pause/resume require separate support.
     if (this.proofKind === 'zoom-bot' && (!Array.isArray(this.config.participants)
-        || this.config.participants.length !== 1 || (this.config.participants[0].kind ?? 'zoom') !== 'zoom'))
+        || this.config.participants.length !== 1 || !['zoom', 'virtual-microphone'].includes(this.config.participants[0].kind ?? 'zoom')))
       throw Error('bot_source_requires_one_zoom_participant');
   }
   run(signal, operation) {
@@ -110,7 +110,8 @@ export class SourceGroup {
           if (source.kind === 'virtual-microphone') {
             if (this.executionKind === 'mock' && !this.mockMicrophonePort) throw Error('mock_microphone_port_required');
             participant = await this.microphoneFactory({ fixture, output: source.output, target: this.config.target,
-              observeProduct: this.observeProduct, resourceOwner: this.config.resourceOwner, signal: active });
+              observeProduct: this.observeProduct, resourceOwner: this.config.resourceOwner, signal: active,
+              captureProof: clone(this.#captureProof), nativeZoomCustody: clone(source.nativeZoomCustody) });
           } else participant = await this.factory({ fixture, playwrightPath: this.config.playwrightPath,
             executionKind: this.executionKind, observeProduct: this.observeProduct, audioConnectedControl: source.audioConnectedControl,
             resourceOwner: this.config.resourceOwner, signal: active, captureProof: clone(this.#captureProof) });
@@ -179,6 +180,7 @@ export class SourceGroup {
       const options = { fixtureSha256: fixture.sha256, startAtEpochMs: commonStartAtEpochMs + clocks[index].clockOffsetMs,
         restart: name === 'initial' };
       const scheduled = await this.call(signal, () => name === 'initial' ? participant.schedule(options, { signal }) : participant.resume(options, { signal }));
+      if (scheduled.nativeZoomCustody) source.nativeZoomCustody = clone(scheduled.nativeZoomCustody);
       const clock = scheduled.media?.scheduledClock;
       source.scheduledClock = clone(clock);
       if (!clock || clock.sourceOffsetSeconds !== offset || clock.startAtEpochMs !== options.startAtEpochMs
@@ -208,7 +210,7 @@ export class SourceGroup {
       const value = await Promise.race([request, cancelled]);
       check(active);
       this.evidence.botMonitoring.observations.push({ startedAtEpochMs, completedAtEpochMs: now(),
-        captureIdentity: value.captureIdentity });
+        captureIdentity: value.captureIdentity, ...(value.nativeZoomCustody ? { nativeZoomCustody: clone(value.nativeZoomCustody) } : {}) });
     } catch (error) {
       this.evidence.botMonitoring.failure = { startedAtEpochMs, failedAtEpochMs: now(),
         reason: deadline.aborted ? 'timeout' : 'recording_observation_failed' };

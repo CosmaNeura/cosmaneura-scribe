@@ -83,11 +83,71 @@ test('bot SourceGroup passes the pinned proof, monitors admitted capture, and re
   const g=botGroup(f,p);await g.connect({signal:signal()});
   const result=await g.play({signal:signal()});assert.equal(reads,1);assert.equal(result.executionKind,'mock');
   assert.equal(result.botMonitoring.observations[0].captureIdentity,'a'.repeat(64));await g.cleanup();
-  assert.throws(()=>botGroup(f,p,{participants:[{kind:'virtual-microphone'}]}),/one_zoom_participant/);
+  assert.throws(()=>botGroup(f,p,{participants:[{kind:'unknown'}]}),/one_zoom_participant/);
   assert.throws(()=>botGroup(f,p,{participants:[{},{}]}),/one_zoom_participant/);
   const h=botGroup(f,participant(f));await h.connect({signal:signal()});
   await assert.rejects(h.play({signal:signal(),quietWindow:[.9,1.1]}),/bot_pause_resume_not_supported/);
   assert.equal(h.participants[0].participant.schedules.length,0);await h.cleanup();
+});
+
+function microphoneParticipant(f) {
+  const original = participant(f);
+  const convert = value => {
+    delete value.media.tracks;
+    Object.assign(value.media, { graphKind: 'coreaudio-output', renderedFrames: 256,
+      output: { deviceUID: 'BlackHole2ch_UID', transport: 'virtual', running: true } });
+    if (value.media.firstSignal) Object.assign(value.media.firstSignal,
+      { pollingIntervalMs: 0, callbackFrames: 512, measurement: 'coreaudio-render-callback' });
+    return value;
+  };
+  return { ...original, status: async () => convert(await original.status()),
+    schedule: async options => convert(await original.schedule(options)),
+    navigate: async () => { throw Error('native_zoom_must_not_use_browser_join'); } };
+}
+function microphoneBotGroup(f, p) {
+  const captureProof = botProof(), nativeZoomCustody = { contractOnly: 'factory forwarding, validated by microphone source' };
+  const input = { ...config([f]), captureProof, participants: [{ kind: 'virtual-microphone', persona: 'combined',
+    caseId: 'case-0', file: 'visit.wav', output: { deviceUID: 'BlackHole2ch_UID' }, nativeZoomCustody }] };
+  return new SourceGroup(input, () => {}, {
+    createParticipant: async () => { throw Error('browser_factory_forbidden'); },
+    createMicrophoneSource: async options => {
+      assert.deepEqual(options.captureProof, captureProof); assert.deepEqual(options.nativeZoomCustody, nativeZoomCustody); return p;
+    }, openFixtureRegistry: async () => ({ load: async () => f }),
+  });
+}
+test('one bot microphone uses the same proof supervisor and measured graph without browser joining', async () => {
+  const f = fixture(), p = microphoneParticipant(f); let reads = 0;
+  p.verifyRecording = async ({ signal }) => { assert.ok(signal instanceof AbortSignal); reads++; return { captureIdentity: 'a'.repeat(64) }; };
+  const g = microphoneBotGroup(f, p); await g.connect({ signal: signal() });
+  const result = await g.play({ signal: signal() });
+  assert.equal(result.executionKind, 'mock'); assert.equal(reads, 1);
+  assert.equal(result.botMonitoring.requestTimeoutMs, 2000); assert.equal(result.botMonitoring.supervisionWatchdogMs, 3000);
+  assert.equal(result.phases[0].sources[0].firstSignal.measurement, 'coreaudio-render-callback');
+  assert.equal(p.calls.includes('navigate'), false); assert.equal(p.schedules.length, 1);
+  assert.equal((await g.cleanup()).ownedResourcesSettled, true);
+});
+test('bot microphone stale observer closes graph at two seconds; late success cannot restart or settle pending work early', async () => {
+  const f = fixture(), p = microphoneParticipant(f), entered = deferred(), held = deferred();
+  p.verifyRecording = async () => { entered.resolve(); return held.promise; };
+  const g = microphoneBotGroup(f, p); await g.connect({ signal: signal() });
+  const keepAlive = setTimeout(() => {}, 5000);
+  try {
+    const failed = assert.rejects(g.play({ signal: signal() }), /bot_monitor_timeout/);
+    await entered.promise; await failed; await tick(); assert.ok(p.calls.includes('close'));
+    let settled = false; const closing = g.cleanup().then(result => { settled = true; return result; });
+    await tick(); assert.equal(settled, false); held.resolve({ captureIdentity: 'a'.repeat(64) });
+    assert.equal((await closing).ownedResourcesSettled, true); assert.equal(p.schedules.length, 1);
+    assert.equal(g.evidence.botMonitoring.observations.length, 0);
+  } finally { clearTimeout(keepAlive); held.resolve({}); }
+});
+test('bot microphone schedule stall is covered by the unchanged independent three-second watchdog', async () => {
+  const f = fixture(), p = microphoneParticipant(f), entered = deferred(), held = deferred(), schedule = p.schedule;
+  p.schedule = async options => { const result = await schedule(options); entered.resolve(); await held.promise; return result; };
+  const g = microphoneBotGroup(f, p); await g.connect({ signal: signal() });
+  const failed = assert.rejects(g.play({ signal: signal() }), /source_aborted/);
+  await entered.promise; await new Promise(resolve => setTimeout(resolve, 3150));
+  assert.ok(p.calls.includes('close')); assert.equal(g.evidence.botMonitoring.failure.reason, 'supervision_watchdog');
+  held.resolve(); await failed; assert.equal((await g.cleanup()).ownedResourcesSettled, true);
 });
 
 test('lost bot observation closes the admitted source and never restarts its fixture', async () => {

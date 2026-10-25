@@ -6,7 +6,8 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { hash, requireValidatedFixture } from '../zoom/fixture.mjs';
 import { prepareParticipantOwner } from '../zoom/resource-owner.mjs';
-import { validateProductObservation } from '../zoom/participant-session.mjs';
+import { createCaptureProofGate, validateProductObservation } from '../zoom/participant-session.mjs';
+import { requireNativeZoomCustody, validateNativeZoomPin } from './native-zoom-custody.mjs';
 
 const now = () => performance.timeOrigin + performance.now();
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -31,6 +32,50 @@ export function requireMicrophoneRecording(observation, boundSessionId = null) {
         : native.source !== 'normal-desktop-recording-response' || native.pendingMutation !== false || native.captureState !== 'recording'))
     throw Error('microphone_native_recording_unconfirmed');
   return observation;
+}
+
+/** The collector DTO stays intact inside this explicit transport envelope.
+ * Native recording observations are never manufactured from a bot proof.
+ * Transport/custody collection is separate; all request time is measured here.
+ */
+export function createBotMicrophoneAdmission({ captureProof, nativeZoomCustody, target, observeProduct }) {
+  const gate = createCaptureProofGate(captureProof);
+  if (gate.kind !== 'zoom-bot' || typeof observeProduct !== 'function') throw Error('bot_microphone_proof_required');
+  const scope = structuredClone(captureProof.expected), pin = validateNativeZoomPin(nativeZoomCustody, scope, target);
+  const ordered = value => Array.isArray(value) ? value.map(ordered) : value && typeof value === 'object'
+    ? Object.fromEntries(Object.keys(value).sort().map(key => [key, ordered(value[key])])) : value;
+  const custodySummary = value => ({ source: 'validated-native-zoom-input-custody',
+    canonicalSHA256: hash(JSON.stringify(ordered(value))), requestNonce: value.requestNonce,
+    observedAtEpochMs: value.observedAtEpochMs, mainPid: pin.mainProcess.pid, inputPid: pin.inputProcess.pid,
+    verificationReceiptSHA256: pin.application.verificationReceiptSHA256, deviceUID: 'BlackHole2ch_UID',
+    scope: 'sampled-hal-and-normal-zoom-ui', screenCaptureKitAbsence: 'NOT_ESTABLISHED', futureReaderExclusion: 'NOT_ESTABLISHED' });
+  let admitted = false, blocked = false;
+  const validate = value => {
+    if (blocked) throw Error('bot_microphone_restart_forbidden');
+    try {
+      gate.validate(value.observation, 'recording', { request: value.request, now: now() });
+      requireNativeZoomCustody(value.nativeZoomCustody, pin, scope, value.request, now());
+      return value;
+    } catch (error) { blocked = true; gate.observationFailed(); throw error; }
+  };
+  const observe = async signal => {
+    signal.throwIfAborted();
+    if (blocked) throw Error('bot_microphone_restart_forbidden');
+    const request = { requestNonce: randomUUID(), sentAtEpochMs: now() };
+    try {
+      const value = await observeProduct({ kind: 'zoom-bot', sourceKind: 'native-zoom-microphone', requestNonce: request.requestNonce, signal });
+      request.receivedAtEpochMs = now(); signal.throwIfAborted();
+      if (!value || Object.keys(value).length !== 2 || !Object.hasOwn(value, 'observation') || !Object.hasOwn(value, 'nativeZoomCustody'))
+        throw Error('bot_microphone_envelope_invalid');
+      return validate({ observation: value.observation, nativeZoomCustody: value.nativeZoomCustody, request });
+    } catch (error) { blocked = true; gate.observationFailed(); throw error; }
+  };
+  return Object.freeze({ observe, validate, custodySummary, admitted() { admitted = true; },
+    async verifyRecording({ signal }) {
+      if (!admitted) throw Error('bot_recording_not_admitted');
+      const value = await observe(signal);
+      return { captureIdentity: gate.identity(), nativeZoomCustody: custodySummary(value.nativeZoomCustody) };
+    } });
 }
 export async function verifyMicrophoneExecutable(output, target) {
   if (output?.deviceUID !== 'BlackHole2ch_UID' || !/^[a-f0-9]{64}$/.test(output?.sha256 ?? '')
@@ -108,9 +153,13 @@ export class MicrophoneChild {
   }
 }
 
-export async function createMicrophoneSource({ fixture, output, target, resourceOwner, observeProduct, signal }) {
+export async function createMicrophoneSource({ fixture, output, target, resourceOwner, observeProduct, signal, captureProof, nativeZoomCustody }) {
   if (!(signal instanceof AbortSignal) || typeof observeProduct !== 'function') throw Error('microphone_signal_and_observer_required');
   signal.throwIfAborted(); let payload = microphoneFixture(fixture);
+  const proofKind = createCaptureProofGate(captureProof).kind;
+  if (proofKind === 'native' && nativeZoomCustody !== undefined) throw Error('native_microphone_bot_configuration');
+  const bot = proofKind === 'zoom-bot' ? createBotMicrophoneAdmission({ captureProof, nativeZoomCustody, target, observeProduct }) : null;
+  if (bot && resourceOwner?.runId !== captureProof.expected.runId) throw Error('bot_microphone_owner_run_changed');
   const executable = await verifyMicrophoneExecutable(output, target);
   const owner = await prepareParticipantOwner(resourceOwner, fixture.sha256, { kind: 'coreaudio-source', executableSHA256: output.sha256 });
   let protocol, ownerReceipt, boundSessionId = null, closing = null, closed = false;
@@ -147,8 +196,19 @@ export async function createMicrophoneSource({ fixture, output, target, resource
     const readyDeadline = now() + 2000;
     while (initial.media.renderedFrames < 256 && now() < readyDeadline) { await delay(10); initial = await status(); }
     if (initial.media.renderedFrames < 256 || initial.media.playing || initial.media.rms !== 0 || initial.media.offsetSeconds !== 0) throw Error('microphone_initial_silence_failed');
+    let botScheduleAttempted = false;
     const schedule = async (options, { signal: active = signal } = {}) => {
       active.throwIfAborted();
+      if (bot) {
+        if (botScheduleAttempted) throw Error('bot_microphone_restart_forbidden');
+        botScheduleAttempted = true;
+        const proof = await bot.observe(active);
+        await status({ signal: active }); bot.validate(proof);
+        if (options.fixtureSha256 !== fixture.sha256 || options.restart !== true) throw Error('microphone_fixture_changed');
+        const result = check(await protocol.request('schedule', options, { signal: active }));
+        bot.admitted();
+        return { ...result, observation: proof.observation, nativeZoomCustody: bot.custodySummary(proof.nativeZoomCustody) };
+      }
       const observation = requireMicrophoneRecording(await observeProduct(active), boundSessionId);
       await status({ signal: active });
       requireMicrophoneRecording(observation, boundSessionId);
@@ -157,10 +217,15 @@ export async function createMicrophoneSource({ fixture, output, target, resource
       return { ...check(await protocol.request('schedule', options, { signal: active })), observation };
     };
     return Object.freeze({ sourceKind: 'virtual-microphone', status, schedule, close,
+      ...(bot ? { verifyRecording: options => bot.verifyRecording({ signal, ...options }) } : {}),
       async clockSample(options) { const sentAtEpochMs = now(), value = await status(options), receivedAtEpochMs = now();
         return { ...value, sentAtEpochMs, receivedAtEpochMs, roundTripMs: receivedAtEpochMs - sentAtEpochMs }; },
-      resume: (options, context) => schedule({ ...options, fixtureSha256: fixture.sha256, restart: false }, context),
+      resume: (options, context) => {
+        if (bot) return Promise.reject(Error('bot_pause_resume_not_supported'));
+        return schedule({ ...options, fixtureSha256: fixture.sha256, restart: false }, context);
+      },
       async load(next, { signal: active = signal } = {}) {
+        if (bot) throw Error('bot_fixture_reload_requires_new_participant');
         active.throwIfAborted();
         validateProductObservation(await observeProduct(active), 'idle');
         const before = await status({ signal: active });
