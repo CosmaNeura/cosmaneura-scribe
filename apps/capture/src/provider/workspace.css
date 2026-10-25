@@ -104,11 +104,17 @@
 .provider-workspace scribe-desktop-input-meter,.provider-workspace scribe-ios-input-meter { width:100%; }
 .provider-workspace:has(.provider-desktop-compact) { padding:12px; }
 .provider-workspace:has(.provider-desktop-compact) .provider-account,.provider-workspace:has(.provider-desktop-compact) .provider-patient-detail { display:none; }
-.provider-workspace:has(.provider-desktop-compact) .provider-header { margin:0 0 12px; }
+.provider-workspace:has(.provider-desktop-compact) .provider-header { position:sticky; top:0; z-index:2; margin:0 0 8px; background:#f1f5f2; }
 .provider-workspace:has(.provider-desktop-compact) [data-provider-encounter] { font-size:18px; }
-.provider-workspace cosmaneura-capture .provider-desktop-compact .recorder { padding:16px; gap:12px; box-shadow:none; }
-.provider-workspace cosmaneura-capture .provider-desktop-compact .recording-duration strong { font-size:48px; }
-.provider-workspace cosmaneura-capture .provider-desktop-compact .record-actions button { min-height:44px; font-size:16px; }
+.provider-workspace cosmaneura-capture .provider-desktop-compact main { gap:8px; }
+.provider-workspace cosmaneura-capture .provider-desktop-compact [data-provider-review]:empty { display:none; }
+.provider-workspace cosmaneura-capture .provider-desktop-compact .recorder { padding:12px; gap:8px; box-shadow:none; }
+.provider-workspace cosmaneura-capture .provider-desktop-compact .recording-progress { grid-template-columns:minmax(0,1fr) auto; align-items:center; justify-items:start; gap:8px; text-align:left; }
+.provider-workspace cosmaneura-capture .provider-desktop-compact .recording-progress>:not([role=status]):not(.recording-duration) { grid-column:1/-1; }
+.provider-workspace cosmaneura-capture .provider-desktop-compact .recording-duration { grid-column:2; grid-row:1; }
+.provider-workspace cosmaneura-capture .provider-desktop-compact .recording-duration strong { font-size:36px; }
+.provider-workspace cosmaneura-capture .provider-desktop-compact .record-actions { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.provider-workspace cosmaneura-capture .provider-desktop-compact .record-actions button { min-height:44px; padding:8px 10px; font-size:16px; }
 .provider-workspace cosmaneura-capture .provider-desktop-compact main>h1,.provider-workspace cosmaneura-capture .provider-desktop-compact main>p,.provider-workspace cosmaneura-capture .provider-desktop-compact .recording-patient { display:none; }
 .provider-workspace:has(.provider-desktop-capture:not(.provider-desktop-compact)) [data-provider-encounter] { display:none; }
 .provider-workspace:has(.provider-desktop-capture:not(.provider-desktop-compact)) .provider-patient-detail { margin:0; }

@@ -31,7 +31,7 @@ test("optional source changes preserve the visible required window gate and foll
   await page.goto("/e2e/fixtures/desktop-controls.html?inline-meeting&source-choice");
   const choice = page.locator(".recording-source-choice");
   const source = page.getByTestId("desktop-audio-mode");
-  const help = page.locator(".recording-source-help");
+  const help = page.getByTestId("desktop-coverage");
   const windowSelect = page.getByTestId("meeting-window");
   const start = page.getByRole("button", { name: "Start recording", exact: true });
   await expect(choice).not.toHaveAttribute("open");
@@ -135,7 +135,7 @@ for (const width of [1280, 640, 480]) {
     await expect(page.getByRole("button", { name: "Sign out", exact: true, includeHidden: true })).toBeDisabled();
     if (width === 480) {
       expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThanOrEqual(332);
-      await expect(controls.locator(".recording-source-help")).toBeInViewport();
+      await expect(page.getByTestId("desktop-coverage").locator("summary")).toBeInViewport();
       const exit = page.getByRole("button", { name: "Your encounters", exact: true });
       await expect(exit).toBeInViewport();
       expect((await exit.boundingBox()).height).toBeGreaterThanOrEqual(44);
