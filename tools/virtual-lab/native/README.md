@@ -2,7 +2,7 @@
 
 `python3 lab.py doctor CONFIG --output RECEIPT` performs read-only checks of the
 owned target, build, Appium service and available virtual audio device. It opens
-no app or stream. Build its metadata helper with `xcrun swiftc audio.swift -o
+no app or stream. Build its metadata helper with `xcrun swiftc -parse-as-library audio.swift -o
 /OWNED_ROOT/bin/audio`. Package presence, a route inventory or a successful
 doctor is not a recording result.
 
@@ -23,6 +23,11 @@ an actual hardware UUID hash matching the marker and different from
 `controlHostHardwareUUIDSHA256`. Hash the lowercase IOPlatformUUID. Mac doctor
 also checks actual session-lock metadata; a marker assertion alone cannot prove
 an unlocked or independent target. The target requires its own interactive login.
+An SSH process may receive no CGSession dictionary. The inventory helper then
+requires IORegistry to report an unlocked console with exactly one logged-in
+on-console user whose UID and name match the current non-root user, plus the
+same UID owning `/dev/console`. Missing, malformed or conflicting observations
+remain unavailable; a missing CGSession value by itself never means unlocked.
 
 Apps reside under `TARGET_ROOT/apps` with matching bundle ID/build. iOS requires
 `DTPlatformName: iphonesimulator` and the exact owned simulator UDID. Simulator
