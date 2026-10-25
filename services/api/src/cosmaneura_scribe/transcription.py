@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +28,7 @@ from azure.identity.aio import DefaultAzureCredential
 from .external_transcript_v1 import SourceLocale, TranscriptLanguageMode
 from .schemas import CaptureChannel
 from .settings import Settings
+from .speech_observation import SpeechBoundaryObservation, azure_sdk_version, inspect_wave_header
 from .speech_private_network import PrivateSpeechEndpointGuard
 
 
@@ -146,9 +148,11 @@ class AzureSpeechTranscriber:
         max_speakers: int,
         credential: DefaultAzureCredential | None = None,
         endpoint_guard: SpeechEndpointGuard | None = None,
+        observer: Callable[[SpeechBoundaryObservation], None] | None = None,
     ) -> None:
         self._client = client
         self._max_speakers = max_speakers
+        self._observer = observer
         self._credential = credential
         self._endpoint_guard = endpoint_guard
 
@@ -192,7 +196,7 @@ class AzureSpeechTranscriber:
         segments: list[SttSegment] = []
         duration_ms = 0
 
-        for track in request.tracks:
+        for track_index, track in enumerate(request.tracks):
             if self._endpoint_guard is not None:
                 await self._endpoint_guard.verify()
             options = TranscriptionOptions(
@@ -208,6 +212,7 @@ class AzureSpeechTranscriber:
             )
             try:
                 with track.open() as audio_file:
+                    header = inspect_wave_header(audio_file) if self._observer else None
                     result = await self._client.transcribe(
                         TranscriptionContent(definition=options, audio=audio_file),
                         logging_enable=False,
@@ -224,10 +229,36 @@ class AzureSpeechTranscriber:
                 raise AzureSpeechProviderError(_azure_speech_error_code(error)) from None
 
             duration_ms = max(duration_ms, result.duration_milliseconds)
-            for phrase in result.phrases:
+            accepted = [
+                phrase
+                for phrase in result.phrases
+                if phrase.text.strip() and phrase.duration_milliseconds > 0
+            ]
+            if self._observer is not None:
+                observed_max_speakers = (
+                    options.diarization_options.max_speakers
+                    if options.diarization_options is not None
+                    else None
+                )
+                if observed_max_speakers is None:
+                    raise TranscriptionInputError("speech_diarization_option_unavailable")
+                self._observer(
+                    SpeechBoundaryObservation(
+                        track_index=track_index,
+                        sdk_version=azure_sdk_version(),
+                        max_speakers=observed_max_speakers,
+                        phrase_count=len(result.phrases),
+                        missing_speaker_count=sum(p.speaker is None for p in result.phrases),
+                        distinct_non_null_speaker_count=len(
+                            {p.speaker for p in result.phrases if p.speaker is not None}
+                        ),
+                        accepted_phrase_count=len(accepted),
+                        accepted_distinct_speaker_count=len({p.speaker for p in accepted}),
+                        wave_header=header,
+                    )
+                )
+            for phrase in accepted:
                 content = phrase.text.strip()
-                if not content or phrase.duration_milliseconds <= 0:
-                    continue
                 speaker = (
                     str(phrase.speaker)
                     if phrase.speaker is not None
