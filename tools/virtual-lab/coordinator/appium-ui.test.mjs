@@ -408,6 +408,33 @@ test('pre-Record recovery observes absent native callbacks without inventing sto
     await assert.rejects(ui.captureStateSnapshot(new AbortController().signal, { preRecord: true }), /recovery_observer_missing_or_changed/);
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await rm(output, { recursive: true, force: true }); }
 });
+test('recovery of failed prepare inspects absent sources before normal preparation reconciliation', async () => {
+  const output = await realpath(await mkdtemp(join(tmpdir(), 'scribe-recovery-prepare-')));
+  const server = createServer((_request, response) => response.end('{"value":[]}'));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const ui = driver(); ui.base = `http://127.0.0.1:${server.address().port}`;
+    ui.scenario = { runId: 'prepare-recovery', targetId: 'test-only', admissionBinding: admission };
+    await recoveryRun(ui, output);
+    ui.config.sources = { participants: [{ kind: 'virtual-microphone' }] }; ui.connect = async () => {};
+    ui.webview = async () => ({ visitDescriptor: { runId: admission.runId,
+      observerSHA256: IOS_OBSERVER_HASHES.visit, pendingObservedReplies: 0 }, descriptor: null,
+      currentVisit: admission, nativeObservation: null, currentNote: null });
+    const proof = await ui.recoveryInspect({ output, scenario: ui.scenario,
+      state: { events: [{ kind: 'action_started', action: 'prepare' }], completed: ['create_visit'], pending: 'prepare' },
+      observations: {}, signal: new AbortController().signal });
+    assert.equal(proof.recoveryStage, 'pre-record');
+    assert.equal(proof.participantInventory.ownerInventory, 'absent');
+    assert.equal(ui.sources, null); assert.equal(proof.nativeObservation, null);
+    ui.config.sources = { participants: [{ kind: 'zoom' }] };
+    await assert.rejects(ui.recoveryInspect({ output, scenario: ui.scenario,
+      state: { events: [], completed: ['create_visit'], pending: 'prepare' }, observations: {},
+      signal: new AbortController().signal }), { code: 'ENOENT' });
+    await assert.rejects(ui.recoveryInspect({ output, scenario: ui.scenario,
+      state: { events: [{ kind: 'action_started', action: 'record' }], completed: ['prepare'], pending: 'record' },
+      observations: {}, signal: new AbortController().signal }), /recovery_observer_missing_or_changed/);
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await rm(output, { recursive: true, force: true }); }
+});
 test('a Recording label cannot replace an actual bound native response', async () => {
   const ui = driver(); ui.webview = async () => null;
   await assert.rejects(ui.sourceObservation(), /native_recording_state_unavailable/);

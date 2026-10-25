@@ -98,6 +98,16 @@ native phase and empty pending-work count. A deliberate PAUSED run remains
 resumable with its lease retained; an existing failure keeps its original cause.
 A completed live journey also needs its recorded matching Finish observation.
 
+For a pending prepare with only one virtual microphone source, recovery accepts
+an absent or empty participant directory after checking a fresh process inventory
+for unaccounted marked children and rechecking the directory. Its native helper
+writes ownership before launch and does not fork. This covers a permission wait
+that failed before source initialization; it does not claim that recording ran.
+Any marked process keeps recovery unresolved. Completed preparation, attempted
+Record, browser sources, partial owner files and uncertain launch identities
+retain the existing stricter checks. Changed tooling still requires a new run;
+this does not retrofit old frozen journals or replay permission/Record actions.
+
 A complete same-run acquiring guard can be recovered only after every owner in
 its append-only claim chain is proven dead on this host. Exclusive file creation
 admits one successor; an atomic move releases only that successor's own guard.

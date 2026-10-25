@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { matchingParticipantProcesses, prepareParticipantOwner } from './resource-owner.mjs';
+import { inspectParticipantResources, matchingParticipantProcesses, prepareParticipantOwner } from './resource-owner.mjs';
 
 test('owned process inventory includes descendants and profile orphans without retaining unrelated commands', () => {
   const resourceId = randomUUID(), owner = { resourceId, browser: { profile: '/private/tmp/owned-profile' } };
@@ -36,4 +38,35 @@ test('native source ownership binds its actual marked child and binary hash with
     assert.equal(receipt.owner.browser, undefined);
     assert.deepEqual(matchingParticipantProcesses(`123 1 owned-helper ${owner.argument}\n124 123 child\n125 1 unrelated`, receipt.owner), [{ pid: 123, parentPid: 1 }, { pid: 124, parentPid: 123 }]);
   } finally { await rm(ownedRoot, { recursive: true, force: true }); }
+});
+
+test('pending prepare can inspect absent or empty ownership while normal recovery still refuses both', async () => {
+  const root = await mkdtemp(resolve(tmpdir(), 'scribe-before-source-'));
+  const options = { ownedRoot: resolve(root, 'participants'), runId: randomUUID(), signal: new AbortController().signal };
+  try {
+    await assert.rejects(inspectParticipantResources(options), { code: 'ENOENT' });
+    const absent = await inspectParticipantResources({ ...options, allowUninitialized: true });
+    assert.equal(absent.ownerInventory, 'absent'); assert.deepEqual(absent.observations, []);
+    await mkdir(options.ownedRoot);
+    await assert.rejects(inspectParticipantResources(options), /participant_owner_inventory_invalid/);
+    const empty = await inspectParticipantResources({ ...options, allowUninitialized: true });
+    assert.equal(empty.ownerInventory, 'empty'); assert.deepEqual(empty.observations, []);
+    await rm(options.ownedRoot, { recursive: true });
+    await symlink(root, options.ownedRoot);
+    await assert.rejects(inspectParticipantResources({ ...options, allowUninitialized: true }), /participant_owner_root_invalid/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('a real marked child without its owner file prevents pre-source cleanup from passing', async () => {
+  const root = await mkdtemp(resolve(tmpdir(), 'scribe-lost-owner-'));
+  const marker = `--scribe-virtual-lab-owner=${randomUUID()}`;
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', '--', marker], { stdio: 'ignore' });
+  await once(child, 'spawn');
+  try {
+    const result = await inspectParticipantResources({ ownedRoot: resolve(root, 'participants'), runId: randomUUID(),
+      signal: new AbortController().signal, allowUninitialized: true });
+    assert(result.unresolvedOwnedResources.some(value => value.process.pid === child.pid
+      && value.reason === 'unattributed_participant_process_present'));
+    assert(!JSON.stringify(result).includes(marker));
+  } finally { child.kill('SIGTERM'); await once(child, 'exit'); await rm(root, { recursive: true, force: true }); }
 });
