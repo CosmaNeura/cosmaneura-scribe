@@ -73,7 +73,9 @@
 .provider-setup [data-patient-search] { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:end; }
 .provider-setup [data-patient-search] label { margin-top:0; }
 .provider-setup [data-patient-search] button { margin-bottom:16px; }
-.provider-create-actions button { width:100%; min-height:56px; background:var(--scribe-gradient); color:white; font-weight:600; }
+.provider-create-actions { display:grid; gap:12px; }
+.provider-create-actions button { width:100%; min-height:56px; font-weight:600; }
+.provider-create-actions .provider-primary { background:var(--scribe-gradient); color:white; }
 .provider-unsaved-dialog,.provider-audio-dialog { box-sizing:border-box; width:min(480px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); overflow:auto; padding:24px; border:1px solid #8ea99f; border-radius:16px; background:white; color:var(--scribe-ink); font:18px/1.5 system-ui,sans-serif; box-shadow:0 12px 48px #17352f40; }
 .provider-unsaved-dialog::backdrop,.provider-audio-dialog::backdrop { background:#10282066; }
 .provider-unsaved-dialog h2 { margin-top:0; }

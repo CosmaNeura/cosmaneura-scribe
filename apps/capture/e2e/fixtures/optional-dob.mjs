@@ -61,6 +61,7 @@ const setup = createEncounterSetup({
       { patient_ref: "patient_01j00000000000000000000001", name: "Synthetic walk-in", date_of_birth: "1985-03-04" },
     ] : [], more_results: false };
     fixture.creates.push(body);
+    if (fixture.failCreate) throw new Error("Synthetic lost creation response");
     encounter.patientRef = body.patient.kind === "existing" ? body.patient.patient_ref : encounter.patientRef;
     return { ...base, creation_key: body.creation_key, encounter: { workspace_id: scope.workspaceId,
       appointment_ref: scope.appointmentRef, patient_ref: encounter.patientRef,

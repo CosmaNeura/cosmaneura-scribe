@@ -134,3 +134,27 @@ retains evidence and forbids source restart after any unsafe admitted state.
 Tests use synthetic metadata only, including wrong scope/generation, leased or
 unprocessed receipt, old/absent host End and terminal-with-incomplete-recording
 adversaries. A real producer and exact normal End remain live prerequisites.
+
+The create-only visit increment is Tier 1. The existing new-visit form retains
+its normal recording action and adds an explicit Create visit only action. It
+uses the same authorized, idempotent Core creation transaction, then shows the
+confirmed visit without mounting a capture binding. A local encrypted pending
+request retains this navigation choice across an uncertain response; the choice
+is never included in the Core API request. Existing pending requests retain
+their original open-after-create behavior. This supplies a normal UI path to a
+fresh visit for a separately authorized Zoom bot, without weakening the rule
+that a Scribe capture binding owns its note workflow. Creation does not enable a
+bot or attest consent. The provider must connect Zoom and select the meeting and
+visit in normal Settings/Schedule.
+
+Release control is the owned, manually selected candidate artifact, owned by
+John Willems, for the two synthetic staging lab accounts on the Dublin Mac and
+simulator through November 1, 2026. Existing encounter-creation cohort controls
+remain required; no production or store rollout is part of this increment.
+Recovery disables new candidate launches and retains visits and encrypted
+pending requests. An older client can reject an unfamiliar pending navigation
+field; complete that pending request with the current client before reverting
+the artifact. No migration, admission, native source or server ownership rule
+changes. Mock browser tests exercise both platforms, unchanged explicit consent
+and Start, and same-key recovery after reload without a capture mount. Actual
+rebuilt-client creation and subsequent bot/note/dashboard checks remain required.
