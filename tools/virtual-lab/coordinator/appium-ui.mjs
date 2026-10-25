@@ -24,6 +24,17 @@ import { createSessionAttempt, recoverSessionCreations, sessionReturned, session
 const exec = promisify(execFile);
 const elementKey = 'element-6066-11e4-a52e-4f735466cecf';
 const wait = ms => new Promise(r => setTimeout(r, ms));
+const locatorFailure = Symbol('locator-failure');
+const assertionKind = value => ['visible', 'text', 'attribute'].includes(value) ? value : 'unsupported';
+function assertionError(error) {
+  if (['missing', 'ambiguous', 'invalid_response'].includes(error?.[locatorFailure])) return error[locatorFailure];
+  switch (error?.message) {
+    case 'native_locator_missing': return 'invalid_locator';
+    case 'element_not_visible': return 'not_visible';
+    case 'unsupported_native_assertion': return 'unsupported';
+    default: return 'driver_error';
+  }
+}
 export const IOS_OBSERVER_HASHES = Object.freeze({
   visit: sha256(installVisitScopeObserver.toString()),
   admission: sha256(installAdmissionObserver.toString() + projectNoteObservation.toString()),
@@ -35,6 +46,7 @@ export class AppiumUI {
     this.lifetime = new AbortController(); this.pending = new Set(); this.uiTail = Promise.resolve();
     this.observerLifetime = new AbortController(); this.desktop = null;
     this.uncertainMutations = new Set(); this.commandSequence = 0;
+    this.checkSequence = 0; this.lastCheckFailure = null;
   }
   async loadConfig(scenario) {
     const bytes = await readFile(this.configPath);
@@ -347,8 +359,13 @@ export class AppiumUI {
   async find(locator, signal) {
     if (!locator?.using || !locator?.value) throw Error('native_locator_missing');
     const matches = await this.request('/elements', 'POST', locator, signal);
-    if (!Array.isArray(matches) || matches.length !== 1 || typeof matches[0][elementKey] !== 'string'
-        || !matches[0][elementKey]) throw Error('native_locator_ambiguous_or_missing');
+    if (!Array.isArray(matches) || matches.length !== 1 || typeof matches[0]?.[elementKey] !== 'string'
+        || !matches[0][elementKey]) {
+      const error = Error('native_locator_ambiguous_or_missing');
+      error[locatorFailure] = !Array.isArray(matches) ? 'invalid_response'
+        : !matches.length ? 'missing' : matches.length > 1 ? 'ambiguous' : 'invalid_response';
+      throw error;
+    }
     return matches[0][elementKey];
   }
   async value(spec, signal) {
@@ -362,19 +379,39 @@ export class AppiumUI {
     throw Error('unsupported_native_assertion');
   }
   async check(plan, signal) {
+    const sequence = ++this.checkSequence; this.lastCheckFailure = null;
     if (!plan?.assertions?.length) throw Error('native_assertions_missing');
     const waitMs = plan.waitMs ?? 30000;
     if (!Number.isSafeInteger(waitMs) || waitMs < 1 || waitMs > 120000) throw Error('native_wait_deadline_invalid');
     const deadline = performance.now() + waitMs;
+    let diagnostics = [];
     do {
       const checks = [];
+      diagnostics = [];
       try {
-        for (const spec of plan.assertions) checks.push({ locator: JSON.stringify(spec.locator), kind: spec.kind,
-          actual: await this.value(spec, signal), expected: spec.expected });
-        if (checks.every(c => c.actual === c.expected)) return checks;
-      } catch (error) { if (signal?.aborted) throw error; }
+        for (const [index, spec] of plan.assertions.entries()) {
+          const actual = await this.value(spec, signal);
+          checks.push({ locator: JSON.stringify(spec.locator), kind: spec.kind, actual, expected: spec.expected });
+          if (index < 64) diagnostics.push({ index, kind: assertionKind(spec.kind),
+            result: actual === spec.expected ? 'matched' : 'mismatched' });
+        }
+        if (checks.every(c => c.actual === c.expected)) {
+          if (sequence === this.checkSequence) this.lastCheckFailure = null;
+          return checks;
+        }
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        const index = checks.length;
+        if (index < 64) diagnostics.push({ index, kind: assertionKind(plan.assertions[index]?.kind), result: assertionError(error) });
+      }
       await wait(200);
     } while (performance.now() < deadline && !signal?.aborted);
+    // Final poll only, fixed enums and zero-based plan indexes. Never retain a
+    // locator, UI value, expected content, attribute name, or driver message.
+    if (sequence === this.checkSequence) this.lastCheckFailure = {
+      source: 'native-assertion-diagnostics', schema: 1, status: signal?.aborted ? 'ABORTED' : 'NOT_OBSERVED',
+      assertionCount: plan.assertions.length, truncated: plan.assertions.length > 64, assertions: diagnostics,
+    };
     throw Error('native_state_not_observed');
   }
   async observe(action, signal) {
@@ -431,6 +468,7 @@ export class AppiumUI {
     const startedAtEpochMs = Date.now();
     const receipt = { source: 'native-ui-phase-artifacts', action, targetId: this.scenario?.targetId,
       startedAtEpochMs, artifacts: [], unavailable: [] };
+    if (this.lastCheckFailure) receipt.assertionDiagnostics = structuredClone(this.lastCheckFailure);
     if (!/^[a-z][a-z_]{0,40}$/.test(action) || !this.output || !this.session) {
       return { ...receipt, collectionStatus: 'UNAVAILABLE', completedAtEpochMs: Date.now(),
         unavailable: [{ kind: 'collection', code: 'phase_artifact_target_unavailable' }] };
@@ -670,6 +708,10 @@ export class AppiumUI {
     return observation;
   }
   async failureArtifact(path) {
+    if (this.lastCheckFailure) {
+      try { await writeFile(`${path}.assertions-${randomUUID()}.json`, JSON.stringify(this.lastCheckFailure), { mode: 0o600, flag: 'wx' }); }
+      catch { /* Missing diagnostics never change the failed gate. */ }
+    }
     if (!this.session) return;
     try { const screenshot = await this.request('/screenshot'); await writeFile(`${path}.png`, Buffer.from(screenshot, 'base64'), { mode: 0o600 }); }
     catch { /* An unavailable screenshot never changes a failed gate. */ }
