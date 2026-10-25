@@ -105,6 +105,20 @@ struct CheckNativeProvider {
     }
     @MainActor static func main() async throws {
         var checks = 0
+        // Account correlation is exact UTF-8 hashing, scoped to the ready state.
+        // It neither reads a token nor exposes the native identity/session tuple.
+        do {
+            let (auth, driver, _, connection) = try make()
+            let first = NativeAuthPayload.accountIdentitySHA256(auth.state())
+            try require(first == "3a6f489add536606a2e34c4bda54eeb612a5450a41249a92e62eaa923d762d56")
+            driver.identity = try .init(userID: "user_changed", sessionID: "sess_changed", organizationID: "org_offline")
+            try require(NativeAuthPayload.accountIdentitySHA256(auth.state()) ==
+                "9d73298b39913c1d3006d3a135e53166116359761a6c32276ae010c59f7ee46a")
+            driver.identity = nil
+            try require(NativeAuthPayload.accountIdentitySHA256(auth.state()) == nil)
+            try require(driver.tokens == 0)
+            connection.close(); checks += 1
+        }
         // Profile suggestions never request credentials or change custody/authority.
         do {
             let (auth, driver, _, connection) = try make()

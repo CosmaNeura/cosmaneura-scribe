@@ -253,6 +253,9 @@ import ScribeStorePipe
     private func state(_ value: NativeAuthState) -> [String: Any] {
         var payload: [String: Any] = ["phase": value.phase.rawValue, "revision": value.revision]
         if value.phase == .ready { payload["recordingSignInPreparationVersion"] = 1 }
+        if let digest = NativeAuthPayload.accountIdentitySHA256(value) {
+            payload["accountIdentitySHA256"] = digest
+        }
         if let name = auth.providerDisplayName(expectedRevision: value.revision) {
             payload["providerDisplayName"] = name
         }
