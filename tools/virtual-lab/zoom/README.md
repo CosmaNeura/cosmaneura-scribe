@@ -96,19 +96,35 @@ audio route, driver, microphone, installed Scribe or unrelated browser is change
 ## Explicit bot proof branch
 
 The default participant proof is `{kind:'native'}` and retains the native checks
-above. A future bot coordinator may explicitly pass
+above. A bot SourceGroup may explicitly pass
 `captureProof:{kind:'zoom-bot',expected}`. `expected` pins the run UUID, collector
 implementation SHA256, local run start, and the exact account/doctor/patient,
 host, meeting, appointment and occurrence metadata listed in
 `BotCaptureProofGate` in `bot-capture-proof.mjs`. A bot receipt never supplies a
 fake native session or native recording state.
 
-This increment is a typed contract and participant admission gate. It does not
-provide a live provider collector, normal host UI locators, bot orchestration,
-continuous state monitoring, or full journey acceptance. Contract tests use
+SourceGroup accepts one Zoom participant with a combined fixture for this branch.
+It rejects virtual-microphone mixes, parallel bot participants and pause/resume.
+During playback it calls the admitted participant's `verifyRecording({signal})`
+again, waiting one second between completed reads. Each read has a two-second
+outer deadline. A stale/unsafe result, rejection or timeout aborts the source
+group and starts closing its owned browser; the failed source cannot restart.
+A producer that ignores cancellation stays tracked through cleanup, and a late
+result cannot revive playback. This periodic observation does not prove audio
+was continuously captured between reads; transport and browser-stop latency
+must be measured during the live run.
+
+An independent three-second watchdog (the one-second interval plus two-second
+read budget) starts before scheduling and resets only after a successful fresh
+proof. It closes owned source graphs even if an intervening browser status or
+scheduling acknowledgement hangs. Pending operations remain tracked until they
+settle; closing their source does not manufacture operation completion.
+
+The tooling does not provide a live provider collector, normal host UI locators,
+complete bot orchestration or full journey acceptance. Contract tests use
 synthetic DTOs; passing them is not live consent or recording evidence.
 
-For this branch, `observeProduct({kind:'zoom-bot',requestNonce})` must execute a
+For this branch, `observeProduct({kind:'zoom-bot',requestNonce,signal})` must execute a
 fresh scoped read through the pinned collector and return the exact metadata
 DTO accepted by the gate. The participant itself brackets that request with its
 local clock. The whole request plus its remaining age must fit two seconds,

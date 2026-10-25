@@ -101,3 +101,21 @@ scoped normal cleanup. Tests prove contract rejection and mocked no-schedule
 behavior, not a live media or consent gate. A fresh transport rehearsal, real
 event/recording mapping, continuous monitor and independent final-head review
 remain prerequisites for the later live coordinator.
+
+The bot source-supervision increment passes the explicit proof through
+SourceGroup and supports one combined-fixture Zoom participant. It refuses
+mixed paths, concurrent participants and bot pause/resume. The admitted
+participant rechecks the same proof gate during playback, with one second
+between completed observations and a two-second outer request deadline.
+Failure aborts the source group and initiates owned-browser closure. A late
+read remains tracked and cannot restart source audio. This is periodic
+observation with a measurable detection/closure gap, not continuous capture
+proof. Native source behavior and the native proof validator remain unchanged.
+An independent three-second watchdog also covers scheduling acknowledgements
+and browser status work between proofs; only a successful fresh proof resets
+it. Expiry closes owned sources while retaining any unsettled operation.
+Recovery retains uncertain read/browser ownership; source closure does not
+claim the remote bot stopped. The live collector, normal host actions and
+actual media/note verification remain necessary. Revert this tooling for new
+runs and preserve frozen existing run inputs; no service deployment or schema
+change is part of this increment.

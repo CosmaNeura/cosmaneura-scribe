@@ -89,10 +89,10 @@ export async function createParticipant({fixture, playwrightPath, executionKind 
     if (closed || page.isClosed() || frame.isDetached()) throw Error('participant-detached');
     return {executionKind, pageId: id(pageIds, page), frameId: id(frameIds, frame), media: await frameState(frame), resourceOwner: ownerReceipt};
   }
-  async function observe(state) {
+  async function observe(state, signal) {
     const request = proofGate.kind === 'zoom-bot' ? {requestNonce: randomUUID(), sentAtEpochMs: now()} : null;
     let observation;
-    try { observation = await observeProduct(request ? {kind: 'zoom-bot', requestNonce: request.requestNonce} : undefined); }
+    try { observation = await observeProduct(request ? {kind: 'zoom-bot', requestNonce: request.requestNonce, ...(signal ? {signal} : {})} : undefined); }
     catch (error) { if (request) proofGate.observationFailed(); throw error; }
     if (request) request.receivedAtEpochMs = now();
     proofGate.validate(observation, state, {request, now: now()});
@@ -132,6 +132,13 @@ export async function createParticipant({fixture, playwrightPath, executionKind 
     click: ({role, name}) => frame.getByRole(role, {name, exact: true}).click({timeout: 10_000}),
     fill: ({label, value}) => frame.getByLabel(label, {exact: true}).fill(value, {timeout: 10_000}),
     status,
+    async verifyRecording({signal} = {}) {
+      if (proofGate.kind !== 'zoom-bot' || boundCaptureIdentity === null) throw Error('bot_recording_not_admitted');
+      signal?.throwIfAborted();
+      await observe('recording', signal);
+      signal?.throwIfAborted();
+      return {captureIdentity: boundCaptureIdentity};
+    },
     async clockSample() { const sentAtEpochMs = now(), value = await status(), receivedAtEpochMs = now(); return {sentAtEpochMs, receivedAtEpochMs, roundTripMs: receivedAtEpochMs - sentAtEpochMs, ...value}; },
     schedule,
     async resume({startAtEpochMs = now() + 1000} = {}) { return schedule({fixtureSha256: fixture.sha256, startAtEpochMs, restart: false}); },

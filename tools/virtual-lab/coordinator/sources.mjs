@@ -1,5 +1,6 @@
 import { performance } from 'node:perf_hooks';
-import { createParticipant } from '../zoom/participant-session.mjs';
+import { createParticipant, createCaptureProofGate } from '../zoom/participant-session.mjs';
+import { BOT_PROOF_MAX_AGE_MS } from '../zoom/bot-capture-proof.mjs';
 import { openFixtureRegistry } from '../zoom/fixture.mjs';
 import { createMicrophoneSource } from './microphone-source.mjs';
 
@@ -9,6 +10,8 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 // 16 ms analyser window and 10 ms polling; clock RTT must be <= 50 ms. This is
 // not a capture/Zoom transport synchronization allowance or a clinical SLA.
 export const SOURCE_GRAPH_ONSET_TOLERANCE_MS = 100;
+export const BOT_MONITOR_INTERVAL_MS = 1000;
+export const BOT_SUPERVISION_WATCHDOG_MS = BOT_MONITOR_INTERVAL_MS + BOT_PROOF_MAX_AGE_MS;
 const MAX_CLOCK_ROUND_TRIP_MS = 50, ANALYSIS_FRAMES = 256, SIGNAL_RMS = 0.005;
 const check = signal => { if (signal.aborted) throw Error('source_aborted'); };
 const clone = value => structuredClone(value);
@@ -39,6 +42,7 @@ export function expectedSignalOffsetMs(fixture, offsetSeconds) {
 /** Supervises owned browser participants. Injected test ports require explicit
  * mock execution and can never produce a live source receipt. */
 export class SourceGroup {
+  #captureProof;
   constructor(config, observeProduct, ports = {}) {
     this.config = config; this.observeProduct = observeProduct; this.participants = [];
     this.executionKind = config.executionKind ?? 'live';
@@ -48,9 +52,23 @@ export class SourceGroup {
     this.factory = ports.createParticipant ?? createParticipant; this.registry = ports.openFixtureRegistry ?? openFixtureRegistry;
     this.microphoneFactory = ports.createMicrophoneSource ?? createMicrophoneSource;
     this.mockMicrophonePort = typeof ports.createMicrophoneSource === 'function';
+    this.#captureProof = clone(config.captureProof ?? { kind: 'native' });
+    this.proofKind = createCaptureProofGate(this.#captureProof).kind;
+    this.requireBotSourceScope();
     this.lifetime = new AbortController(); this.pending = new Set(); this.connected = false; this.closing = null;
     this.evidence = { executionKind: this.executionKind, timingScope: 'generated_source_graph_only', captureTiming: 'NOT_RUN',
       onsetToleranceMs: SOURCE_GRAPH_ONSET_TOLERANCE_MS, phases: [] };
+    if (this.proofKind === 'zoom-bot') this.evidence.botMonitoring = {
+      intervalMs: BOT_MONITOR_INTERVAL_MS, requestTimeoutMs: BOT_PROOF_MAX_AGE_MS,
+      supervisionWatchdogMs: BOT_SUPERVISION_WATCHDOG_MS,
+      scope: 'periodic_provider_observation_not_continuous_audio_proof', observations: [] };
+  }
+  requireBotSourceScope() {
+    // The resident collector admits one in-flight request. Use one combined
+    // fixture; parallel graphs and bot pause/resume require separate support.
+    if (this.proofKind === 'zoom-bot' && (!Array.isArray(this.config.participants)
+        || this.config.participants.length !== 1 || (this.config.participants[0].kind ?? 'zoom') !== 'zoom'))
+      throw Error('bot_source_requires_one_zoom_participant');
   }
   run(signal, operation) {
     if (!(signal instanceof AbortSignal)) return Promise.reject(Error('source_signal_required'));
@@ -74,6 +92,7 @@ export class SourceGroup {
   connect({ signal } = {}) {
     if (this.connecting || this.connected) return Promise.reject(Error('sources_already_connected'));
     this.connecting = this.run(signal, async active => {
+      this.requireBotSourceScope();
       const registry = await this.call(active, () => this.registry(this.config.registry, { signal: active }));
       const sources = this.config.participants;
       if (!Array.isArray(sources) || sources.length < 1 || sources.length > 4
@@ -94,7 +113,7 @@ export class SourceGroup {
               observeProduct: this.observeProduct, resourceOwner: this.config.resourceOwner, signal: active });
           } else participant = await this.factory({ fixture, playwrightPath: this.config.playwrightPath,
             executionKind: this.executionKind, observeProduct: this.observeProduct, audioConnectedControl: source.audioConnectedControl,
-            resourceOwner: this.config.resourceOwner, signal: active });
+            resourceOwner: this.config.resourceOwner, signal: active, captureProof: clone(this.#captureProof) });
         }
         catch (error) {
           if (typeof error.closeParticipant === 'function') this.participants.push({ participant: { close: error.closeParticipant },
@@ -168,6 +187,35 @@ export class SourceGroup {
     });
     return phase;
   }
+  async verifyBotRecording(signal) {
+    const startedAtEpochMs = now(), deadline = AbortSignal.timeout(BOT_PROOF_MAX_AGE_MS);
+    const active = AbortSignal.any([signal, deadline]);
+    const request = Promise.resolve().then(() => {
+      check(active);
+      return this.participants[0].participant.verifyRecording({ signal: active });
+    });
+    // A producer may ignore cancellation. Keep its operation tracked even
+    // after timeout; late completion cannot revive the closed source group.
+    this.pending.add(request);
+    request.then(() => {}, () => {}).finally(() => this.pending.delete(request));
+    let aborted;
+    const cancelled = new Promise((_, reject) => {
+      aborted = () => reject(Error(deadline.aborted ? 'bot_monitor_timeout' : 'source_aborted'));
+      active.addEventListener('abort', aborted, { once: true });
+      if (active.aborted) aborted();
+    });
+    try {
+      const value = await Promise.race([request, cancelled]);
+      check(active);
+      this.evidence.botMonitoring.observations.push({ startedAtEpochMs, completedAtEpochMs: now(),
+        captureIdentity: value.captureIdentity });
+    } catch (error) {
+      this.evidence.botMonitoring.failure = { startedAtEpochMs, failedAtEpochMs: now(),
+        reason: deadline.aborted ? 'timeout' : 'recording_observation_failed' };
+      this.lifetime.abort(); // Immediately close owned source graphs, even if the read hangs.
+      throw error;
+    } finally { active.removeEventListener('abort', aborted); }
+  }
   observePhase(phase, states) {
     states.forEach((state, index) => {
       const media = state.media, source = phase.sources[index], fixture = this.participants[index].fixture;
@@ -205,12 +253,30 @@ export class SourceGroup {
   play({ signal, pause, resume, quietWindow } = {}) {
     if (!this.connected || this.playing) return Promise.reject(Error('sources_not_ready'));
     this.playing = this.run(signal, async active => {
+      if (this.proofKind === 'zoom-bot' && (quietWindow || pause || resume)) throw Error('bot_pause_resume_not_supported');
       if (quietWindow && (!Array.isArray(quietWindow) || quietWindow.length !== 2 || !quietWindow.every(Number.isFinite)
           || quietWindow[0] <= 0 || quietWindow[1] <= quietWindow[0] || typeof pause !== 'function' || typeof resume !== 'function'
           || this.participants.some(p => quietWindow[1] >= p.fixture.frames / p.fixture.sampleRate))) throw Error('invalid_quiet_window');
-      let phase = await this.schedulePhase('initial', active), paused = false, states;
+      let watchdog;
+      const armWatchdog = () => {
+        if (this.proofKind !== 'zoom-bot') return;
+        clearTimeout(watchdog);
+        const startedAtEpochMs = now();
+        watchdog = setTimeout(() => {
+          this.evidence.botMonitoring.failure ??= { startedAtEpochMs, failedAtEpochMs: now(), reason: 'supervision_watchdog' };
+          this.lifetime.abort();
+        }, BOT_SUPERVISION_WATCHDOG_MS);
+      };
+      // A hung browser status/scheduling call must not suspend supervision.
+      // Only a completed fresh proof extends this independent source watchdog.
+      armWatchdog();
+      try {
+      let phase = await this.schedulePhase('initial', active), paused = false, states, lastBotRead = -Infinity;
       const deadline = performance.now() + Math.max(...this.participants.map(p => p.fixture.frames / p.fixture.sampleRate * 1000)) + 90000;
       while (performance.now() < deadline) {
+        if (this.proofKind === 'zoom-bot' && performance.now() - lastBotRead >= BOT_MONITOR_INTERVAL_MS) {
+          await this.verifyBotRecording(active); lastBotRead = performance.now(); armWatchdog();
+        }
         states = await this.all(active, ({ participant }) => participant.status({ signal: active }));
         this.observePhase(phase, states);
         if (quietWindow && !paused && states.every(s => s.media.offsetSeconds >= quietWindow[0])) {
@@ -238,6 +304,10 @@ export class SourceGroup {
           onsetSkewMs: p.onsetSkewMs, maximumAbsoluteOnsetErrorMs: p.maximumAbsoluteOnsetErrorMs, status: p.status,
           ...clone(p.sources[index]) })) }));
       return { executionKind: this.executionKind, sourceState: 'ended', measurements, ...clone(this.evidence) };
+      } catch (error) {
+        if (this.proofKind === 'zoom-bot') this.lifetime.abort();
+        throw error;
+      } finally { clearTimeout(watchdog); }
     });
     return this.playing;
   }

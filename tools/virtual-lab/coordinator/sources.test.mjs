@@ -5,6 +5,12 @@ import { SourceGroup, SOURCE_GRAPH_ONSET_TOLERANCE_MS, expectedSignalOffsetMs } 
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const signal = () => new AbortController().signal;
+function botProof() { return {kind:'zoom-bot',expected:{
+  runId:'00000000-0000-4000-8000-000000000001',collectorSHA256:'a'.repeat(64),startedAtEpochMs:1,
+  accountIdentitySHA256:'b'.repeat(64),patientRefSHA256:'c'.repeat(64),hostIdSHA256:'d'.repeat(64),
+  meetingIdSHA256:'e'.repeat(64),occurrenceDigest:'f'.repeat(64),doctorRef:'doctor_01m5sf17b2f54bfj1ctsfhgwcb',
+  appointmentRef:'appointment_01m5sf17b2f54bfj1ctsfhgwcb',meetingRecordRef:'zmtg_01m5sf17b2f54bfj1ctsfhgwcb',
+}}; }
 process.env.SCRIBE_SOURCE_GROUP_TEST_MEETING = 'https://zoom.us/j/synthetic-mock-only';
 function fixture(id = 'a', start = 1600) {
   const pcm = Buffer.alloc(64000 * 2);
@@ -18,6 +24,13 @@ function group(fixtures, factory) {
   return new SourceGroup(config(fixtures), async () => { throw Error('mock_product_not_used'); }, {
     createParticipant: factory,
     openFixtureRegistry: async () => ({ load: async ({ caseId }) => fixtures[Number(caseId.split('-')[1])] }),
+  });
+}
+function botGroup(f,p,overrides={}) {
+  const input={...config([f]),captureProof:botProof(),...overrides};
+  return new SourceGroup(input,()=>{}, {
+    openFixtureRegistry:async()=>({load:async()=>f}),
+    createParticipant:async options=>{assert.deepEqual(options.captureProof,input.captureProof);return p;},
   });
 }
 function participant(f, options = {}) {
@@ -62,6 +75,82 @@ test('source execution requires cancellation and test injection cannot emit live
   await assert.rejects(g.connect(), /source_signal_required/);
   assert.throws(() => new SourceGroup({ ...config([f]), executionKind: 'live' }, () => {}, { createParticipant: async () => p }), /execution_kind/);
   await g.cleanup();
+});
+
+test('bot SourceGroup passes the pinned proof, monitors admitted capture, and rejects unsupported mixes', async () => {
+  const f=fixture(),p=participant(f);let reads=0;
+  p.verifyRecording=async({signal})=>{assert.ok(signal instanceof AbortSignal);reads++;return {captureIdentity:'a'.repeat(64)};};
+  const g=botGroup(f,p);await g.connect({signal:signal()});
+  const result=await g.play({signal:signal()});assert.equal(reads,1);assert.equal(result.executionKind,'mock');
+  assert.equal(result.botMonitoring.observations[0].captureIdentity,'a'.repeat(64));await g.cleanup();
+  assert.throws(()=>botGroup(f,p,{participants:[{kind:'virtual-microphone'}]}),/one_zoom_participant/);
+  assert.throws(()=>botGroup(f,p,{participants:[{},{}]}),/one_zoom_participant/);
+  const h=botGroup(f,participant(f));await h.connect({signal:signal()});
+  await assert.rejects(h.play({signal:signal(),quietWindow:[.9,1.1]}),/bot_pause_resume_not_supported/);
+  assert.equal(h.participants[0].participant.schedules.length,0);await h.cleanup();
+});
+
+test('lost bot observation closes the admitted source and never restarts its fixture', async () => {
+  const f=fixture(),p=participant(f),failure=Error('collector_rejected');
+  p.verifyRecording=async()=>{throw failure;};const g=botGroup(f,p);await g.connect({signal:signal()});
+  await assert.rejects(g.play({signal:signal()}),error=>error===failure);await tick();
+  assert.equal(p.schedules.length,1);assert.ok(p.calls.includes('close'));
+  await assert.rejects(g.play({signal:signal()}),/sources_not_ready/);
+  const result=await g.cleanup();assert.equal(result.ownedResourcesSettled,true);
+  assert.equal(result.sourceEvidence.botMonitoring.failure.reason,'recording_observation_failed');
+});
+
+test('hung bot observation closes sources at deadline and late completion cannot revive them', async () => {
+  const f=fixture(),p=participant(f),entered=deferred(),late=deferred();let requestSignal;
+  p.verifyRecording=({signal})=>{requestSignal=signal;entered.resolve();return late.promise;};
+  const g=botGroup(f,p);await g.connect({signal:signal()});const keepAlive=setTimeout(()=>{},5000);
+  try {
+    const rejected=assert.rejects(g.play({signal:signal()}),/bot_monitor_timeout/);
+    await entered.promise;await rejected;await tick();
+    assert.equal(requestSignal.aborted,true);assert.ok(p.calls.includes('close'));
+    assert.equal(g.evidence.botMonitoring.failure.reason,'timeout');
+    let closed=false;const cleanup=g.cleanup().then(value=>{closed=true;return value;});
+    await tick();assert.equal(closed,false);late.resolve({captureIdentity:'a'.repeat(64)});
+    assert.equal((await cleanup).ownedResourcesSettled,true);assert.equal(p.schedules.length,1);
+    assert.equal(g.evidence.botMonitoring.observations.length,0);
+  } finally {clearTimeout(keepAlive);late.resolve({});}
+});
+
+test('bot monitoring continues after its first good read and stops on a later lost observation', async () => {
+  const f=fixture(),p=participant(f);let reads=0;
+  const originalStatus=p.status;
+  p.status=async()=>{const result=await originalStatus();if(p.schedules.length)
+    Object.assign(result.media,{playing:true,completed:false,offsetSeconds:1});return result;};
+  p.verifyRecording=async()=>{if(++reads===2)throw Error('later_observation_lost');return {captureIdentity:'a'.repeat(64)};};
+  const g=botGroup(f,p);await g.connect({signal:signal()});
+  await assert.rejects(g.play({signal:signal()}),/later_observation_lost/);
+  const result=await g.cleanup();assert.equal(reads,2);assert.ok(p.calls.includes('close'));
+  assert.equal(result.sourceEvidence.botMonitoring.observations.length,1);assert.equal(p.schedules.length,1);
+});
+
+test('independent bot watchdog stops audio when browser status stalls between good proofs', async () => {
+  const f=fixture(),p=participant(f),stalled=deferred(),entered=deferred();let reads=0;
+  const originalStatus=p.status;
+  p.status=async()=>{if(p.schedules.length){entered.resolve();await stalled.promise;}return originalStatus();};
+  p.verifyRecording=async()=>{reads++;return {captureIdentity:'a'.repeat(64)};};
+  const g=botGroup(f,p);await g.connect({signal:signal()});
+  const rejected=assert.rejects(g.play({signal:signal()}),/closed|source_aborted/);
+  await entered.promise;await new Promise(resolve=>setTimeout(resolve,3150));
+  assert.equal(reads,1);assert.ok(p.calls.includes('close'));
+  assert.equal(g.evidence.botMonitoring.failure.reason,'supervision_watchdog');
+  let complete=false;const cleanup=g.cleanup().then(value=>{complete=true;return value;});
+  await tick();assert.equal(complete,false);stalled.resolve();await rejected;
+  assert.equal((await cleanup).ownedResourcesSettled,true);assert.equal(p.schedules.length,1);
+});
+
+test('bot watchdog also covers a scheduling acknowledgement that never returns', async () => {
+  const f=fixture(),p=participant(f),stalled=deferred(),entered=deferred();const schedule=p.schedule;
+  p.schedule=async options=>{const value=await schedule(options);entered.resolve();await stalled.promise;return value;};
+  const g=botGroup(f,p);await g.connect({signal:signal()});
+  const rejected=assert.rejects(g.play({signal:signal()}),/source_aborted/);
+  await entered.promise;await new Promise(resolve=>setTimeout(resolve,3150));
+  assert.ok(p.calls.includes('close'));assert.equal(g.evidence.botMonitoring.failure.reason,'supervision_watchdog');
+  stalled.resolve();await rejected;assert.equal((await g.cleanup()).ownedResourcesSettled,true);
 });
 
 test('cleanup waits for late participant creation and closes it before returning', async () => {
