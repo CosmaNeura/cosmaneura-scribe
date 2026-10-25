@@ -100,6 +100,27 @@ export function validateAuthorizationScope(value, authorization) {
   return scope;
 }
 
+/** A short-lived UI arm derived from the same nonce-bound host observation.
+ * It grants no new scope and is checked again at the exact normal POST. */
+export function makeAuthorizationWindow(value, config, request, options) {
+  const bound = validateHostObservation(value, config, request, options);
+  validateAuthorizationScope(bound, config.authorization);
+  need(bound.bindingState === 'CONNECTED_TO_EXPECTED_HOST', 'zoom_connection_required');
+  return Object.freeze({ runId: config.runId, requestNonce: request.requestNonce,
+    hostObservationSHA256: sha256(JSON.stringify(projectHostObservation(bound))),
+    observedAtEpochMs: bound.observedAtEpochMs, expiresAtEpochMs: bound.observedAtEpochMs + 120000,
+    hostIdSHA256: bound.scope.hostIdSHA256, doctorRef: config.doctorRef,
+    meetingRecordRef: config.authorization.meetingRecordRef, appointmentRef: config.authorization.appointmentRef });
+}
+
+export function validAuthorizationWindow(value, config, now = Date.now()) {
+  return value?.runId === config.runId && uuid(value.requestNonce) && digest(value.hostObservationSHA256)
+    && value.hostIdSHA256 === sha256(config.hostId) && value.doctorRef === config.doctorRef
+    && value.meetingRecordRef === config.authorization?.meetingRecordRef && value.appointmentRef === config.authorization?.appointmentRef
+    && Number.isFinite(now) && Number.isFinite(value.observedAtEpochMs) && value.observedAtEpochMs <= now + 5000
+    && value.expiresAtEpochMs === value.observedAtEpochMs + 120000 && now <= value.expiresAtEpochMs;
+}
+
 /** Dedicated future bot-note tuple. It deliberately has no native session ID
  * and does not turn automatic server persistence into a manual Save gate. */
 export function projectBotNote(data, { doctorRef, appointmentRef, transcriptRef }) {

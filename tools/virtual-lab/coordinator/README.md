@@ -176,6 +176,13 @@ doctor is refused. The collector's scoped source query and deployment check
 must be pinned inside its script. Its ≤120s observation-age allowance and ±5s
 wall-clock skew allowance are engineering bounds, not measured clock precision.
 Immediate normal Clerk and inactive view-as checks precede the UI mutation.
+The same nonce-bound host/synthetic-scope observation is revalidated immediately
+before authorization. Its expiry is passed to the UI and checked after the
+dialog wait and at the exact POST; expiration blocks the request without a
+collector requery or another authorization attempt. A Settings/ViewAs request
+or main-frame navigation invalidates the browser mutation permit immediately;
+the POST also checks the captured response/navigation generations and the
+unchanged 15-second identity freshness limit.
 
 For action authorize, also supply exact `authorization` keys: `meetingId`
 (numeric Zoom ID), `meetingRecordRef` (zmtg), `appointmentRef`, and explicitly
@@ -189,9 +196,14 @@ block new authorization. No mocked or filtered network response is supplied.
 Each mutation intent is fsynced before its normal UI click. Resume verifies
 configuration, tooling and every observation hash, inspects fresh owned browser
 process absence, and reconciles Settings/Schedule plus the collector. It never
-replays an uncertain Connect or authorization intent. Complete the normal OAuth
-step for the same account, then resume; unresolved authorization needs explicit
-normal UI inspection. Changing tooling/configuration requires a new run after
+replays an uncertain Connect or authorization intent. A bounded OAuth timeout
+closes the owned browser and reports `OAUTH_INCOMPLETE_BROWSER_CLOSED` (or
+`OAUTH_INCOMPLETE_CLEANUP_UNCONFIRMED` if its closure cannot be proved). This is
+not browser-session resumption: `zoom-resume` only checks whether a separately
+completed normal OAuth connection now exists. An unconnected account needs a
+separate explicit normal OAuth action through its normal Settings UI, or a new
+authorized run after ownership settlement; the existing pending intent is never
+replayed. Unresolved authorization needs explicit normal UI inspection. Changing tooling/configuration requires a new run after
 owned-resource settlement. The per-host mutex is shared across output paths;
 dead-owner recovery is allowed only for the exact same run. Missing process
 identity or uncertain collector transport retains the guard. Never delete it

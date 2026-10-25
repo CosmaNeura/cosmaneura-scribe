@@ -10,8 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { runZoomBot, validateZoomConfig, collectZoomHost, ZOOM_BUDGETS } from './zoom-bot.mjs';
 import { sha256 } from './journal.mjs';
 import { projectAuthorization, projectBotNote, projectHostObservation, projectSchedule,
-  validateAuthorizationScope, validateHostObservation } from './zoom-bot-evidence.mjs';
-import { LatestReply, normalHostedScope, readZoomIdentity, requestPolicy } from './zoom-bot-ui.mjs';
+  makeAuthorizationWindow, validateAuthorizationScope, validateHostObservation } from './zoom-bot-evidence.mjs';
+import { LatestReply, currentMutationPermit, normalHostedScope, readZoomIdentity, requestPolicy } from './zoom-bot-ui.mjs';
 
 const typed = (prefix, digit = '0') => `${prefix}_${digit.repeat(26)}`;
 const authorization = () => ({ meetingId: '12345678901', meetingRecordRef: typed('zmtg'), appointmentRef: typed('appointment'),
@@ -56,7 +56,7 @@ function portsFor(config, options = {}) {
     collect: async (_, request) => hostValue(config, request, connected),
     open: async () => ({
       profile: async () => profile(),
-      connect: async () => { calls.connect++; if (options.checkpoint) return { status: 'OAUTH_CHECKPOINT' }; connected = true; return { status: 'OAUTH_RETURNED' }; },
+      connect: async () => { calls.connect++; if (options.checkpoint) return { status: 'OAUTH_INCOMPLETE', reason: 'normal_reviewer_authentication_required' }; connected = true; return { status: 'OAUTH_RETURNED' }; },
       schedule: async () => ({ ...profile(), meeting: { captureAuthorized: enabled, appointmentRef: enabled ? config.authorization.appointmentRef : null,
         meetingRecordRef: config.authorization.meetingRecordRef, meetingIdSHA256: sha256(config.authorization.meetingId), status: options.started ? 'started' : 'scheduled' } }),
       authorize: async () => { calls.authorize++; enabled = true; if (options.failAuthorize) throw Error('zoom_test_lost_reply'); return { status: 200,
@@ -80,7 +80,10 @@ test('normal request boundary denies broad lists, wrong origin and all unrequest
   assert.equal(requestPolicy('https://production.example/internal/v1/settings', 'GET', null, boundary), false);
   const url = `${origin}/internal/v1/schedule/${config.authorization.meetingId}/authorize-capture`, body = JSON.stringify({ appointment_id: config.authorization.appointmentRef });
   assert.equal(requestPolicy(url, 'POST', body, boundary), false);
-  boundary.listsAllowed = true; assert.equal(requestPolicy(url, 'POST', body, boundary), true);
+  boundary.listsAllowed = true;
+  const request = { requestNonce: randomUUID(), createdAtEpochMs: Date.now() };
+  boundary.authorizationWindow = makeAuthorizationWindow(hostValue(config, request, true), config, request);
+  assert.equal(requestPolicy(url, 'POST', body, boundary), true);
   assert.equal(requestPolicy(url, 'POST', JSON.stringify({ appointment_id: config.authorization.appointmentRef, extra: 1 }), boundary), false);
   boundary.postUsed = true; assert.equal(requestPolicy(url, 'POST', body, boundary), false);
   assert.equal(requestPolicy(origin + '/internal/v1/zoom-connect', 'DELETE', null, boundary), false);
@@ -150,12 +153,12 @@ test('profile doctor performs observations, closes owned UI, and never qualifies
   assert.equal(state.botMedia, 'NOT_RUN'); assert.equal(state.manualSave, 'NOT_AVAILABLE');
   assert.equal(ports.calls.connect, 0); assert.equal(ports.calls.close, 1); assert.equal(state.guardRetained, false);
 });
-test('OAuth checkpoint resume reconciles without a repeated Connect click', async () => {
+test('closed OAuth browser is incomplete and resume only reconciles an external normal completion', async () => {
   const data = await fixture('connect'), ports = portsFor(data.config, { checkpoint: true });
   const state = await runZoomBot({ ...data, signal: signal(), ports });
-  assert.equal(state.status, 'OAUTH_CHECKPOINT'); assert.equal(ports.calls.connect, 1);
+  assert.equal(state.status, 'OAUTH_INCOMPLETE_BROWSER_CLOSED'); assert.equal(state.oauth.reason, 'normal_oauth_incomplete_browser_closed'); assert.equal(state.oauth.browserSessionResumable, false); assert.equal(ports.calls.connect, 1);
   const resumed = await runZoomBot({ ...data, command: 'resume', signal: signal(), ports });
-  assert.equal(resumed.status, 'OAUTH_CHECKPOINT'); assert.equal(ports.calls.connect, 1);
+  assert.equal(resumed.status, 'OAUTH_INCOMPLETE_BROWSER_CLOSED'); assert.equal(resumed.oauth.browserSessionResumable, false); assert.equal(ports.calls.connect, 1);
   const completed = await runZoomBot({ ...data, command: 'resume', signal: signal(), ports: portsFor(data.config, { connected: true }) });
   assert.equal(completed.status, 'CONNECTED_OBSERVED'); assert.equal(completed.pending, null);
 });
@@ -262,4 +265,62 @@ ports:{inspect:async()=>{},open:async()=>{process.exit(29)}}});\n`);
   const before = JSON.parse(await readFile(resolve(data.output, 'zoom-run.json'))); assert.equal(before.runIdentity.runId, data.config.runId);
   const resumed = await runZoomBot({ ...data, command: 'resume', signal: signal(), ports: portsFor(data.config) });
   assert.equal(resumed.status, 'MOCK_PROFILE_OBSERVED'); assert.equal(resumed.guardRetained, false);
+});
+
+test('authorization refuses a host observation that expires during final profile and schedule', async t => {
+  let now = 1000000; t.mock.method(Date, 'now', () => now);
+  const data = await fixture('authorize'), ports = portsFor(data.config), open = ports.open;
+  let profiles = 0, schedules = 0;
+  ports.open = async (...args) => {
+    const ui = await open(...args), profile = ui.profile, schedule = ui.schedule;
+    ui.profile = async () => { if (++profiles === 2) now += 61000; return profile(); };
+    ui.schedule = async (...values) => { if (++schedules === 2) now += 61000; return schedule(...values); };
+    return ui;
+  };
+  const state = await runZoomBot({ ...data, signal: signal(), ports });
+  assert.equal(state.status, 'FAIL'); assert.equal(state.failureCode, 'zoom_collector_observation_stale');
+  assert.equal(ports.calls.authorize, 0);
+});
+test('exact authorization POST refuses an expired, missing or foreign host window', async () => {
+  const { config } = await fixture('authorize'), now = 1000000;
+  const window = { runId: config.runId, requestNonce: randomUUID(), hostObservationSHA256: 'a'.repeat(64),
+    observedAtEpochMs: now, expiresAtEpochMs: now + 120000, hostIdSHA256: sha256(config.hostId),
+    doctorRef: config.doctorRef, meetingRecordRef: config.authorization.meetingRecordRef, appointmentRef: config.authorization.appointmentRef };
+  const url = `${config.apiOrigin}/internal/v1/schedule/${config.authorization.meetingId}/authorize-capture`,
+    body = JSON.stringify({ appointment_id: config.authorization.appointmentRef }),
+    boundary = { config, action: 'authorize', listsAllowed: true, postUsed: false, authorizationWindow: window, now: now + 120001 };
+  assert.equal(requestPolicy(url, 'POST', body, boundary), false);
+  assert.equal(requestPolicy(url, 'POST', body, { ...boundary, now, authorizationWindow: undefined }), false);
+  assert.equal(requestPolicy(url, 'POST', body, { ...boundary, now, authorizationWindow: { ...window, doctorRef: typed('doctor', '1') } }), false);
+  assert.equal(requestPolicy(url, 'POST', body, { ...boundary, now }), true);
+});
+
+test('OAuth browser cleanup uncertainty is never labeled closed', async () => {
+  const data = await fixture('connect'), ports = portsFor(data.config, { checkpoint: true, settled: false });
+  const state = await runZoomBot({ ...data, signal: signal(), ports });
+  assert.equal(state.status, 'OAUTH_INCOMPLETE_CLEANUP_UNCONFIRMED');
+  assert.equal(state.oauth.reason, 'owned_browser_cleanup_unconfirmed'); assert.equal(state.guardRetained, true);
+});
+
+test('authorization identity permit expires on Settings, ViewAs or navigation generation changes', () => {
+  const settings = new LatestReply(), viewAs = new LatestReply(), doctorRef = typed('doctor'), now = 1000000,
+    config = { doctorRef, identitySHA256: sha256('current user') };
+  const settingsValue = { doctorRef, observedAtEpochMs: now }, viewValue = { observedAtEpochMs: now,
+    actor: { doctorRef: null, active: false, targetPresent: false, canViewAs: false, readOnly: false, requestBinding: 'inactive' } };
+  settings.finish(settings.begin(), settingsValue); viewAs.finish(viewAs.begin(), viewValue);
+  const permit = { identitySHA256: config.identitySHA256, observedAtEpochMs: now, navigationSequence: 3,
+    responseSequences: { settings: settings.sequence, viewAs: viewAs.sequence } },
+    context = { settings, viewAs, navigationSequence: 3, config, now };
+  assert.equal(currentMutationPermit(permit, context), true);
+  assert.equal(currentMutationPermit(permit, { ...context, now: NaN }), false);
+  assert.equal(currentMutationPermit(permit, { ...context, now: now + 15001 }), false);
+  assert.equal(currentMutationPermit(permit, { ...context, navigationSequence: 4 }), false);
+  const old = settings.sequence; settings.begin();
+  assert.equal(currentMutationPermit(permit, context), false);
+  settings.finish(old, settingsValue); assert.equal(currentMutationPermit(permit, context), false);
+  settings.finish(settings.sequence, settingsValue); assert.equal(currentMutationPermit(permit, context), false);
+  const next = { ...permit, responseSequences: { settings: settings.sequence, viewAs: viewAs.sequence } };
+  assert.equal(currentMutationPermit(next, context), true);
+  viewAs.finish(viewAs.begin(), { ...viewValue, actor: { ...viewValue.actor, active: true } });
+  assert.equal(currentMutationPermit(next, context), false);
 });

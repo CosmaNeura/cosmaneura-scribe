@@ -7,7 +7,7 @@ import { hostname } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { atomicJSON, sha256 } from './journal.mjs';
 import { matchingParticipantProcesses } from '../zoom/resource-owner.mjs';
-import { code, projectAuthorization, projectSchedule, typeId } from './zoom-bot-evidence.mjs';
+import { code, projectAuthorization, projectSchedule, typeId, validAuthorizationWindow } from './zoom-bot-evidence.mjs';
 
 const exec = promisify(execFile);
 export const ZOOM_DASHBOARD = 'https://staging-app.cosmaneura.com';
@@ -20,7 +20,7 @@ async function boundedJSON(response) {
 
 /** Normal UI requests only. Authorize one exact POST once; never grant a
  * general API capability, issue a fetch, or substitute a filtered response. */
-export function requestPolicy(url, method, body, { config, action, listsAllowed, postUsed }) {
+export function requestPolicy(url, method, body, { config, action, listsAllowed, postUsed, authorizationWindow, now = Date.now() }) {
   const parsed = new URL(url), path = parsed.pathname, authorization = config.authorization;
   if (!path.startsWith('/internal/') && !path.startsWith('/external/')) {
     if (parsed.origin === ZOOM_DASHBOARD && /^\/(notes|patients|schedule)(\/|$)/.test(path))
@@ -35,7 +35,8 @@ export function requestPolicy(url, method, body, { config, action, listsAllowed,
     || action === 'authorize' && (path === '/internal/v1/schedule'
       || listsAllowed && ['/internal/v1/notes', '/internal/v1/patients'].includes(path));
   if (method !== 'POST' || action !== 'authorize' || !listsAllowed || postUsed
-    || path !== `/internal/v1/schedule/${authorization?.meetingId}/authorize-capture`) return false;
+    || path !== `/internal/v1/schedule/${authorization?.meetingId}/authorize-capture`
+    || !validAuthorizationWindow(authorizationWindow, config, now)) return false;
   try { const value = JSON.parse(body); return Object.keys(value).length === 1 && value.appointment_id === authorization.appointmentRef; }
   catch { return false; }
 }
@@ -60,6 +61,15 @@ export function normalHostedScope(settings, viewAs, doctorRef, now = Date.now())
     canViewAs: view.canViewAs, viewAsActorPresent: view.doctorRef !== null, readOnly: false, requestBinding: 'inactive' };
 }
 
+export function currentMutationPermit(permit, { settings, viewAs, navigationSequence, config, now = Date.now() }) {
+  if (!permit || !Number.isFinite(now) || permit.navigationSequence !== navigationSequence
+    || permit.responseSequences?.settings !== settings.sequence || permit.responseSequences?.viewAs !== viewAs.sequence
+    || permit.identitySHA256 !== config.identitySHA256 || !Number.isFinite(permit.observedAtEpochMs)
+    || permit.observedAtEpochMs > now + 50 || now - permit.observedAtEpochMs > 15000) return false;
+  try { normalHostedScope(settings.value, viewAs.value, config.doctorRef, now); return true; }
+  catch { return false; }
+}
+
 export async function readZoomIdentity({ page, settings, viewAs, work, config, signal, clock = Date.now }) {
   signal.throwIfAborted();
   await page.waitForFunction(() => Boolean(window.Clerk?.loaded && window.Clerk?.user?.id && window.Clerk?.session?.id));
@@ -75,7 +85,8 @@ export async function readZoomIdentity({ page, settings, viewAs, work, config, s
       const actor = normalHostedScope(settings.value, viewAs.value, config.doctorRef, clock());
       if (typeof value.user !== 'string' || typeof value.session !== 'string' || !value.session
         || sha256(value.user) !== config.identitySHA256) throw Error('zoom_hosted_actor_mismatch');
-      return { identitySHA256: sha256(value.user), sessionSHA256: sha256(value.session), actor, observedAtEpochMs: clock() };
+      return { identitySHA256: sha256(value.user), sessionSHA256: sha256(value.session), actor, observedAtEpochMs: clock(),
+        responseSequences: { settings: generation[0], viewAs: generation[1] } };
     }
     await new Promise(resolveWait => setTimeout(resolveWait, 25));
   }
@@ -106,7 +117,7 @@ export async function openZoomUI({ config, output, runIdentity, signal }) {
   let server, browser, page, closePromise, owner;
   const resourceId = randomUUID(), marker = `--scribe-virtual-lab-owner=${resourceId}`;
   const ownerPath = resolve(output, `browser-owner-${resourceId}.json`), work = new Set();
-  let action = 'profile', listsAllowed = false, postUsed = false, authFresh = false;
+  let action = 'profile', listsAllowed = false, postUsed = false, authPermit = null, authorizationWindow = null, navigationSequence = 0;
   const settings = new LatestReply(), viewAs = new LatestReply(), schedule = new LatestReply(), authorization = new LatestReply();
   const sequences = new WeakMap(), responses = [], blocked = [];
   const onAbort = () => { void close().catch(() => {}); };
@@ -141,8 +152,9 @@ export async function openZoomUI({ config, output, runIdentity, signal }) {
     page = await context.newPage(); page.setDefaultTimeout(config.uiTimeoutMs);
     await context.route('**/*', async route => {
       const request = route.request(), method = request.method(), path = new URL(request.url()).pathname;
-      const allowed = requestPolicy(request.url(), method, request.postData(), { config, action, listsAllowed, postUsed });
-      if (!allowed || method === 'POST' && path.includes('/authorize-capture') && !authFresh) {
+      const allowed = requestPolicy(request.url(), method, request.postData(), { config, action, listsAllowed, postUsed, authorizationWindow });
+      if (!allowed || method === 'POST' && path.includes('/authorize-capture')
+        && !currentMutationPermit(authPermit, { settings, viewAs, navigationSequence, config })) {
         if (blocked.length < 100) blocked.push({ method, path, action: 'blocked' });
         await route.abort('blockedbyclient'); return;
       }
@@ -158,10 +170,15 @@ export async function openZoomUI({ config, output, runIdentity, signal }) {
       if (config.authorization && parsed.pathname === `/internal/v1/schedule/${config.authorization.meetingId}/authorize-capture`) return authorization;
       return null;
     };
+    const navigationChanged = () => { navigationSequence++; authPermit = null; settings.begin(); viewAs.begin(); };
     page.on('request', request => {
+      if (request.isNavigationRequest() && request.frame() === page.mainFrame()) navigationChanged();
       const target = targetFor(request);
-      if (target === viewAs) authFresh = false;
+      if (target === settings || target === viewAs) authPermit = null;
       if (target) sequences.set(request, { target, sequence: target.begin() });
+    });
+    page.on('framenavigated', frame => {
+      if (frame === page.mainFrame()) navigationChanged();
     });
     page.on('response', response => {
       const request = response.request(), item = sequences.get(request); if (!item) return;
@@ -188,14 +205,17 @@ export async function openZoomUI({ config, output, runIdentity, signal }) {
       work.add(pending); pending.finally(() => work.delete(pending));
     });
     async function identity() {
-      authFresh = false;
+      authPermit = null;
+      const observedNavigation = navigationSequence;
       const value = await readZoomIdentity({ page, settings, viewAs, work, config, signal });
+      const permit = { ...value, navigationSequence: observedNavigation };
+      if (!currentMutationPermit(permit, { settings, viewAs, navigationSequence, config })) throw Error('zoom_hosted_actor_mismatch');
       if (responses.length < 100) responses.push({ source: 'normal-hosted-clerk-state', identitySHA256: value.identitySHA256,
         sessionSHA256: value.sessionSHA256, observedAtEpochMs: value.observedAtEpochMs });
-      authFresh = true; return value;
+      authPermit = permit; return value;
     }
     async function profile() {
-      action = 'profile'; authFresh = false;
+      action = 'profile'; authPermit = null;
       settings.begin(); viewAs.begin();
       const waiter = page.waitForResponse(response => response.url() === `${config.apiOrigin}/internal/v1/settings`);
       void waiter.catch(() => {});
@@ -218,25 +238,29 @@ export async function openZoomUI({ config, output, runIdentity, signal }) {
         try {
           await page.waitForURL(url => url.origin === ZOOM_DASHBOARD && url.pathname === '/settings', { timeout: config.oauthTimeoutMs, waitUntil: 'domcontentloaded' });
           if (!settings.value?.connected) await page.getByText('Connected', { exact: true }).waitFor({ timeout: config.oauthTimeoutMs });
-        } catch { signal.throwIfAborted(); return { status: 'OAUTH_CHECKPOINT', reason: 'normal_reviewer_authentication_required', observedAtEpochMs: Date.now() }; }
+        } catch { signal.throwIfAborted(); return { status: 'OAUTH_INCOMPLETE', reason: 'normal_reviewer_authentication_required', observedAtEpochMs: Date.now() }; }
         return { status: 'OAUTH_RETURNED', observedAtEpochMs: Date.now() };
       },
       async schedule({ allowLists = false } = {}) {
         await profile();
-        action = 'authorize'; listsAllowed = allowLists; authFresh = false;
+        action = 'authorize'; listsAllowed = allowLists; authPermit = null;
         const waiter = page.waitForResponse(response => response.url() === `${config.apiOrigin}/internal/v1/schedule`); void waiter.catch(() => {});
         await page.goto(`${ZOOM_DASHBOARD}/schedule/${config.authorization.meetingId}`, { waitUntil: 'domcontentloaded' }); await waiter;
         const account = await identity(); await Promise.allSettled([...work]);
         if (!schedule.value?.meeting) throw Error(schedule.value?.failureCode ?? 'zoom_schedule_not_observed');
         return { ...schedule.value, ...account };
       },
-      async authorize() {
+      async authorize({ hostWindow } = {}) {
         if (!listsAllowed || postUsed) throw Error('zoom_authorization_not_armed');
+        const requireHostWindow = () => { if (!validAuthorizationWindow(authorizationWindow, config)) throw Error('zoom_authorization_host_window_expired'); };
+        authorizationWindow = hostWindow ? Object.freeze({ ...hostWindow }) : null;
+        requireHostWindow();
         await identity();
         await page.getByRole('button', { name: 'Enable meeting bot', exact: true }).click();
         await page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Select the appointment', exact: true }) }).waitFor();
         await page.locator('#capture-appointment').selectOption(config.authorization.appointmentRef);
         await identity();
+        requireHostWindow();
         await page.getByRole('button', { name: 'Confirm and enable', exact: true }).click();
         await page.getByText('Cosmas meeting bot enabled', { exact: true }).first().waitFor();
         await Promise.allSettled([...work]);

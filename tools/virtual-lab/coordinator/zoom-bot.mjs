@@ -6,7 +6,7 @@ import { hostname, tmpdir } from 'node:os';
 import { atomicJSON, sha256 } from './journal.mjs';
 import { acquireGuard, publishExclusiveJSON, releaseGuard, sameRunIdentity } from './guard.mjs';
 import { implementationReceipt } from './tool-identity.mjs';
-import { code, digest, projectHostObservation, typeId, uuid, validateAuthorizationScope, validateHostObservation } from './zoom-bot-evidence.mjs';
+import { code, digest, makeAuthorizationWindow, projectHostObservation, typeId, uuid, validateAuthorizationScope, validateHostObservation } from './zoom-bot-evidence.mjs';
 import { inspectZoomBrowsers, openZoomUI } from './zoom-bot-ui.mjs';
 
 export const ZOOM_BUDGETS = Object.freeze({ uiTimeoutMs: 30000, oauthTimeoutMs: 120000, collectorTimeoutMs: 240000 });
@@ -127,6 +127,10 @@ export async function runZoomBot({ configPath, output, command = 'run', signal, 
       && typeof value.settings?.connected === 'boolean' && !value.settings.failureCode, 'zoom_profile_identity_unconfirmed');
     return value;
   };
+  const oauthIncomplete = cause => {
+    state.status = 'OAUTH_INCOMPLETE';
+    state.oauth = { cause, browserSessionResumable: false, resumeBehavior: 'reconcile_external_normal_connection_only' };
+  };
   try {
     requireValue(sha256(await readFile(statePath)) === sha256(initialBytes), 'zoom_journal_changed_before_guard');
     requireValue(!collectorUncertain, 'zoom_collector_prior_transport_unconfirmed');
@@ -143,8 +147,8 @@ export async function runZoomBot({ configPath, output, command = 'run', signal, 
     if (command === 'doctor' || config.action === 'profile') {
       state.status = config.executionKind === 'live' ? 'PROFILE_OBSERVED' : 'MOCK_PROFILE_OBSERVED';
     } else if (config.action === 'connect') {
-      if (connected()) { state.pending = null; state.status = 'CONNECTED_OBSERVED'; }
-      else if (state.pending) state.status = 'OAUTH_CHECKPOINT';
+      if (connected()) { state.pending = null; delete state.oauth; state.status = 'CONNECTED_OBSERVED'; }
+      else if (state.pending) oauthIncomplete('normal_oauth_connection_not_observed');
       else {
         // The management/DB collector can take longer than the browser scope's
         // 15-second freshness window. Refresh through normal UI before Connect.
@@ -153,12 +157,12 @@ export async function runZoomBot({ configPath, output, command = 'run', signal, 
         requireValue(current.settings.connected === false && binding.bindingState === 'UNBOUND', 'zoom_profile_binding_changed_before_connect');
         state.pending = { action: 'connect', intentId: randomUUID(), atEpochMs: Date.now() }; await persist();
         await onCheckpoint({ status: 'OAUTH_USER_CHECKPOINT', account: config.account, runId: config.runId,
-          instruction: 'Complete normal ZoomReviewer sign-in and consent in the owned browser; no password or token is collected by the runner.' });
+          instruction: 'Complete normal ZoomReviewer sign-in and consent within this bounded wait. The owned browser closes afterward; resume only checks an externally completed normal connection.' });
         const result = await ui.connect(); await observe('oauth', result);
-        if (result.status === 'OAUTH_CHECKPOINT') state.status = 'OAUTH_CHECKPOINT';
+        if (result.status === 'OAUTH_INCOMPLETE') oauthIncomplete(result.reason);
         else {
           current = await profile(); binding = await host();
-          requireValue(connected(), 'zoom_oauth_binding_unconfirmed'); state.pending = null; state.status = 'CONNECTED_OBSERVED';
+          requireValue(connected(), 'zoom_oauth_binding_unconfirmed'); state.pending = null; delete state.oauth; state.status = 'CONNECTED_OBSERVED';
         }
       }
     } else {
@@ -179,7 +183,11 @@ export async function runZoomBot({ configPath, output, command = 'run', signal, 
         schedule = await observe('schedule', await ui.schedule({ allowLists: true }));
         requireValue(schedule.meeting?.status === 'scheduled' && schedule.meeting.captureAuthorized === false, 'zoom_meeting_changed_before_authorization');
         state.pending = { action: 'authorize', intentId: randomUUID(), atEpochMs: Date.now() }; await persist();
-        await observe('authorization', await ui.authorize());
+        // All intervening profile, schedule and journal work may consume the
+        // host receipt's lifetime. Revalidate the exact bound receipt now; the
+        // UI checks this same window again after its dialog and at the POST.
+        const hostWindow = makeAuthorizationWindow(binding, config, latestHostRequest);
+        await observe('authorization', await ui.authorize({ hostWindow }));
         schedule = await observe('schedule', await ui.schedule({ allowLists: false }));
         requireValue(enabled(), 'zoom_authorization_not_reconciled');
         state.pending = null; state.status = 'AUTHORIZATION_OBSERVED';
@@ -195,6 +203,12 @@ export async function runZoomBot({ configPath, output, command = 'run', signal, 
     }
     cleanup.collectorTransportUncertain = collectorUncertain;
     state.cleanup = cleanup; state.guardRetained = cleanup.ownedResourcesSettled !== true || collectorUncertain;
+    if (state.status === 'OAUTH_INCOMPLETE') {
+      const closed = cleanup.ownedResourcesSettled === true;
+      state.status = closed ? 'OAUTH_INCOMPLETE_BROWSER_CLOSED' : 'OAUTH_INCOMPLETE_CLEANUP_UNCONFIRMED';
+      state.oauth.reason = closed ? 'normal_oauth_incomplete_browser_closed' : 'owned_browser_cleanup_unconfirmed';
+      state.oauth.explanation = 'Resume reconciles a separately completed normal OAuth connection; it does not resume the original browser. An unconnected account needs a separate explicit normal OAuth action.';
+    }
     state.completedAtEpochMs = Date.now(); await persist();
     state.attempts.push({ attemptId: owner.attemptId, status: state.status, failureCode: state.failureCode,
       pending: state.pending, cleanup, completedAtEpochMs: state.completedAtEpochMs }); await persist();
