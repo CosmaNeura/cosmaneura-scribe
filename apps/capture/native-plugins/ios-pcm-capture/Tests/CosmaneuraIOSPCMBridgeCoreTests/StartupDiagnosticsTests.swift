@@ -197,3 +197,35 @@ extension StartupDiagnosticsTests {
     #expect(next.allSatisfy { $0["dropped_events"] as? Int == 1 })
   }
 }
+
+extension StartupDiagnosticsTests {
+  @Test func terminalReasonsKeepTheirOwnAllowanceAndFixedMetadataContract() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let file = directory.appendingPathComponent("diagnostics.json"), journal = PCMStartupDiagnostics()
+    journal.configure(destination: file); journal.record(.startRequested)
+    for _ in 0..<130 { journal.record(.engineStarted) }
+    await journal.flush()
+    for code in [PCMTerminationCode.interruption, .routeChanged, .backgrounded, .heartbeatExpired,
+      .permissionRevoked, .captureFailed, .invalidPCM, .bufferOverflow, .outputLimitExceeded, .sinkFailed] {
+      journal.recordTermination(code)
+    }
+    for reason in [PCMWindowCloseReason.authorityExpired, .frameLimit, .interruption, .routeChanged] {
+      journal.recordWindowClose(reason)
+    }
+    journal.record(.continuationSourceRetired); journal.record(.finalizationStorageFailed)
+    journal.record(.physicalStopRejected); journal.record(.sourceStopRejected)
+    await journal.flush()
+    let rows = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [[String: Any]])
+    #expect(rows.suffix(18).compactMap { $0["event"] as? String } == [
+      "interrupted", "routeChanged", "backgrounded", "pcmHeartbeatExpired", "permissionRevoked",
+      "captureFailed", "pcmInvalidInput", "pcmBufferOverflow", "pcmOutputLimit", "pcmSinkFailed",
+      "windowAuthorityExpired", "windowFrameLimit", "windowInterrupted", "windowRouteChanged",
+      "continuationSourceRetired", "finalizationStorageFailed", "physicalStopRejected", "sourceStopRejected",
+    ])
+    #expect(rows.allSatisfy { Set($0.keys) == ["utc", "event", "clock", "monotonic_ns", "capture_attempt", "dropped_events"] })
+    let bytes = try Data(contentsOf: file)
+    #expect(rows.count <= 128 && bytes.count <= 32_768)
+  }
+}

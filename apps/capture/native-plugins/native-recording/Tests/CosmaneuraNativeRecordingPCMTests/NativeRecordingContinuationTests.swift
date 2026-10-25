@@ -417,8 +417,13 @@ import XCTest
   }
 
   func testExplicitCoreDenialStopsBeforeTheOldDeadline() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let file = directory.appendingPathComponent("diagnostics.json"), diagnostics = PCMStartupDiagnostics()
+    diagnostics.configure(destination: file)
     let f = try ContinuationFixture()
-    let owner = try await f.open()
+    let owner = try await f.open(diagnostics: diagnostics)
     try await f.driver.offer(800)
     f.clock.advance(780)  // Two minutes of the old window still remain.
     await f.service.denyNextLease()
@@ -430,6 +435,9 @@ import XCTest
     assertEqual(state.capture.committedChunks, 0)
     assertEqual(f.records.encryptedCount, 0)
     assertEqual(await f.driver.releases, 1)
+    await diagnostics.flush()
+    let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [[String: Any]])
+    XCTAssertEqual(rows.compactMap { $0["event"] as? String }, ["continuationSourceRetired"])
   }
 
   func testReservationRetryRetainsLeaseAndRangeWhileAudioProgresses() async throws {
@@ -975,7 +983,8 @@ private struct ContinuationConsent: MicrophonePermissionAuthorizing {
       sourceClock: clock, validateActiveSource: { [fence] in try await fence.validate() },
       finalizeCapturedAudio: { [fence] write in try await fence.finalize(write) })
   }
-  func open(start: Bool = true, wrongRun: Bool = false, initialCount: Int = 90) async throws
+  func open(start: Bool = true, wrongRun: Bool = false, initialCount: Int = 90,
+    diagnostics: PCMStartupDiagnostics = .shared) async throws
     -> NativeRecordingContinuation
   {
     let lease = try await leases.open()
@@ -996,7 +1005,7 @@ private struct ContinuationConsent: MicrophonePermissionAuthorizing {
       expiresAtMilliseconds: authority.expiresAtMilliseconds, hardMaximumChunks: 2_048)
     let owner = try NativeRecordingContinuation(
       session: handle, sink: sink, leases: leases, reservations: reservations,
-      initialLease: lease, initialAuthority: supplied, initialBatch: batch, sourceClock: clock,
+      initialLease: lease, initialAuthority: supplied, initialBatch: batch, sourceClock: clock, diagnostics: diagnostics,
       validateActiveSource: { [fence] in try await fence.validate() },
       finalizeCapturedAudio: { [fence] write in try await fence.finalize(write) })
     if start { try await owner.beginMaintenance(automatic: false) }

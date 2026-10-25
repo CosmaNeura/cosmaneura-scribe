@@ -14,6 +14,7 @@ public final class IOSPCMCore: @unchecked Sendable {
   private let clock: any PCMClock
   private let sourceClock: any PCMSourceClock
   private let signalMonitor: PCMSignalMonitor?
+  private let diagnostics: PCMStartupDiagnostics
   private var usedRunIDs: Set<String> = []
   private var nextSessionID: UInt64 = 0
   private var active: Active?
@@ -24,7 +25,8 @@ public final class IOSPCMCore: @unchecked Sendable {
     sink: any PCMEmissionSink,
     clock: any PCMClock = ContinuousPCMClock(),
     sourceClock: any PCMSourceClock = ContinuousPCMSourceClock(),
-    signalMonitor: PCMSignalMonitor? = nil
+    signalMonitor: PCMSignalMonitor? = nil,
+    diagnostics: PCMStartupDiagnostics = .shared
   ) {
     self.permission = permission
     self.audio = audio
@@ -32,6 +34,7 @@ public final class IOSPCMCore: @unchecked Sendable {
     self.clock = clock
     self.sourceClock = sourceClock
     self.signalMonitor = signalMonitor
+    self.diagnostics = diagnostics
   }
 
   /// Claims ownership synchronously and returns a handle before permission or
@@ -63,6 +66,7 @@ public final class IOSPCMCore: @unchecked Sendable {
       clock: clock,
       sourceClock: sourceClock,
       signalMonitor: signalMonitor,
+      diagnostics: diagnostics,
       window: window,
       markCloseFailed: { [weak self] in self?.markCloseFailed(sessionID) },
       releaseOwnership: { [weak self] in self?.release(sessionID) }
@@ -214,6 +218,7 @@ private actor IOSPCMSessionState {
   private let clock: any PCMClock
   private let sourceClock: any PCMSourceClock
   private let signalMonitor: PCMSignalMonitor?
+  private let diagnostics: PCMStartupDiagnostics
   private var window: PCMSourceWindow?
   private var sourceInputFrames: Int64 = 0
   private var authorityTask: Task<Void, Never>?
@@ -251,6 +256,7 @@ private actor IOSPCMSessionState {
     clock: any PCMClock,
     sourceClock: any PCMSourceClock,
     signalMonitor: PCMSignalMonitor?,
+    diagnostics: PCMStartupDiagnostics,
     window: PCMSourceWindow?,
     markCloseFailed: @escaping @Sendable () -> Void,
     releaseOwnership: @escaping @Sendable () -> Void
@@ -263,6 +269,7 @@ private actor IOSPCMSessionState {
     self.clock = clock
     self.sourceClock = sourceClock
     self.signalMonitor = signalMonitor
+    self.diagnostics = diagnostics
     self.window = window
     self.markCloseFailed = markCloseFailed
     self.releaseOwnership = releaseOwnership
@@ -311,12 +318,13 @@ private actor IOSPCMSessionState {
       }
     } else { invalidate = nil }
     let callbacks = PCMAudioCallbacks(
-      frames: { [weak self, frameAdmission] frames in
+      frames: { [weak self, frameAdmission, diagnostics] frames in
         switch frameAdmission.claim() {
         case .closed:
           frames.zeroize()
           return PCMFrameAdmission(accepted: false)
         case .overflow:
+          diagnostics.record(.inputAdmissionOverflow)
           frames.zeroize()
           Task { await self?.receiveAdmissionOverflow() }
           return PCMFrameAdmission(accepted: false)
@@ -710,6 +718,7 @@ private actor IOSPCMSessionState {
     applyStopRequest(.discard)
     if !terminationSent {
       terminationSent = true
+      diagnostics.recordTermination(code)
       sink.terminated(code)
     }
     guard !closingInProgress else { return }
@@ -718,6 +727,7 @@ private actor IOSPCMSessionState {
 
   private func beginWindowClose(_ reason: PCMWindowCloseReason) {
     guard phase == .active || phase == .starting || phase == .requestingPermission else { return }
+    diagnostics.recordWindowClose(reason)
     applyStopRequest(.drain)
     Task { [weak self] in await self?.finishWindowClose(reason) }
   }
