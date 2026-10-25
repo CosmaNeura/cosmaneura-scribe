@@ -15,7 +15,7 @@ describe("local runtime diagnostics", () => {
       record("store_bridge_failed", undefined, 13); record("store_bridge_failed", undefined, 14);
       await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(2));
       expect((await readFile(path, "utf8")).trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>))
-        .toEqual([13, 14].map(reason => ({ utc: expect.any(String), pid: process.pid, event: "store_bridge_failed", reason_code: reason })));
+        .toEqual([13, 14].map(reason => ({ utc: expect.any(String), pid: process.pid, monotonic_ns: expect.any(String), capture_attempt: 0, event: "store_bridge_failed", reason_code: reason })));
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
   it("accepts fixed numeric failure reasons only on their corresponding events", async () => {
@@ -34,9 +34,9 @@ describe("local runtime diagnostics", () => {
       record("audio_packet_sink", 123.4567);
       await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(3));
       expect((await readFile(path, "utf8")).trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>)).toEqual([
-        { utc: expect.any(String), pid: process.pid, event: "audio_native_failure_reason", reason_code: 8 },
-        { utc: expect.any(String), pid: process.pid, event: "audio_main_failure_reason", reason_code: 13 },
-        { utc: expect.any(String), pid: process.pid, event: "audio_packet_sink", duration_ms: 123.457 },
+        { utc: expect.any(String), pid: process.pid, monotonic_ns: expect.any(String), capture_attempt: 0, event: "audio_native_failure_reason", reason_code: 8 },
+        { utc: expect.any(String), pid: process.pid, monotonic_ns: expect.any(String), capture_attempt: 0, event: "audio_main_failure_reason", reason_code: 13 },
+        { utc: expect.any(String), pid: process.pid, monotonic_ns: expect.any(String), capture_attempt: 0, event: "audio_packet_sink", duration_ms: 123.457 },
       ]);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
@@ -83,7 +83,7 @@ describe("local runtime diagnostics", () => {
       for (const event of events) record(event);
       await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(events.length));
       (await readFile(path, "utf8")).trim().split("\n").forEach((line, index) => {
-        expect(JSON.parse(line)).toEqual({ utc: expect.any(String), pid: process.pid, event: events[index] });
+        expect(JSON.parse(line)).toEqual({ utc: expect.any(String), pid: process.pid, monotonic_ns: expect.any(String), capture_attempt: 0, event: events[index] });
       });
       expect((await stat(path)).mode & 0o777).toBe(0o600);
     } finally { await rm(directory, { recursive: true, force: true }); }
@@ -96,9 +96,47 @@ describe("local runtime diagnostics", () => {
       for (let i = 0; i < 129; i++) record("connect_begin");
       await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(128));
       for (const line of (await readFile(path, "utf8")).trim().split("\n")) {
-        expect(JSON.parse(line)).toEqual({ utc: expect.any(String), pid: process.pid, event: "connect_begin" });
+        expect(JSON.parse(line)).toEqual({ utc: expect.any(String), pid: process.pid, monotonic_ns: expect.any(String), capture_attempt: 0, event: "connect_begin" });
       }
       expect((await stat(path)).mode & 0o777).toBe(0o600);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  it("records a later capture attempt after routine and terminal budgets are exhausted", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-next-capture-")));
+    try {
+      const record = runtimeDiagnostics(directory), path = join(directory, "runtime-diagnostics-v1.jsonl");
+      for (let i = 0; i < 128; i++) record("connect_begin");
+      for (let i = 0; i < 32; i++) record("audio_stop_confirmed");
+      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(160));
+      record("audio_start_pending"); record("audio_ready"); record("provider_record_to_native_ready", 250);
+      record("audio_stop_confirmed");
+      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(164));
+      const rows = (await readFile(path, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      expect(rows.slice(-4).map(row => row.event)).toEqual([
+        "audio_start_pending", "audio_ready", "provider_record_to_native_ready", "audio_stop_confirmed",
+      ]);
+      expect(rows.slice(-4).every(row => row.capture_attempt === 1)).toBe(true);
+      expect(rows.every((row, index) => index === 0 || BigInt(row.monotonic_ns) >= BigInt(rows[index - 1].monotonic_ns))).toBe(true);
+      expect((await stat(path)).size).toBeLessThanOrEqual(65_536);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  it("resets attempt budgets even when the start event meets a full write queue", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-full-queue-")));
+    try {
+      const record = runtimeDiagnostics(directory), path = join(directory, "runtime-diagnostics-v1.jsonl");
+      // All calls occur synchronously: none of the queued I/O can finish yet.
+      for (let i = 0; i < 128; i++) record("connect_begin");
+      for (let i = 0; i < 32; i++) record("audio_stop_confirmed");
+      record("audio_start_pending");
+      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(160));
+      record("audio_ready"); record("provider_record_to_native_ready", 250); record("audio_stop_confirmed");
+      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(163));
+      const rows = (await readFile(path, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      expect(rows.slice(-3).map(row => row.event)).toEqual([
+        "audio_ready", "provider_record_to_native_ready", "audio_stop_confirmed",
+      ]);
+      expect(rows.slice(-3).every(row => row.capture_attempt === 1)).toBe(true);
+      expect((await stat(path)).size).toBeLessThanOrEqual(65_536);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
   it("does not follow a log symlink", async () => {
@@ -175,7 +213,7 @@ describe("local runtime diagnostics", () => {
         ["provider_consent_to_ready", 6274.81],
       ];
       (await readFile(path, "utf8")).trim().split("\n").forEach((line, index) => {
-        expect(JSON.parse(line)).toEqual({ utc: expect.any(String), pid: process.pid,
+        expect(JSON.parse(line)).toEqual({ utc: expect.any(String), pid: process.pid, monotonic_ns: expect.any(String), capture_attempt: 0,
           event: expected[index]![0], duration_ms: expected[index]![1] });
       });
       expect((await stat(path)).mode & 0o777).toBe(0o600);

@@ -35,7 +35,7 @@ export const NO_DIAGNOSTICS: RuntimeDiagnostic = () => undefined;
 /** Local bounded lifecycle metadata only. Never accepts error messages, URLs,
  * identities, request bodies or capture content. Failure cannot block cleanup. */
 export function runtimeDiagnostics(directory: string): RuntimeDiagnostic {
-  let remaining = 128, remainingTerminal = 32, writing = Promise.resolve();
+  let remaining = 128, remainingTerminal = 32, pending = 0, attempt = 0, writing = Promise.resolve();
   return (event, durationMilliseconds, reasonCode) => {
     if (!EVENTS.includes(event)) return;
     const timing = TIMING_EVENTS.includes(event as RuntimeTimingEvent);
@@ -45,12 +45,19 @@ export function runtimeDiagnostics(directory: string): RuntimeDiagnostic {
     const reasonLimits = failureReason ? FAILURE_REASON_LIMITS[event as FailureReasonEvent] : undefined;
     if (reasonLimits ? !Number.isSafeInteger(reasonCode) || reasonCode! < reasonLimits[0]
       || reasonCode! > reasonLimits[1] : reasonCode !== undefined) return;
+    // A later Record/Resume attempt needs fresh readiness evidence even when a
+    // previous long visit exhausted routine events. Bound queued writes as well
+    // as the existing on-disk ring so repeated attempts cannot grow memory.
+    if (event === "audio_start_pending") { remaining = 128; remainingTerminal = 32; attempt += 1; }
+    if (pending >= 160) return;
     // Preserve a bounded terminal allowance after routine startup/upload events
     // fill their budget, so prolonged recording can still explain its stop.
     if (TERMINAL_EVENTS.includes(event as typeof TERMINAL_EVENTS[number]) ? remainingTerminal-- <= 0 : remaining-- <= 0) return;
     const line = JSON.stringify({ utc: new Date().toISOString(), pid: process.pid, event,
+      monotonic_ns: process.hrtime.bigint().toString(), capture_attempt: attempt,
       ...(durationMilliseconds === undefined ? {} : { duration_ms: Math.round(durationMilliseconds * 1000) / 1000 }),
       ...(reasonCode === undefined ? {} : { reason_code: reasonCode }) }) + "\n";
+    pending += 1;
     writing = writing.then(async () => {
       if (await realpath(directory) !== directory) return;
       const file = await open(join(directory, "runtime-diagnostics-v1.jsonl"),
@@ -72,6 +79,6 @@ export function runtimeDiagnostics(directory: string): RuntimeDiagnostic {
         }
         await file.writeFile(line);
       } finally { await file.close(); }
-    }).catch(() => undefined);
+    }).catch(() => undefined).finally(() => { pending -= 1; });
   };
 }
