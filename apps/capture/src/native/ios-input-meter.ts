@@ -6,12 +6,12 @@ import { parseInputSignal, presentInputSignal, type IosInputSignal } from "./ios
 export class IosInputMeter extends LitElement {
   static override styles = css`
     :host { display: block; min-width: 0; }
-    .feedback { box-sizing: border-box; display: flex; flex-direction: column; min-block-size: 16rem;
+    .feedback { box-sizing: border-box; display: flex; flex-direction: column;
       padding: .75rem; border: 1px solid #b9d3ca; border-radius: .75rem; background: #f2f8f5; }
     .attention { border-color: #bb7926; background: #fff5e5; color: #64410d; }
     h3 { font-size: 1rem; margin: 0 0 .25rem; line-height: 1.4; }
     strong { font-size: 16px; line-height: 1.4; overflow-wrap: anywhere; }
-    .input { margin-block-start: auto; }
+    .input { margin-block-start: .5rem; }
     .bars { display: flex; align-items: end; gap: 4px; height: 32px; margin: .5rem 0; }
     .bar { width: 7px; border-radius: 3px; background: #d5ddd9; }
     .on { background: #167052; }
