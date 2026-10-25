@@ -5,6 +5,7 @@ import { ENGINEERING_BUDGETS, runJourney, validateScenario } from './engine.mjs'
 import { runAccountMatrix } from './matrix.mjs';
 import { recoverRun } from './recovery.mjs';
 import { RECOVERY_OPERATION_TIMEOUT_MS } from './session-attempt.mjs';
+import { runZoomBot, validateZoomConfig } from './zoom-bot.mjs';
 
 async function journey({ scenario, nativeConfigPath, output, resume, signal }) {
   if (!resume) return runJourney({ scenario, adapter: new AppiumUI(nativeConfigPath), output, signal });
@@ -23,7 +24,16 @@ const lifetime = new AbortController();
 process.once('SIGINT', () => lifetime.abort());
 process.once('SIGTERM', () => lifetime.abort());
 try {
-  if (['matrix', 'matrix-resume'].includes(command)) {
+  if (['zoom-doctor', 'zoom-run', 'zoom-resume'].includes(command)) {
+    if (!scenarioPath || !nativePath || output) throw Error('usage_zoom_command_config_output');
+    const config = validateZoomConfig(JSON.parse(await readFile(resolve(scenarioPath), 'utf8')));
+    if (config.executionKind !== 'live') throw Error('zoom_cli_requires_live_config');
+    const state = await runZoomBot({ configPath: resolve(scenarioPath), output: resolve(nativePath),
+      command: command.slice(5), signal: lifetime.signal, onCheckpoint: value => console.log(JSON.stringify(value)) });
+    console.log(JSON.stringify({ status: state.status, account: state.account, code: state.failureCode,
+      fullAcceptance: state.fullAcceptance, botMedia: state.botMedia, guardRetained: state.guardRetained }));
+    process.exitCode = ['PROFILE_OBSERVED', 'CONNECTED_OBSERVED', 'AUTHORIZATION_OBSERVED'].includes(state.status) && !state.guardRetained ? 0 : 2;
+  } else if (['matrix', 'matrix-resume'].includes(command)) {
     if (!scenarioPath || !nativePath || output) throw Error('usage_matrix_manifest_output');
     const result = await runAccountMatrix({ manifestPath: resolve(scenarioPath), output: resolve(nativePath),
       resume: command === 'matrix-resume', signal: lifetime.signal,
