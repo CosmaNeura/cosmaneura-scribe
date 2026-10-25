@@ -224,6 +224,33 @@ test('a failed first custody sample retains evidence even if owned source cleanu
     assert.equal(ui.inputWatchUnsafeEvidence.sha256, sha256(JSON.stringify(saved)));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+test('full input proof deadline includes native observation and installed-bundle verification', async () => {
+  const ui = driver(); ui.initialMicrophoneObservation = recording();
+  ui.readRecording = async () => recording();
+  let entered = false, aborted = false;
+  ui.verifyInputApplication = async signal => {
+    entered = true;
+    await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+    aborted = signal.aborted;
+    throw Error('late_bundle_verification');
+  };
+  // Keep one referenced timer while AbortSignal.timeout itself is unref'd.
+  const keepAlive = setTimeout(() => {}, 3000);
+  try {
+    const result = await ui.inspectInputScope(new AbortController().signal, true);
+    assert.equal(entered, true); assert.equal(aborted, true);
+    assert.equal(result.assessment.status, 'BLOCKED');
+    assert.deepEqual(result.assessment.reasons, ['hal_full_proof_deadline']);
+    assert.equal(result.fullProofLimitMs, 2000); assert.equal(ui.inputReader, undefined);
+  } finally { clearTimeout(keepAlive); }
+});
+test('paused native input is refused before installed-build proof or HAL reader adoption', async () => {
+  const ui = driver(); ui.initialMicrophoneObservation = recording();
+  ui.readRecording = async () => ({ ...recording(), phase: 'paused' });
+  ui.verifyInputApplication = async () => { assert.fail('must not verify an inactive capture'); };
+  const result = await ui.inspectInputScope(new AbortController().signal, true);
+  assert.equal(result.assessment.status, 'BLOCKED'); assert.equal(ui.inputReader, undefined);
+});
 test('recovery session creation explicitly attaches without launching the app', async () => {
   const seen = [], sessionId = randomUUID(), output = await mkdtemp(join(tmpdir(), 'scribe-appium-connect-'));
   const server = createServer(async (request, response) => {

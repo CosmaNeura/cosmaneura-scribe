@@ -3,7 +3,19 @@ import test from 'node:test';
 import { mkdtemp, mkdir, writeFile, symlink, unlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bundleDigest, checkBuildReceipt, readBundleInventory } from './native-identity.mjs';
+import { bundleDigest, checkBuildReceipt, readBundleInventory, simulatorApplicationBinding } from './native-identity.mjs';
+
+test('installed reader binding requires this guest container and its hash-verified executable', () => {
+  const target = { udid: '57895D36-3997-4047-B12F-0DAB046872EC' };
+  const path = `/Users/owned/Library/Developer/CoreSimulator/Devices/${target.udid}/data/Containers/Bundle/Application/11111111-1111-4111-8111-111111111111/Scribe.app`;
+  const inventory = { executable: 'App', files: { App: 'a'.repeat(64) } };
+  assert.equal(simulatorApplicationBinding(path, inventory, target, {}).executablePath, path + '/App');
+  for (const bad of [path.replace(target.udid, '57895D36-3997-4047-B12F-0DAB046872ED'),
+    path.replace('/Bundle/Application/', '/Data/Application/'), path + '/other.app', '/Applications/Scribe.app'])
+    assert.throws(() => simulatorApplicationBinding(bad, inventory, target, {}), /application_unconfirmed/);
+  for (const executable of ['../App', '/App', '', null, 'missing'])
+    assert.throws(() => simulatorApplicationBinding(path, { ...inventory, executable }, target, {}), /application_unconfirmed/);
+});
 
 test('native build binding rejects an unchanged label on a different binary or source', () => {
   const files = { 'Info.plist': 'b'.repeat(64), App: 'a'.repeat(64) };

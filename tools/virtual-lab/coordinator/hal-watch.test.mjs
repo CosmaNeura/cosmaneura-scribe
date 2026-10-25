@@ -21,6 +21,78 @@ function fixture(active = false) {
     bootedStable: true, routes: [route(udid, 'BlackHole2ch_UID'), route(other, 'BuiltInMicrophoneDevice')],
     serviceExecutableSHA256: expectedService.executableSHA256 };
 }
+function appFixture() {
+  const receipt = fixture(false), now = receipt.observedAtEpochMs;
+  const installedPath = `/Users/owned/Library/Developer/CoreSimulator/Devices/${udid}/data/Containers/Bundle/Application/11111111-1111-4111-8111-111111111111/Scribe.app`;
+  const application = { bundleId: 'com.cosmaneura.scribe.beta', build: '12', sourceSHA: 'c'.repeat(40),
+    bundleSHA256: 'd'.repeat(64), installedPath, executablePath: installedPath + '/App', executableSHA256: 'e'.repeat(64) };
+  const native = { source: 'normal-native-recording-response', phase: 'recording', busy: false, nativeRevision: 14,
+    runId: 'run', workspaceId: 'workspace', appointmentRef: 'appointment', sessionId: 'session', recorderId: 'recorder',
+    observedAtMonotonicMs: 10, browserTimeOriginMs: now - 10 };
+  const process = { bundleId: application.bundleId, pid: 33843, processObjectId: 119, runningInput: true,
+    inputDevices: [{ uid: 'BlackHole2ch_UID', transportType: 1986622068, isAggregate: false }],
+    processIdentity: { pid: 33843, parentPid: 5123, executablePath: application.executablePath,
+      startedAtSeconds: 1792967125, startedAtMicroseconds: 221611 } };
+  for (const sample of [receipt.halBefore, receipt.hal]) sample.processes.push(structuredClone(process));
+  receipt.application = structuredClone(application); receipt.nativeRecording = structuredClone(native);
+  return { receipt, options: { target, expectedService, expectedApplication: application,
+    expectedRecording: native, requireOwnedInput: true, now } };
+}
+test('actual simulator application HAL shape is allowed only with installed build and native recording proof', () => {
+  const { receipt, options } = appFixture();
+  // On current macOS the application, rather than the shared service, owns input.
+  assert.equal(receipt.hal.processes[0].runningInput, false);
+  const result = assessHALScope(receipt, options);
+  assert.equal(result.status, 'OBSERVED_ALLOWED'); assert.equal(result.activeOwnedInputClients, 1);
+  assert.equal(result.reader.kind, 'owned-application'); assert.equal(result.reader.processIdentity.pid, 33843);
+  assert.equal(assessHALScope(receipt, { ...options, expectedApplication: undefined }).status, 'BLOCKED');
+  assert.equal(assessHALScope(receipt, { ...options, expectedRecording: undefined }).status, 'BLOCKED');
+});
+test('application reader rejects changed PID/start/path/guest/bundle and stale or foreign native state', () => {
+  for (const change of [
+    r => { r.hal.processes[1].pid++; },
+    r => { r.hal.processes[1].processIdentity.pid++; },
+    r => { r.hal.processes[1].processIdentity.startedAtMicroseconds++; },
+    r => { r.hal.processes[1].processIdentity.parentPid++; },
+    r => { r.hal.processes[1].processIdentity.executablePath = '/Applications/Scribe.app/App'; },
+    r => { r.application.installedPath = r.application.installedPath.replace(udid, other); },
+    r => { r.application.bundleSHA256 = 'f'.repeat(64); },
+    r => { r.application.executableSHA256 = 'f'.repeat(64); },
+    r => { r.hal.processes[1].bundleId = 'other.app'; },
+    r => { r.nativeRecording.sessionId = 'foreign'; },
+    r => { r.nativeRecording.recorderId = 'replaced'; },
+    r => { r.nativeRecording.nativeRevision = 13; },
+    r => { r.nativeRecording.phase = 'paused'; },
+    r => { r.nativeRecording.busy = true; },
+    r => { r.nativeRecording.observedAtMonotonicMs -= 2001; },
+    r => { r.nativeRecording = null; },
+  ]) { const { receipt, options } = appFixture(); change(receipt);
+    assert.equal(assessHALScope(receipt, options).status, 'BLOCKED', change.toString()); }
+});
+test('app and service are mutually exclusive, and every extra active input blocks source audio', () => {
+  for (const change of [
+    r => { for (const s of [r.halBefore, r.hal]) { s.processes[0].runningInput = true;
+      s.processes[0].inputDevices = structuredClone(s.processes[1].inputDevices); } },
+    r => { r.hal.processes.push({ ...structuredClone(r.hal.processes[1]), pid: 999 }); },
+    r => { r.hal.processes.push({ ...structuredClone(r.hal.processes[1]), bundleId: 'other.app', pid: 999,
+      inputDevices: [{ uid: 'BuiltInMicrophoneDevice', transportType: 1, isAggregate: false }] }); },
+    r => { r.hal.processes[1].inputDevices.push({ uid: 'other', transportType: 1, isAggregate: false }); },
+    r => { r.hal.processes[1].runningInput = null; },
+  ]) { const { receipt, options } = appFixture(); change(receipt);
+    assert.equal(assessHALScope(receipt, options).status, 'BLOCKED', change.toString()); }
+});
+test('watch identity refuses a stable replacement process and switching between service and app', () => {
+  const { receipt, options } = appFixture(), original = assessHALScope(receipt, options).reader;
+  for (const key of ['pid', 'parentPid', 'startedAtSeconds', 'startedAtMicroseconds']) {
+    const changed = structuredClone(receipt);
+    for (const s of [changed.halBefore, changed.hal]) {
+      s.processes[1].processIdentity[key]++; if (key === 'pid') s.processes[1].pid++;
+    }
+    assert.equal(assessHALScope(changed, { ...options, expectedReader: original }).status, 'BLOCKED', key);
+  }
+  const service = fixture(true);
+  assert.equal(assessHALScope(service, { target, expectedService, requireOwnedInput: true, expectedReader: original }).status, 'BLOCKED');
+});
 test('simctl route parsing uses exactly one real audio port and resolves the observed host default', () => {
   const prefix = 'Port:\n    Port Identifier: com.apple.CoreSimulator.Audio.HostRoute\n';
   assert.equal(parseSimulatorInputRoute(prefix + '    Guest Audio Input -> Host Audio Device #BlackHole2ch_UID\n', 'physical').effectiveDeviceUID, 'BlackHole2ch_UID');
