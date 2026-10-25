@@ -191,3 +191,20 @@ replay. No desktop action, arbitrary script, horizontal day navigation, capture
 command or product code changes. Revert the tooling for new runs and preserve
 frozen failed-run evidence. Focused invalid-input, visibility and late-response
 tests precede independent final-head review and actual native navigation.
+
+The WebView readiness increment is Tier 1 read-only lab tooling. A captured
+owned-simulator resume returned exactly `[{id: 'NATIVE_APP'}]` before WebKit
+published its page, while later read-only observations found one matching
+Scribe root. Retry only that exact native-only shape every 100ms for at most
+1500ms, sharing the caller's abort signal. Malformed, duplicate, foreign,
+wrong-root and multiple matching pages still fail immediately. Each observer
+transaction discovers a fresh page and attests its root and Capacitor bridge;
+the native UI mutex remains held through discovery, read and restoration.
+
+The wait occurs inside the existing caller budget, including the entire
+two-second native/build/HAL proof. It creates no additional timing allowance,
+cached identity or source authority. Cleanup uses the same bounded discovery
+before removing only the owned observer. No product/native app rebuild, capture
+command, device setting or service deployment is involved. Preserve the failed
+resumes and their native-only replies; revert tooling only for new runs. Unit
+and transport tests do not replace the actual recovered and fresh UI journeys.

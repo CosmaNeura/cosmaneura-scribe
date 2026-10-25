@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'node:http';
-import { selectOwnedIOSWebview, IOS_CONTEXT_ATTESTATION, IOS_CONTEXT_DISCOVERY } from './ios-webview.mjs';
+import { selectOwnedIOSWebview, discoverOwnedIOSWebview, IOS_CONTEXT_READINESS_MS,
+  IOS_CONTEXT_ATTESTATION, IOS_CONTEXT_DISCOVERY } from './ios-webview.mjs';
 import { AppiumUI } from './appium-ui.mjs';
 
 const bundleId = 'com.cosmaneura.scribe.beta';
@@ -44,19 +45,60 @@ test('post-switch attestation requires the unchanged local root and actual Capac
   assert.equal(attest({ ...window, Capacitor: {} }), false);
 });
 
-test('observer work selects only the current owned view and returns to native context', async () => {
+test('native-only startup waits for a fresh unique owned view without changing replies or caching success', async () => {
+  const native = Object.freeze([Object.freeze({ id: 'NATIVE_APP' })]);
+  const ready = Object.freeze(contexts().map(Object.freeze));
+  let calls = 0;
+  const read = active => { assert.ok(active instanceof AbortSignal); return Promise.resolve(++calls === 1 ? native : ready); };
+  assert.equal(await discoverOwnedIOSWebview(read, bundleId), 'WEBVIEW_6694.1');
+  assert.equal(calls, 2);
+  assert.equal(await discoverOwnedIOSWebview(read, bundleId), 'WEBVIEW_6694.1');
+  assert.equal(calls, 3);
+  assert.deepEqual(native, [{ id: 'NATIVE_APP' }]);
+});
+
+test('never-ready startup has a finite budget and never accepts absence', async () => {
+  let calls = 0; const start = performance.now();
+  await assert.rejects(discoverOwnedIOSWebview(async () => { calls++; return [{ id: 'NATIVE_APP' }]; }, bundleId), /owned_webview_not_ready/);
+  assert.ok(performance.now() - start >= IOS_CONTEXT_READINESS_MS - 20);
+  assert.ok(calls > 1 && calls <= 20);
+});
+
+test('caller abort stops readiness polling and a late unique response remains rejected', async () => {
+  const controller = new AbortController(); let calls = 0;
+  const pending = discoverOwnedIOSWebview(async () => { calls++; return [{ id: 'NATIVE_APP' }]; }, bundleId, controller.signal);
+  await new Promise(resolve => setTimeout(resolve, 10)); controller.abort(Error('caller_deadline'));
+  await assert.rejects(pending, /caller_deadline/); assert.equal(calls, 1);
+  const late = new AbortController(); let resolveRead;
+  const result = discoverOwnedIOSWebview(() => new Promise(resolve => { resolveRead = resolve; }), bundleId, late.signal);
+  late.abort(Error('caller_deadline')); resolveRead(contexts());
+  await assert.rejects(result, /caller_deadline/);
+});
+
+test('malformed, ambiguous, foreign and wrong-root replies never enter the readiness retry', async () => {
+  for (const rows of [[], null, ['NATIVE_APP'], [{ id: 'NATIVE_APP', title: null }],
+    [...contexts(), { ...contexts()[1], id: 'WEBVIEW_6694.2' }],
+    [{ id: 'NATIVE_APP' }, { ...contexts()[1], bundleId: 'com.other.app' }],
+    [{ id: 'NATIVE_APP' }, { ...contexts()[1], url: 'capacitor://localhost/elsewhere' }]]) {
+    let calls = 0;
+    await assert.rejects(discoverOwnedIOSWebview(async () => { calls++; return rows; }, bundleId), /owned_webview_ambiguous/);
+    assert.equal(calls, 1);
+  }
+});
+
+test('observer work waits through native-only startup, selects the current owned view and returns to native context', async () => {
   const ui = new AppiumUI('/unused'); ui.config = { app: { bundleId } };
   let context = 'NATIVE_APP', inspected = 0, effects = 0; const selected = [];
   ui.rawRequest = async (path, method = 'GET', body) => {
     if (path === '/context' && method === 'GET') return context;
-    if (body?.script === IOS_CONTEXT_DISCOVERY.script) { assert.equal(context, 'NATIVE_APP'); inspected++; return contexts(); }
+    if (body?.script === IOS_CONTEXT_DISCOVERY.script) { assert.equal(context, 'NATIVE_APP'); inspected++; return inspected === 1 ? [{ id: 'NATIVE_APP' }] : contexts(); }
     if (path === '/context') { selected.push(body.name); context = body.name; return null; }
     if (body?.script === IOS_CONTEXT_ATTESTATION) { assert.equal(context, 'WEBVIEW_6694.1'); return true; }
     assert.equal(context, 'WEBVIEW_6694.1'); effects++; return 'owned observation';
   };
   assert.equal(await ui.webview('return ownObserver.read()'), 'owned observation');
   assert.equal(await ui.webview('return ownObserver.read()'), 'owned observation');
-  assert.equal(inspected, 2); assert.equal(effects, 2);
+  assert.equal(inspected, 3); assert.equal(effects, 2);
   assert.deepEqual(selected, ['WEBVIEW_6694.1', 'NATIVE_APP', 'WEBVIEW_6694.1', 'NATIVE_APP']);
 });
 
@@ -74,14 +116,32 @@ test('changed post-switch identity restores native context before any observer w
   assert.equal(effects, 0); assert.equal(context, 'NATIVE_APP'); assert.equal(ui.contextUncertain, false);
 });
 
+test('native clicks cannot interleave with the native-only readiness wait or observer transaction', async () => {
+  const ui = new AppiumUI('/unused'); ui.config = { app: { bundleId }, target: { role: 'owned-ios-simulator' } };
+  let context = 'NATIVE_APP', polls = 0, clicks = 0; const order = [];
+  ui.rawRequest = async (path, method = 'GET', body) => {
+    if (path === '/context' && method === 'GET') return context;
+    if (body?.script === IOS_CONTEXT_DISCOVERY.script) return ++polls === 1 ? [{ id: 'NATIVE_APP' }] : contexts();
+    if (path === '/context') { context = body.name; return null; }
+    if (body?.script === IOS_CONTEXT_ATTESTATION) return true;
+    if (path === '/element/native/click') { assert.equal(context, 'NATIVE_APP'); clicks++; order.push('click'); return null; }
+    assert.equal(context, 'WEBVIEW_6694.1'); order.push('observer'); return 'observed';
+  };
+  const observation = ui.webview('return ownObserver.read()');
+  const click = ui.request('/element/native/click', 'POST', {});
+  await new Promise(resolve => setTimeout(resolve, 10)); assert.equal(clicks, 0);
+  assert.equal(await observation, 'observed'); await click;
+  assert.deepEqual(order, ['observer', 'click']); assert.equal(context, 'NATIVE_APP');
+});
+
 test('cleanup refuses missing or duplicate app ownership and changed page identity without uninstalling', async () => {
-  let context = 'NATIVE_APP', rows = contexts(), attested = false, effects = 0;
+  let context = 'NATIVE_APP', rows = contexts(), attested = false, effects = 0, warming = false;
   const server = createServer(async (request, response) => {
     let raw = ''; for await (const part of request) raw += part;
     const body = raw ? JSON.parse(raw) : null; let value = null;
     if (request.url.endsWith('/context') && request.method === 'GET') value = context;
     else if (request.url.endsWith('/context')) context = body.name;
-    else if (body.script === IOS_CONTEXT_DISCOVERY.script) value = rows;
+    else if (body.script === IOS_CONTEXT_DISCOVERY.script) { value = warming ? [{ id: 'NATIVE_APP' }] : rows; warming = false; }
     else if (body.script === IOS_CONTEXT_ATTESTATION) value = attested;
     else { effects++; value = { ownedResourcesSettled: true, observerRemoved: true }; }
     response.end(JSON.stringify({ value }));
@@ -96,7 +156,7 @@ test('cleanup refuses missing or duplicate app ownership and changed page identi
       assert.equal((await ui.cleanupIOSObservers(false)).ownedResourcesSettled, false);
       assert.equal(effects, 0); assert.equal(context, 'NATIVE_APP');
     }
-    rows = contexts(); attested = true;
+    rows = contexts(); attested = true; warming = true;
     assert.equal((await ui.cleanupIOSObservers(false)).ownedResourcesSettled, true);
     assert.equal(effects, 1); assert.equal(context, 'NATIVE_APP');
   } finally { await new Promise(resolve => server.close(resolve)); }

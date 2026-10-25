@@ -16,7 +16,7 @@ import { createDesktopObserver } from './desktop-observer.mjs';
 import { projectNoteObservation } from '../native/note-observation.mjs';
 import { verifyDashboard } from './dashboard.mjs';
 import { buildNativeTimingMeasurement, projectNativeTimingHistory } from './native-timing.mjs';
-import { selectOwnedIOSWebview, IOS_CONTEXT_DISCOVERY, IOS_CONTEXT_ATTESTATION } from './ios-webview.mjs';
+import { discoverOwnedIOSWebview, IOS_CONTEXT_DISCOVERY, IOS_CONTEXT_ATTESTATION } from './ios-webview.mjs';
 import { inspectParticipantResources } from '../zoom/resource-owner.mjs';
 import { createSessionAttempt, recoverSessionCreations, sessionReturned, sessionClosed, sessionNotDispatched,
   sessionCapsMatch, SESSION_ATTEMPT_CAPABILITY, SESSION_CREATION_TIMEOUT_MS } from './session-attempt.mjs';
@@ -191,7 +191,7 @@ export class AppiumUI {
     return this.withUIContext(async () => {
       const previous = await this.rawRequest('/context', 'GET', undefined, signal);
       if (previous !== 'NATIVE_APP') throw Error('native_context_unconfirmed');
-      const context = selectOwnedIOSWebview(await this.rawRequest('/execute/sync', 'POST', IOS_CONTEXT_DISCOVERY, signal), this.config.app?.bundleId);
+      const context = await discoverOwnedIOSWebview(active => this.rawRequest('/execute/sync', 'POST', IOS_CONTEXT_DISCOVERY, active), this.config.app?.bundleId, signal);
       this.contextUncertain = true;
       try {
         await this.rawRequest('/context', 'POST', { name: context }, signal);
@@ -833,10 +833,10 @@ export class AppiumUI {
   recoveryCleanup({ preserveForRecovery = true } = {}) { return this.cleanup({ preserveForRecovery }); }
   async cleanupIOSObservers(preserveForRecovery) {
     if (this.config?.target?.role !== 'owned-ios-simulator' || !this.session) return null;
-    const request = async (path, method = 'GET', body) => {
+    const request = async (path, method = 'GET', body, signal) => {
       const response = await fetch(`${this.base}/session/${this.session}${path}`, { method,
         headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(15000) });
+        signal: AbortSignal.any([AbortSignal.timeout(15000), ...(signal ? [signal] : [])]) });
       const result = await response.json();
       if (!response.ok || result.value?.error) throw Error('observer_cleanup_request_failed');
       return result.value;
@@ -845,7 +845,7 @@ export class AppiumUI {
     try {
       previous = await request('/context');
       if (previous !== 'NATIVE_APP') throw Error('native_context_unconfirmed');
-      const context = selectOwnedIOSWebview(await request('/execute/sync', 'POST', IOS_CONTEXT_DISCOVERY), this.config.app?.bundleId);
+      const context = await discoverOwnedIOSWebview(active => request('/execute/sync', 'POST', IOS_CONTEXT_DISCOVERY, active), this.config.app?.bundleId);
       await request('/context', 'POST', { name: context });
       if (await request('/execute/sync', 'POST', { script: IOS_CONTEXT_ATTESTATION, args: [] }) !== true)
         throw Error('owned_webview_identity_changed');
