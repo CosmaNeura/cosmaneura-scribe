@@ -43,11 +43,23 @@ for path in sorted(root.rglob('*')):
    for block in iter(lambda:source.read(1048576),b''): digest.update(block)
   files[str(path.relative_to(root))]=digest.hexdigest()
 info=plistlib.loads((root/('Info.plist' if sys.argv[2]=='simulator' else 'Contents/Info.plist')).read_bytes())
-print(json.dumps({'files':files,'symlinks':symlinks,'bundleId':info.get('CFBundleIdentifier'),'build':str(info.get('CFBundleVersion')),'platform':info.get('DTPlatformName')}))`;
+print(json.dumps({'files':files,'symlinks':symlinks,'bundleId':info.get('CFBundleIdentifier'),'build':str(info.get('CFBundleVersion')),'platform':info.get('DTPlatformName'),'executable':info.get('CFBundleExecutable')}))`;
 
-export async function readBundleInventory(app, simulator) {
+export async function readBundleInventory(app, simulator, { signal } = {}) {
   return JSON.parse((await exec('python3', ['-c', inventoryScript, app, simulator ? 'simulator' : 'mac'],
-    { timeout: 30000, maxBuffer: 2 * 1024 * 1024 })).stdout);
+    { signal, timeout: 30000, maxBuffer: 2 * 1024 * 1024 })).stdout);
+}
+
+export function simulatorApplicationBinding(installedPath, inventory, target, verified) {
+  const prefix = `/CoreSimulator/Devices/${target.udid}/data/Containers/Bundle/Application/`;
+  const suffix = typeof installedPath === 'string' && installedPath.split(prefix);
+  if (!suffix || suffix.length !== 2 || !isAbsolute(installedPath)
+      || !/^[A-Fa-f0-9-]{36}\/[^/]+\.app$/.test(suffix[1])
+      || !/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(inventory.executable ?? '')
+      || !/^[a-f0-9]{64}$/.test(inventory.files?.[inventory.executable] ?? ''))
+    throw Error('installed_simulator_application_unconfirmed');
+  return { ...verified, installedPath, executablePath: `${installedPath}/${inventory.executable}`,
+    executableSHA256: inventory.files[inventory.executable] };
 }
 
 export function checkBuildReceipt(receipt, inventory, scenario) {
@@ -62,16 +74,21 @@ export function checkBuildReceipt(receipt, inventory, scenario) {
     symlinkCount: Object.keys(inventory.symlinks).length };
 }
 
-export async function verifyBuild(config, scenario) {
+export async function verifyBuild(config, scenario, { signal } = {}) {
   const identity = await nativeIdentity(config), simulator = config.target.role === 'owned-ios-simulator';
   const receipt = JSON.parse(await readFile(config.buildReceipt, 'utf8'));
-  const inventory = app => readBundleInventory(app, simulator);
+  const inventory = app => readBundleInventory(app, simulator, { signal });
   const local = await inventory(identity.app), verified = checkBuildReceipt(receipt, local, scenario);
+  let installedApplication;
   if (simulator) {
     if (local.platform !== 'iphonesimulator') throw Error('simulator_build_required');
     const installed = (await exec('xcrun', ['simctl', 'get_app_container', config.target.udid, config.app.bundleId, 'app'],
-      { timeout: 15000, maxBuffer: 4096 })).stdout.trim();
-    checkBuildReceipt(receipt, await inventory(installed), scenario);
+      { signal, timeout: 15000, maxBuffer: 4096 })).stdout.trim();
+    if (await realpath(installed) !== installed) throw Error('installed_simulator_application_unconfirmed');
+    const installedInventory = await inventory(installed);
+    checkBuildReceipt(receipt, installedInventory, scenario);
+    installedApplication = simulatorApplicationBinding(installed, installedInventory, config.target, verified);
   }
-  return { ...verified, installedSimulatorBundleMatched: simulator ? true : null };
+  return { ...verified, installedSimulatorBundleMatched: simulator ? true : null,
+    ...(installedApplication ? { installedApplication } : {}) };
 }

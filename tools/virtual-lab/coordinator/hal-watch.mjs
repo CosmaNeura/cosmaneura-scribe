@@ -10,6 +10,33 @@ const uuid = value => typeof value === 'string' && /^[a-f0-9-]{36}$/i.test(value
 const digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 export const SIMULATOR_AUDIO_BUNDLE = 'com.apple.CoreSimulator.SimAudioProcessorServices.SimAudioProcessorService';
 const identityKeys = ['pid', 'parentPid', 'executablePath', 'startedAtSeconds', 'startedAtMicroseconds'];
+const validIdentity = identity => identity && Number.isSafeInteger(identity.pid) && identity.pid > 0
+  && Number.isSafeInteger(identity.parentPid) && identity.parentPid > 0
+  && Number.isSafeInteger(identity.startedAtSeconds) && identity.startedAtSeconds > 0
+  && Number.isSafeInteger(identity.startedAtMicroseconds) && identity.startedAtMicroseconds >= 0
+  && identity.startedAtMicroseconds < 1000000 && isAbsolute(identity.executablePath ?? '');
+const sameIdentity = (a, b) => validIdentity(a) && validIdentity(b) && identityKeys.every(key => a[key] === b[key]);
+const recordingKeys = ['runId', 'workspaceId', 'appointmentRef', 'sessionId', 'recorderId'];
+
+function applicationReader(process, receipt, expectedApplication, expectedRecording, now) {
+  const app = receipt.application, native = receipt.nativeRecording;
+  if (!expectedApplication || !expectedRecording || !app || !native
+      || ['bundleId', 'build', 'sourceSHA', 'bundleSHA256', 'installedPath', 'executablePath', 'executableSHA256']
+        .some(key => !expectedApplication[key] || app[key] !== expectedApplication[key])
+      || !digest(app.bundleSHA256) || !digest(app.executableSHA256)
+      || !app.installedPath.includes(`/CoreSimulator/Devices/${receipt.targetUDID}/data/Containers/Bundle/Application/`)
+      || native.source !== 'normal-native-recording-response' || native.phase !== 'recording' || native.busy !== false
+      || expectedRecording.source !== 'normal-native-recording-response' || expectedRecording.phase !== 'recording'
+      || expectedRecording.busy !== false || !Number.isSafeInteger(expectedRecording.nativeRevision)
+      || recordingKeys.some(key => !expectedRecording[key] || native[key] !== expectedRecording[key])
+      || !Number.isSafeInteger(native.nativeRevision) || native.nativeRevision < expectedRecording.nativeRevision
+      || !Number.isFinite(native.browserTimeOriginMs) || !Number.isFinite(native.observedAtMonotonicMs)
+      || Math.abs(now - native.browserTimeOriginMs - native.observedAtMonotonicMs) > 2000
+      || process.bundleId !== app.bundleId || !validIdentity(process.processIdentity)
+      || process.processIdentity.pid !== process.pid || process.processIdentity.executablePath !== app.executablePath)
+    return false;
+  return true;
+}
 
 export function parseSimulatorInputRoute(text, defaultInputDeviceUID) {
   if (typeof text !== 'string' || text.length > 1000000 || typeof defaultInputDeviceUID !== 'string' || !defaultInputDeviceUID)
@@ -41,7 +68,8 @@ export function bootedSimulators(value) {
 
 /** Assess observed metadata only. This cannot establish SCK absence or exclude
  * a reader starting between samples. The caller must retain the raw receipt. */
-export function assessHALScope(receipt, { target, expectedService, requireOwnedInput = false, now = Date.now() }) {
+export function assessHALScope(receipt, { target, expectedService, expectedApplication, expectedRecording,
+  expectedReader, requireOwnedInput = false, now = Date.now() }) {
   const reasons = [], hal = receipt.hal, before = receipt.halBefore;
   if (receipt.source !== 'current-hal-input-scope-observation' || receipt.targetUDID !== target.udid.toUpperCase()
       || receipt.hostname !== target.hostname || receipt.deviceUID !== 'BlackHole2ch_UID'
@@ -68,7 +96,7 @@ export function assessHALScope(receipt, { target, expectedService, requireOwnedI
         || !route.first || !route.last || JSON.stringify(route.first) !== JSON.stringify(route.last))) reasons.push('simulator_routes_unconfirmed');
   const routed = routes.filter(route => route.last?.effectiveDeviceUID === receipt.deviceUID);
   if (routed.length !== 1 || routed[0]?.udid !== receipt.targetUDID) reasons.push('virtual_input_route_not_exclusive');
-  let ownedInputs = 0;
+  let ownedInputs = 0, reader = null;
   const serviceIdentity = sample => (sample?.processes ?? []).filter(process => process.bundleId === SIMULATOR_AUDIO_BUNDLE);
   const firstService = serviceIdentity(before), lastService = serviceIdentity(hal);
   if (firstService.length !== 1 || lastService.length !== 1
@@ -83,30 +111,47 @@ export function assessHALScope(receipt, { target, expectedService, requireOwnedI
         || receipt.serviceExecutableSHA256 !== expectedService.executableSHA256 || !digest(receipt.serviceExecutableSHA256))
       reasons.push('simulator_audio_process_unconfirmed');
   }
-  for (const sample of [before, hal]) for (const process of sample?.processes ?? []) {
-    if (typeof process.runningInput !== 'boolean' || !Array.isArray(process.inputDevices)) { reasons.push('hal_process_unconfirmed'); continue; }
-    if (process.runningInput && (!process.inputDevices.length || process.inputDevices.some(device =>
-      typeof device.uid !== 'string' || !device.uid || !Number.isSafeInteger(device.transportType) || device.isAggregate !== false)))
-      reasons.push('active_input_device_route_unconfirmed');
-    if (!process.runningInput || !process.inputDevices.some(device => device.uid === receipt.deviceUID)) continue;
-    const identity = process.processIdentity;
-    if (process.bundleId !== SIMULATOR_AUDIO_BUNDLE || !identity || identity.pid !== process.pid
-        || !Number.isSafeInteger(identity.startedAtSeconds) || identity.startedAtSeconds <= 0
-        || !Number.isSafeInteger(identity.startedAtMicroseconds) || identity.startedAtMicroseconds < 0 || identity.startedAtMicroseconds >= 1000000
-        || identity.executablePath !== expectedService.executablePath
-        || receipt.serviceExecutableSHA256 !== expectedService.executableSHA256 || !digest(receipt.serviceExecutableSHA256))
-      reasons.push('foreign_or_unconfirmed_virtual_input_client');
-    else if (sample === hal) ownedInputs++;
+  const readers = [];
+  for (const sample of [before, hal]) {
+    const activeReaders = [];
+    for (const process of sample?.processes ?? []) {
+      if (typeof process.runningInput !== 'boolean' || !Array.isArray(process.inputDevices)) { reasons.push('hal_process_unconfirmed'); continue; }
+      if (process.runningInput && (!process.inputDevices.length || process.inputDevices.some(device =>
+        typeof device.uid !== 'string' || !device.uid || !Number.isSafeInteger(device.transportType) || device.isAggregate !== false)))
+        reasons.push('active_input_device_route_unconfirmed');
+      if (!process.runningInput) continue;
+      if (process.inputDevices.length !== 1 || process.inputDevices[0]?.uid !== receipt.deviceUID)
+        reasons.push('extra_or_unconfirmed_active_input');
+      if (!process.inputDevices.some(device => device.uid === receipt.deviceUID)) continue;
+      const identity = process.processIdentity;
+      const service = process.bundleId === SIMULATOR_AUDIO_BUNDLE && identity && identity.pid === process.pid
+          && validIdentity(identity) && identity.executablePath === expectedService.executablePath
+          && receipt.serviceExecutableSHA256 === expectedService.executableSHA256 && digest(receipt.serviceExecutableSHA256);
+      const application = applicationReader(process, receipt, expectedApplication, expectedRecording, now);
+      if (!service && !application)
+        reasons.push('foreign_or_unconfirmed_virtual_input_client');
+      else activeReaders.push({ kind: service ? 'simulator-service' : 'owned-application', processIdentity: identity });
+    }
+    if (activeReaders.length > 1) reasons.push('multiple_owned_input_readers');
+    readers.push(activeReaders);
   }
+  ownedInputs = readers[1].length;
+  if (ownedInputs === 1) reader = readers[1][0];
+  if (requireOwnedInput && (readers[0].length !== 1 || !reader
+      || readers[0][0].kind !== reader.kind || !sameIdentity(readers[0][0].processIdentity, reader.processIdentity)))
+    reasons.push('active_input_reader_changed');
+  if (expectedReader && (!reader || expectedReader.kind !== reader.kind
+      || !sameIdentity(expectedReader.processIdentity, reader.processIdentity))) reasons.push('latched_input_reader_changed');
   if (requireOwnedInput && ownedInputs !== 1) reasons.push('owned_simulator_input_not_active');
   return { status: reasons.length ? 'BLOCKED' : 'OBSERVED_ALLOWED', reasons: [...new Set(reasons)],
-    activeOwnedInputClients: ownedInputs, scope: 'sampled-hal-input-clients-and-simulator-routes',
+    activeOwnedInputClients: ownedInputs, reader, scope: 'sampled-hal-input-clients-and-simulator-routes',
     screenCaptureKitAbsence: 'NOT_ESTABLISHED', futureReaderExclusion: 'NOT_ESTABLISHED' };
 }
 
 /** Runs only read-only metadata commands. No routing/default changes, native
  * product commands, process signals, or microphone/audio stream are issued. */
-export async function inspectHALScope({ target, inventoryHelper, helperSHA256, expectedService, signal, requireOwnedInput = false }) {
+export async function inspectHALScope({ target, inventoryHelper, helperSHA256, expectedService, signal, requireOwnedInput = false,
+  expectedApplication, nativeRecording, expectedRecording, expectedReader }) {
   if (!(signal instanceof AbortSignal) || target?.role !== 'owned-ios-simulator' || target.hostname !== hostname()
       || !uuid(target.udid) || !isAbsolute(inventoryHelper) || !digest(helperSHA256)
       || !isAbsolute(expectedService?.executablePath ?? '') || !digest(expectedService?.executableSHA256)) throw Error('hal_scope_configuration_required');
@@ -119,7 +164,8 @@ export async function inspectHALScope({ target, inventoryHelper, helperSHA256, e
   const helper = await realpath(inventoryHelper), stat = await lstat(helper);
   if (!stat.isFile() || stat.size > 10000000 || sha256(await readFile(helper)) !== helperSHA256) throw Error('hal_helper_identity_changed');
   const receipt = { source: 'current-hal-input-scope-observation', hostname: hostname(), targetUDID: target.udid.toUpperCase(),
-    deviceUID: 'BlackHole2ch_UID', helperSHA256, startedAtEpochMs: Date.now() };
+    deviceUID: 'BlackHole2ch_UID', helperSHA256, startedAtEpochMs: Date.now(),
+    ...(expectedApplication ? { application: expectedApplication, nativeRecording } : {}) };
   const active = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
   const command = async (file, args) => { active.throwIfAborted(); return (await exec(file, args,
     { signal: active, timeout: 5000, maxBuffer: 1000000 })).stdout; };
@@ -140,7 +186,8 @@ export async function inspectHALScope({ target, inventoryHelper, helperSHA256, e
       receipt.serviceExecutableSHA256 = sha256(await readFile(await realpath(expectedService.executablePath)));
     active.throwIfAborted();
     receipt.observedAtEpochMs = Date.now();
-    receipt.assessment = assessHALScope(receipt, { target, expectedService, requireOwnedInput });
+    receipt.assessment = assessHALScope(receipt, { target, expectedService, requireOwnedInput,
+      expectedApplication, expectedRecording, expectedReader });
   } catch (error) {
     receipt.observedAtEpochMs = Date.now();
     receipt.assessment = { status: 'BLOCKED', reasons: [active.aborted ? 'hal_inspection_aborted' : /^[a-z_]{1,100}$/.test(error.message) ? error.message : 'hal_inspection_failed'],

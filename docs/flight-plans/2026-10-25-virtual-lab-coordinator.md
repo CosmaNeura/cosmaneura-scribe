@@ -158,3 +158,23 @@ the artifact. No migration, admission, native source or server ownership rule
 changes. Mock browser tests exercise both platforms, unchanged explicit consent
 and Start, and same-key recovery after reload without a capture mount. Actual
 rebuilt-client creation and subsequent bot/note/dashboard checks remain required.
+
+The simulator application input increment is Tier 2 lab custody tooling. Actual
+CoreAudio metadata on the owned iOS simulator can identify the installed Scribe
+process as the BlackHole reader while the shared simulator audio service is
+idle. Accept that shape only after current native Recording, the exact installed
+bundle inventory, executable path inside this guest's container, and stable
+before/after PID and process-start metadata agree. Latch the first reader for
+the source watch. The application and shared-service paths are mutually
+exclusive; replacement identities, additional active readers, uncertain device
+metadata and changed guest routing block emission. The entire native/build/HAL
+proof has a two-second deadline. This remains sampled custody, with no claim of
+ScreenCaptureKit absence or exclusion of future readers between samples.
+
+No product authentication, consent, native recording, routing/default setting,
+storage or service deployment changes. Recovery closes only the owned source
+and retains uncertain native capture and the original failed run. Revert the
+tooling for new runs; never edit an existing run's frozen implementation to
+make it pass. Adversarial metadata/deadline tests and independent exact-head
+review precede live use. The first actual full source/capture/save journey on
+this path remains an acceptance prerequisite, not a consequence of unit tests.

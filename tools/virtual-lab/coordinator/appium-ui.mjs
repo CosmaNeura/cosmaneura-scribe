@@ -627,9 +627,37 @@ export class AppiumUI {
     if (action === 'record') this.assertMicrophoneSignal(observed.nativeObservation, 'initial');
     return observed;
   }
-  inspectInputScope(signal, requireOwnedInput) {
-    return inspectHALScope({ ...this.config.sources.inputCustody, target: this.config.target, signal, requireOwnedInput });
+  async inspectInputScope(signal, requireOwnedInput) {
+    // The entire current-native / installed-build / HAL proof shares one deadline.
+    // A bundle label alone never authorizes an application to read source audio.
+    const active = AbortSignal.any([signal, AbortSignal.timeout(2000)]);
+    const started = performance.now();
+    try {
+      let expectedApplication, nativeRecording;
+      if (requireOwnedInput) {
+        nativeRecording = await this.readRecording(active);
+        if (!this.initialMicrophoneObservation || nativeRecording.phase !== 'recording' || nativeRecording.busy !== false)
+          throw Error('native_input_not_recording');
+        expectedApplication = await this.verifyInputApplication(active);
+        if (!expectedApplication) throw Error('installed_simulator_application_unconfirmed');
+      }
+      const receipt = await inspectHALScope({ ...this.config.sources.inputCustody, target: this.config.target,
+        signal: active, requireOwnedInput, expectedApplication, nativeRecording,
+        expectedRecording: this.initialMicrophoneObservation, expectedReader: this.inputReader });
+      active.throwIfAborted();
+      if (requireOwnedInput && Math.abs(Date.now() - nativeRecording.browserTimeOriginMs - nativeRecording.observedAtMonotonicMs) > 2000)
+        throw Error('native_input_observation_stale');
+      if (requireOwnedInput && receipt.assessment?.status === 'OBSERVED_ALLOWED') this.inputReader ??= receipt.assessment.reader;
+      return { ...receipt, fullProofDurationMs: performance.now() - started, fullProofLimitMs: 2000 };
+    } catch {
+      return { source: 'current-hal-input-scope-observation', observedAtEpochMs: Date.now(),
+        fullProofDurationMs: performance.now() - started, fullProofLimitMs: 2000,
+        assessment: { status: 'BLOCKED', reasons: [active.aborted ? 'hal_full_proof_deadline' : 'hal_application_proof_unconfirmed'],
+          scope: 'sampled-hal-input-clients-and-simulator-routes', screenCaptureKitAbsence: 'NOT_ESTABLISHED',
+          futureReaderExclusion: 'NOT_ESTABLISHED' } };
+    }
   }
+  async verifyInputApplication(signal) { return (await verifyBuild(this.config, this.scenario, { signal })).installedApplication; }
   async assertInputBeforeRecord(signal) {
     if (this.config.target?.role !== 'owned-ios-simulator') return;
     if (!this.output || !this.config.sources?.inputCustody) throw Error('virtual_input_custody_configuration_required');
@@ -642,8 +670,7 @@ export class AppiumUI {
         || !this.config.sources?.participants?.some(source => source.kind === 'virtual-microphone')) return;
     if (!this.output || !this.config.sources.inputCustody || this.inputWatch) throw Error('virtual_input_custody_configuration_required');
     this.inputWatch = await startHALWatch({ signal,
-      inspect: signal => inspectHALScope({ ...this.config.sources.inputCustody, target: this.config.target,
-        signal, requireOwnedInput: true }),
+      inspect: signal => this.inspectInputScope(signal, true),
       onUnsafe: async receipt => {
         this.inputWatchUnsafe = true;
         if (!this.inputWatchUnsafeReceipt) {
