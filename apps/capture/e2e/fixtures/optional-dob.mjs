@@ -25,7 +25,7 @@ const abort = new AbortController(), scope = {
 };
 const sessionId = "10000000-0000-4000-8000-000000000001";
 const account = { email: "provider@synthetic.invalid", environment: "Staging" };
-const encounter = { appointmentRef: scope.appointmentRef, title: "Synthetic walk-in", detail: "Visit · 2026-09-30T12:00:00Z",
+const encounter = { appointmentRef: scope.appointmentRef, title: "Synthetic walk-in", detail: `Visit · ${new Date().toISOString()}`,
   patientRef: "patient_01j00000000000000000000000", dateOfBirth: null };
 if (layout) {
   encounter.detail = `Visit · ${new Date().toISOString()}`;
@@ -39,7 +39,8 @@ if (layout) {
 }
 const plugin = await encryptedFixturePlugin(scope.workspaceId);
 const forbidden = () => { throw new Error("Outside the synthetic DOB fixture"); };
-const fixture = window.dobLab = { creates: [], starts: 0, admissions: 0, dobUpdates: [], openedRefs: [], closes: 0 };
+const fixture = window.dobLab = { creates: [], starts: 0, admissions: 0, admissionRequests: [], dobUpdates: [], openedRefs: [], closes: 0 };
+let admissionCommitted = false;
 const listGate = new Promise(resolve => { fixture.releaseList = resolve; });
 const gatedAdmission = new URL(window.location.href).searchParams.has("gate-admission");
 const admissionGate = new Promise(resolve => { fixture.releaseAdmission = resolve; });
@@ -64,7 +65,7 @@ const setup = createEncounterSetup({
     return { ...base, creation_key: body.creation_key, encounter: { workspace_id: scope.workspaceId,
       appointment_ref: scope.appointmentRef, patient_ref: encounter.patientRef,
       patient_name: body.patient.kind === "new" ? body.patient.name : "Synthetic walk-in",
-      title: "Visit", appointment_at: "2026-09-30T12:00:00Z" } };
+      title: "Visit", appointment_at: new Date().toISOString() } };
   },
 });
 let saved = { revision: null, progress: null };
@@ -80,7 +81,7 @@ let snapshot = { sessionId, state: "ready", statusCode: "capture_ready", recorde
 const listeners = new Set();
 const meetingId = "30000000-0000-4000-8000-000000000003";
 let preflight = { status: "ready", inputDevices: layout ? inputDevices : [], selectedInputId: layout ? microphoneId : null, microphone: null,
-  desktopAudio: "microphone", meetingWindows: { state: "ready", selectedId: meetingId,
+  desktopAudio: "microphone", meetingWindows: { state: "ready", selectedId: new URL(window.location.href).searchParams.has("unselected-call") ? null : meetingId,
     windows: [{ id: meetingId, title: "Zoom — Synthetic visit" }] } };
 const preflightListeners = new Set();
 const publishPreflight = () => { for (const listener of preflightListeners) listener(preflight); };
@@ -128,12 +129,17 @@ mountProviderWorkspace(document.querySelector("#provider"), {
       return (saved = { revision: String(Number(saved.revision ?? 0) + 1), progress });
     } },
     reviewJournal: () => ({ load: async () => null, save: forbidden, clear: forbidden }),
-    request: async (path, body) => {
+    request: async (path, body, key) => {
       const base = { ...body, contract_version: "1", checked_at: new Date().toISOString() };
       if (path.endsWith("capture-admissions")) {
-        fixture.admissions++;
-        if (!body.attestation.all_parties_consented) throw new Error("Consent required");
+        fixture.admissionRequests.push({ key, attestation: body.attestation });
+        if (body.attestation === null && !admissionCommitted) return Response.json({ detail: "provider_consent_required" }, { status: 409 });
+        if (body.attestation !== null) {
+          if (!body.attestation.all_parties_consented) throw new Error("Consent required");
+          fixture.admissions++;
+        }
         if (gatedAdmission) await admissionGate;
+        admissionCommitted = true;
         return Response.json({ ...base, operation_ref: "scribe_admission_01j00000000000000000000000",
           appointment_ref: scope.appointmentRef, consent_record_id: sessionId, session_id: sessionId });
       }
