@@ -5,6 +5,7 @@ import { chmod, lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { hostname } from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 import { atomicJSON, sha256 } from './journal.mjs';
 import { matchingParticipantProcesses } from '../zoom/resource-owner.mjs';
 import { code, projectAuthorization, projectSchedule, typeId, validAuthorizationWindow } from './zoom-bot-evidence.mjs';
@@ -46,6 +47,20 @@ export class LatestReply {
   sequence = 0; value = null;
   begin() { this.value = null; return ++this.sequence; }
   finish(sequence, value) { if (sequence === this.sequence) this.value = value; }
+}
+
+/** A response event can precede its body and a newer request can supersede it.
+ * Wait for the current generation; an older completed body never fills the gap. */
+export async function waitForLatestZoomReply(reader, { signal, timeoutMs }) {
+  if (!(signal instanceof AbortSignal) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000)
+    throw Error('zoom_response_wait_invalid');
+  const deadline = performance.now() + timeoutMs;
+  for (;;) {
+    signal.throwIfAborted();
+    if (performance.now() >= deadline) throw Error('zoom_latest_response_not_settled');
+    if (reader.value !== null) return reader.value;
+    await delay(Math.min(25, Math.max(1, deadline - performance.now())), undefined, { signal });
+  }
 }
 
 export function normalHostedScope(settings, viewAs, doctorRef, now = Date.now()) {
@@ -247,8 +262,9 @@ export async function openZoomUI({ config, output, runIdentity, signal }) {
         const waiter = page.waitForResponse(response => response.url() === `${config.apiOrigin}/internal/v1/schedule`); void waiter.catch(() => {});
         await page.goto(`${ZOOM_DASHBOARD}/schedule/${config.authorization.meetingId}`, { waitUntil: 'domcontentloaded' }); await waiter;
         const account = await identity(); await Promise.allSettled([...work]);
-        if (!schedule.value?.meeting) throw Error(schedule.value?.failureCode ?? 'zoom_schedule_not_observed');
-        return { ...schedule.value, ...account };
+        const current = await waitForLatestZoomReply(schedule, { signal, timeoutMs: config.uiTimeoutMs });
+        if (!current?.meeting) throw Error(current?.failureCode ?? 'zoom_schedule_not_observed');
+        return { ...current, ...account };
       },
       async authorize({ hostWindow } = {}) {
         if (!listsAllowed || postUsed) throw Error('zoom_authorization_not_armed');
