@@ -19,6 +19,10 @@ from cosmaneura_scribe.provider_core_transport import (
     ProviderCoreTransport,
     ProviderCoreUnavailable,
 )
+from cosmaneura_scribe.provider_encounter_transport import (
+    ProviderEncounterAccount,
+    ProviderEncounterTransport,
+)
 from pydantic import SecretStr
 
 ROOT = "/service/v1/agent/scribe/"
@@ -173,6 +177,59 @@ async def connection():
         yield wire, client
     finally:
         await client.close()
+
+
+@pytest.mark.parametrize("status", [401, 403, 409, 422, 503])
+@pytest.mark.parametrize("after_exchange", [False, True])
+async def test_lookup_failure_keeps_status_without_dispatch_or_retry(status, after_exchange):
+    """An actual lookup transport failure must not become a workspace revocation."""
+    wire = Wire()
+    account = ProviderEncounterAccount(
+        "synthetic-account", SELECTION.recovery_scope, SELECTION.actor_ref,
+        SELECTION.tenant_ref, SecretStr(USER_TOKEN),
+    )
+    lookups = []
+
+    async def account_now():
+        return account
+
+    async def unavailable_lookup(request):
+        assert request.url.path == "/embed/v1/scribe/encounters"
+        assert json.loads(request.content)["action"] == "lookup"
+        lookups.append(request)
+        return httpx.Response(status, json={"detail": "private-response-sentinel"})
+
+    lookup = ProviderEncounterTransport(
+        "https://core.synthetic.invalid", account_now,
+        transport=httpx.MockTransport(unavailable_lookup),
+    )
+
+    async def current_context():
+        if not after_exchange or wire.calls:
+            await lookup.request(
+                {"action": "lookup", "workspace_id": str(SELECTION.workspace_id),
+                 "request_nonce": str(uuid4())},
+                str(uuid4()),
+            )
+        return await wire.context()
+
+    client = ProviderCoreTransport(
+        "https://core.synthetic.invalid", current_context, wire.workload,
+        enabled=True, transport=httpx.MockTransport(wire.handle), clock=lambda: NOW,
+    )
+    try:
+        with pytest.raises(ProviderCoreUnavailable) as caught:
+            await client.open()
+        assert caught.value.status == status
+        assert caught.value.code == "core_encounter_unconfirmed"
+        assert "private-response-sentinel" not in str(caught.value)
+        assert len(lookups) == 1 and wire.effects == []
+        assert [path for path, _ in wire.calls] == (
+            ["/embed/v1/context-tokens/exchange"] if after_exchange else []
+        )
+    finally:
+        await client.close()
+        await lookup.close()
 
 
 def body(**values):

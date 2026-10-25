@@ -572,7 +572,15 @@ class ProviderCoreTransport:
             raise ProviderCoreUnavailable("core_provider_unavailable")
         try:
             async with asyncio.timeout(10):
-                context = _checked(await self._fresh_context(), AuthorizedCoreProvider)
+                candidate = await self._fresh_context()
+        except ProviderCoreUnavailable:
+            # The fresh lookup already classified its failure. A transient Core
+            # outage is not an access revocation; no operation may continue.
+            raise
+        except Exception:
+            raise ProviderCoreUnavailable("core_provider_access_unavailable", 403) from None
+        try:
+            context = _checked(candidate, AuthorizedCoreProvider)
             _require(self._enabled)
             _checked(context.selection, CoreProviderSelection)
             _require(expected is None or context.selection == expected)
