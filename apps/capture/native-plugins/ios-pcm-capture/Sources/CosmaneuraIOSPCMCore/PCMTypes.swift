@@ -172,7 +172,9 @@ public final class OwnedPCMBytes: @unchecked Sendable {
 
   public func zeroize() {
     lock.withLock {
-      for index in storage.indices { storage[index] = 0 }
+      // Clear the owned contiguous buffer in bulk. Per-byte Array mutation in
+      // Debug can consume an entire input callback interval for a full packet.
+      _ = storage.withUnsafeMutableBytes { $0.initializeMemory(as: UInt8.self, repeating: 0) }
     }
   }
 
