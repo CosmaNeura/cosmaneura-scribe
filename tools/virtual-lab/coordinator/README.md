@@ -115,6 +115,16 @@ current baseline. These are engineering goals, not user-agreed SLAs. Keep
 native acknowledgment, first usable audio, UI state and operator/tool waits
 separate; a command duration cannot satisfy a native latency gate.
 
+iOS phase artifacts and settled cleanup also retain the passive timing history
+before its observer is removed. These private, hash-bound `timing-*.json` files
+contain only projected timing metadata and explicitly unqualified transport
+estimates. Missing/older timing responses remain `NO_SAMPLES` or `UNAVAILABLE`;
+diagnostic collection never changes a product assertion or delays uncertain
+capture cleanup. A native journal must still be exported separately from the
+verified owned process/container and joined to this history before reporting
+native event intervals. Desktop timing and source synchronization are not
+qualified by these iOS artifacts.
+
 `UI_JOURNEY_PASS` proves only the executed UI assertions. Full readiness also
 requires normal rebuilt-app two-account access/isolation, independent native
 target under physical-host lock, each audio path, saved audible words, actual

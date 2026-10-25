@@ -115,23 +115,33 @@ function interval(events, samples, captureAttempt, startEvent, endEvent, correla
     observedNativeDroppedEvents: last.sample.droppedEvents };
 }
 
-/** Pure analysis of passively observed replies and an optional exact journal
- * byte export. No requests, source playback or acceptance flags. A collector
- * must establish journal process/build ownership independently; the journal
- * itself contains no recorder/session identity. Its zero drop count does not
- * prove that the bounded ring or disk export includes every native event. */
-export function buildNativeTimingMeasurement({ history, journalBytes = null, intervals = [
-  ['startRequested', 'sourceReadyReceived'], ['startRequested', 'firstInputBuffer'],
-  ['startRequested', 'firstInputSignal'], ['startRequested', 'firstConvertedSignal'], ['stopRequested', 'stopAccepted'],
-] }) {
+/** Validate and retain only the known timing metadata before writing it. */
+export function projectNativeTimingHistory(history) {
   if (history?.source !== 'passive-native-timing-history' || history.maximumSamples !== 128
+      || !uuid(history.runId) || !uuid(history.workspaceId)
+      || !/^appointment_[0-7][0-9a-hjkmnp-tv-z]{25}$/.test(history.appointmentRef ?? '')
       || ![history.evictedSamples, history.invalidSamples, history.unavailableSamples, history.discardedRevisionSamples].every(count)
-      || !Array.isArray(history.samples) || history.samples.length > 128 || !Array.isArray(intervals) || intervals.length > 16
-      || intervals.some(pair => !Array.isArray(pair) || pair.length !== 2)) throw Error('native_timing_history_invalid');
+      || !Array.isArray(history.samples) || history.samples.length > 128) throw Error('native_timing_history_invalid');
   const samples = history.samples.map(project), identity = samples[0];
   if (samples.some(value => scopeKeys.some(key => value[key] !== identity[key]))
       || samples.some(value => ['runId', 'workspaceId', 'appointmentRef'].some(key => value[key] !== history[key])))
     throw Error('native_timing_scope_changed');
+  return { source: 'passive-native-timing-history', runId: history.runId, workspaceId: history.workspaceId,
+    appointmentRef: history.appointmentRef, maximumSamples: 128, evictedSamples: history.evictedSamples,
+    invalidSamples: history.invalidSamples, unavailableSamples: history.unavailableSamples,
+    discardedRevisionSamples: history.discardedRevisionSamples, samples };
+}
+
+/** Pure analysis; journal process ownership, completeness and clock precision
+ * require separate evidence and never follow from these passive samples. */
+export function buildNativeTimingMeasurement({ history, journalBytes = null, intervals = [
+  ['startRequested', 'sourceReadyReceived'], ['startRequested', 'firstInputBuffer'],
+  ['startRequested', 'firstInputSignal'], ['startRequested', 'firstConvertedSignal'], ['stopRequested', 'stopAccepted'],
+] }) {
+  history = projectNativeTimingHistory(history);
+  if (!Array.isArray(intervals) || intervals.length > 16
+      || intervals.some(pair => !Array.isArray(pair) || pair.length !== 2)) throw Error('native_timing_history_invalid');
+  const samples = history.samples, identity = samples[0];
   const correlation = samples.length ? correlate(samples) : null, nativeJournal = journalBytes === null ? null : journal(journalBytes);
   const attempts = [...new Set(samples.map(value => value.sample.captureAttempt).filter(value => value > 0))];
   return { source: 'passive-native-timing-measurement', qualification: 'NOT_ESTABLISHED',

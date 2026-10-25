@@ -52,6 +52,52 @@ function driver() {
   return ui;
 }
 const artifactPNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP1sAAAAASUVORK5CYII=', 'base64');
+function timingHistory() {
+  return { ...admission, source: 'passive-native-timing-history',
+    maximumSamples: 128, evictedSamples: 0, invalidSamples: 0, unavailableSamples: 0, discardedRevisionSamples: 0,
+    samples: [{ source: 'normal-native-timing-response', runId: admission.runId, workspaceId: admission.workspaceId,
+      appointmentRef: admission.appointmentRef, sessionId: admission.sessionId,
+      recorderId: '55555555-5555-4555-8555-555555555555', authRevision: '66666666-6666-4666-8666-666666666666',
+      requestId: '77777777-7777-4777-8777-777777777777', nativeRevision: 1, method: 'providerRecordingCommand', kind: 'read',
+      sample: { version: 1, clock: 'dispatch-uptime-ns', monotonicNs: '1000000000', captureAttempt: 1, droppedEvents: 0 },
+      transport: { clock: 'performance-now-ms', sentAtMonotonicMs: 100, receivedAtMonotonicMs: 110,
+        browserTimeOriginMs: 1000, roundTripMs: 10, browserTimestampPrecision: 'UNKNOWN', browserTimestampResolutionMs: null,
+        totalUncertaintyMs: null, qualification: 'NOT_ESTABLISHED' } }] };
+}
+test('phase collection retains passive timing privately before observer cleanup without changing native proof', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'scribe-timing-artifacts-'));
+  try {
+    const ui = driver(); ui.output = root; ui.session = 'test-owned'; ui.config.target = { role: 'owned-ios-simulator' };
+    let reads = 0; const history = timingHistory(); history.unexpected = 'never retain';
+    ui.webview = async script => { assert(script.includes('observer.readTiming')); reads++;
+      return { descriptor: { ...admission, observerSHA256: IOS_OBSERVER_HASHES.admission }, history }; };
+    ui.request = async path => path === '/screenshot' ? artifactPNG.toString('base64') : '<App/>';
+    const receipt = await ui.capturePhaseArtifacts('finish', AbortSignal.timeout(5000));
+    assert.equal(receipt.nativeTiming.status, 'COLLECTED'); assert.equal(reads, 1);
+    const path = join(root, receipt.nativeTiming.evidenceFile), bytes = await readFile(path);
+    assert.equal(sha256(bytes), receipt.nativeTiming.sha256); assert.equal((await stat(path)).mode & 0o777, 0o600);
+    assert.equal(bytes.toString().includes('never retain'), false);
+    const saved = JSON.parse(bytes); assert.equal(saved.measurement.qualification, 'NOT_ESTABLISHED');
+    assert.equal(saved.history.samples.length, 1); assert.equal(saved.measurement.journal, null);
+    const empty = await ui.captureTimingArtifact('cleanup', AbortSignal.timeout(5000));
+    assert.notEqual(empty.evidenceFile, receipt.nativeTiming.evidenceFile);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+test('missing, changed, foreign or invalid timing stays unavailable and writes no unchecked metadata', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'scribe-timing-refusal-'));
+  try {
+    const ui = driver(); ui.output = root; ui.session = 'test-owned'; ui.config.target = { role: 'owned-ios-simulator' };
+    for (const change of [x => { x.history = null; }, x => { x.descriptor.observerSHA256 = 'bad'; },
+      x => { x.history.workspaceId = '88888888-8888-4888-8888-888888888888'; },
+      x => { x.history.samples[0].sessionId = '88888888-8888-4888-8888-888888888888'; },
+      x => { x.history.samples[0].sample.monotonicNs = 'private'; }]) {
+      const value = { descriptor: { ...admission, observerSHA256: IOS_OBSERVER_HASHES.admission }, history: timingHistory() };
+      change(value); ui.webview = async () => value;
+      assert.equal((await ui.captureTimingArtifact('record', AbortSignal.timeout(1000))).status, 'UNAVAILABLE');
+    }
+    assert.deepEqual(await readdir(root), []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 test('phase screenshots and XML are unique private hash-bound diagnostics collected before fresh native proof', async () => {
   const root = await mkdtemp(join(tmpdir(), 'scribe-phase-artifacts-'));
   try {

@@ -15,6 +15,7 @@ import { installVisitScopeObserver } from '../native/visit-observer.mjs';
 import { createDesktopObserver } from './desktop-observer.mjs';
 import { projectNoteObservation } from '../native/note-observation.mjs';
 import { verifyDashboard } from './dashboard.mjs';
+import { buildNativeTimingMeasurement, projectNativeTimingHistory } from './native-timing.mjs';
 import { inspectParticipantResources } from '../zoom/resource-owner.mjs';
 import { createSessionAttempt, recoverSessionCreations, sessionReturned, sessionClosed, sessionNotDispatched,
   sessionCapsMatch, SESSION_ATTEMPT_CAPABILITY, SESSION_CREATION_TIMEOUT_MS } from './session-attempt.mjs';
@@ -460,6 +461,9 @@ export class AppiumUI {
       else receipt.unavailable.push({ kind: index === 0 ? 'screenshot' : 'accessibility-source',
         code: active.aborted ? 'phase_artifact_capture_aborted' : 'phase_artifact_capture_unavailable' });
     }
+    if (this.config?.target?.role === 'owned-ios-simulator' && this.binding) {
+      receipt.nativeTiming = await this.captureTimingArtifact(action, active);
+    }
     receipt.completedAtEpochMs = Date.now();
     receipt.collectionStatus = receipt.artifacts.length === 2 ? 'COMPLETE' : receipt.artifacts.length ? 'PARTIAL' : 'UNAVAILABLE';
     // A unique private sidecar survives a later assertion/proof failure. It is
@@ -470,6 +474,37 @@ export class AppiumUI {
       return { ...receipt, evidenceFile, sha256: sha256(bytes) };
     } catch {
       return { ...receipt, unavailable: [...receipt.unavailable, { kind: 'manifest', code: 'phase_artifact_manifest_unavailable' }] };
+    }
+  }
+  async captureTimingArtifact(action, signal) {
+    // Read the existing passive observer only. No native command, clock query,
+    // capture mutation or product acceptance result is produced here.
+    if (this.config?.target?.role !== 'owned-ios-simulator' || !this.binding
+        || !this.session || !this.output || !/^[a-z][a-z_]{0,40}$/.test(action))
+      return { status: 'UNAVAILABLE', code: 'timing_target_unavailable' };
+    try {
+      const observed = await this.webview(`const observer = window.__scribeLabAdmissionObserver;
+        return observer ? { descriptor: observer.describe(), history: observer.readTiming?.() ?? null } : null;`, [], signal);
+      if (observed?.descriptor?.observerSHA256 !== IOS_OBSERVER_HASHES.admission
+          || ['runId', 'workspaceId', 'appointmentRef'].some(key => observed.descriptor[key] !== this.binding[key]))
+        throw Error('timing_observer_changed');
+      const history = projectNativeTimingHistory(observed.history);
+      if (['runId', 'workspaceId', 'appointmentRef'].some(key => history[key] !== this.binding[key])
+          || this.admission && history.samples.some(sample => sample.sessionId !== this.admission.sessionId))
+        throw Error('timing_scope_changed');
+      const measurement = buildNativeTimingMeasurement({ history });
+      const value = { source: 'native-timing-artifact', action, collectedAtEpochMs: Date.now(),
+        targetId: this.scenario.targetId, sourceSHA: this.scenario.sourceSHA, build: this.scenario.build,
+        observerSHA256: observed.descriptor.observerSHA256, history, measurement };
+      const bytes = Buffer.from(JSON.stringify(value));
+      if (bytes.length > 262144) throw Error('timing_artifact_too_large');
+      const evidenceFile = `timing-${action}-${randomUUID()}.json`;
+      await writeFile(resolve(this.output, evidenceFile), bytes, { mode: 0o600, flag: 'wx', signal });
+      return { status: history.samples.length ? 'COLLECTED' : 'NO_SAMPLES', evidenceFile,
+        sha256: sha256(bytes), bytes: bytes.length, sampleCount: history.samples.length,
+        qualification: 'NOT_ESTABLISHED', nativeJournalExport: 'NOT_COLLECTED' };
+    } catch {
+      return { status: 'UNAVAILABLE', code: 'timing_observation_unavailable' };
     }
   }
   async sourceObservation(signal) {
@@ -761,6 +796,9 @@ export class AppiumUI {
           finish: { nativeTerminal: this.terminal } }, captureProofAtOrAfterEpochMs });
       if (!freshStopped || this.pending.size !== 0 || this.uncertainMutations.size !== 0) preserveForRecovery = true;
     }
+    const nativeTiming = this.config?.target?.role === 'owned-ios-simulator' && this.binding
+      && !preserveForRecovery && this.pending.size === 0 && this.uncertainMutations.size === 0
+      && !this.lifetime.signal.aborted ? await this.captureTimingArtifact('cleanup', AbortSignal.timeout(5000)) : null;
     this.lifetime.abort();
     const sourceCleanup = this.sources?.cleanup();
     // Session creation can settle after cancellation. Drain it before deciding
@@ -789,6 +827,7 @@ export class AppiumUI {
       } catch { closed = false; /* Unconfirmed driver shutdown retains the target lease. */ }
     }
     return { source: source ?? { syntheticParticipantsClosed: true, ownedResourcesSettled: true }, observer, appiumSessionClosed: closed,
+      ...(nativeTiming ? { nativeTiming } : {}),
       ...(nativeCaptureProof ? { nativeCaptureProof } : {}),
       uncertainNativeMutationCount: this.uncertainMutations.size,
       observerInstallationUncertain: this.observerInstallationUncertain === true,
