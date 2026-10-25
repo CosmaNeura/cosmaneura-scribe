@@ -118,7 +118,8 @@ export class AppiumUI {
     active.throwIfAborted();
     // A lost reply cannot establish whether Appium/WDA executed the mutation.
     // Closing the session later does not undo or prove settlement of that work.
-    const mutation = method === 'POST' && !['/element', '/elements', '/context', '/execute/sync'].includes(path);
+    const mutation = method === 'POST' && (!['/element', '/elements', '/context', '/execute/sync'].includes(path)
+      || path === '/execute/sync' && body?.script === 'mobile: scroll');
     const command = mutation ? ++this.commandSequence : null;
     if (mutation) this.uncertainMutations.add(command);
     if (observerInstallation && this.observerInstallationUncertain) throw Error('observer_installation_unsettled');
@@ -567,6 +568,19 @@ export class AppiumUI {
     for (const step of plan?.actions ?? []) {
       if (signal?.aborted) throw Error('native_action_aborted');
       if (step.action === 'wait') { await this.check(step, signal); continue; }
+      if (step.action === 'scroll') {
+        if (this.config?.target?.role !== 'owned-ios-simulator'
+            || this.config.capabilities?.platformName !== 'iOS'
+            || this.config.capabilities?.['appium:automationName'] !== 'XCUITest') throw Error('native_scroll_target_unsupported');
+        if (Object.keys(step).some(key => !['action', 'direction', 'count'].includes(key))
+            || !['up', 'down'].includes(step.direction) || !Number.isInteger(step.count)
+            || step.count < 1 || step.count > 3) throw Error('native_scroll_arguments_invalid');
+        for (let index = 0; index < step.count; index++) {
+          if (signal?.aborted) throw Error('native_action_aborted');
+          await this.request('/execute/sync', 'POST', { script: 'mobile: scroll', args: [{ direction: step.direction }] }, signal);
+        }
+        continue;
+      }
       const element = await this.find(step.locator, signal);
       if (step.action === 'click') await this.request(`/element/${element}/click`, 'POST', {}, signal);
       else if (step.action === 'clear') await this.request(`/element/${element}/clear`, 'POST', {}, signal);
