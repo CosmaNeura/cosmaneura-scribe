@@ -35,3 +35,15 @@ mount, consent admission, recorder replies and saved note metadata. Note fields,
 audio URLs, credentials and authority material never enter retained receipts.
 These lab exports run only after the caller independently verifies its owned
 debug target. Their unit/VM tests do not prove a native UI journey.
+
+The iOS context increment remains Tier 2 test-only session automation. A real
+rebuilt-client sign-in on the owned Dublin simulator retained SafariViewService
+beside Scribe, causing the previous global single-WebView check to fail after
+the UI reached the workspace. Fresh XCUITest detailed metadata must now bind
+one local root page to the verified app bundle. The selected page's local URL
+and Capacitor bridge are checked before observer access or cleanup. Unknown,
+duplicate or changed ownership stays blocked; foreign hosted pages are never
+selected. The full context transaction remains under the existing UI mutex.
+No app authentication, consent, recording, source or storage logic changes.
+Keep the original failed run and frozen tooling; an original-run recovery
+requires separately reviewed reconciliation before a fresh run uses new tools.
