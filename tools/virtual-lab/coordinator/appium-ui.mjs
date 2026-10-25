@@ -729,7 +729,13 @@ export class AppiumUI {
     if (sourcesMayExist) {
       if (!output) throw Error('recovery_output_missing');
       participantInventory = await inspectParticipantResources({ ownedRoot: resolve(await realpath(output), 'participants'),
-        runId: scenario.admissionBinding.runId, signal });
+        runId: scenario.admissionBinding.runId, signal,
+        // This exception is limited to the single, non-forking native helper.
+        // A browser can leave unmarked orphan descendants after its root exits;
+        // missing browser ownership remains unknown even before Record.
+        allowUninitialized: stage === 'pre-record' && state.pending === 'prepare' && !state.completed.includes('prepare')
+          && this.config.sources.participants?.length === 1
+          && this.config.sources.participants[0].kind === 'virtual-microphone' });
     }
     const unresolvedOwnedResources = participantInventory?.unresolvedOwnedResources ?? [];
     return { source: 'current-native-recovery-observation', executionKind: 'live', runId: scenario.runId,

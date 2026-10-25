@@ -85,12 +85,33 @@ export async function prepareParticipantOwner(config, fixtureSHA256, { kind = 'b
 
 /** Fresh absence inspection only. It never kills, reconnects to, or issues a
  * command using an old PID. A launch without a completed identity stays unknown. */
-export async function inspectParticipantResources({ ownedRoot, runId, signal }) {
+export async function inspectParticipantResources({ ownedRoot, runId, signal, allowUninitialized = false }) {
   if (!uuid(runId) || !isAbsolute(ownedRoot ?? '') || !(signal instanceof AbortSignal)) throw Error('participant_resource_owner_required');
   signal.throwIfAborted();
-  const stat = await lstat(ownedRoot);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error('participant_owner_root_invalid');
-  const names = await readdir(ownedRoot);
+  const rootState = async () => {
+    try {
+      const stat = await lstat(ownedRoot);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error('participant_owner_root_invalid');
+      return { device: stat.dev, inode: stat.ino, names: (await readdir(ownedRoot)).sort() };
+    } catch (error) { if (error.code === 'ENOENT' && allowUninitialized === true) return null; throw error; }
+  };
+  const initial = await rootState(), names = initial?.names ?? [];
+  if (allowUninitialized === true && names.length === 0) {
+    // A pending prepare may fail before the factory writes its first owner.
+    // Both factories durably write that owner BEFORE spawning a marked child.
+    // The target lease fences this run; a fresh global marker inventory also
+    // refuses an unaccounted source whose ownership file has disappeared.
+    const rows = String(await processInventory(signal)).split('\n')
+      .map(line => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line)).filter(Boolean);
+    if (!rows.length) throw Error('participant_process_inventory_unavailable');
+    const marked = rows.filter(row => /--scribe-virtual-lab-owner=[a-f0-9-]{36}(?:\s|$)/.test(row[3]))
+      .map(row => ({ pid: Number(row[1]), parentPid: Number(row[2]) }));
+    if (JSON.stringify(await rootState()) !== JSON.stringify(initial)) throw Error('participant_owner_inventory_changed');
+    signal.throwIfAborted();
+    return { source: 'current-owned-participant-process-inventory', runId, observedAtEpochMs: Date.now(),
+      ownerInventory: initial === null ? 'absent' : 'empty', observations: [],
+      unresolvedOwnedResources: marked.map(process => ({ reason: 'unattributed_participant_process_present', process })) };
+  }
   if (!names.length || names.length > 64 || names.some(name => !/^[a-f0-9-]{36}\.json$/.test(name))) throw Error('participant_owner_inventory_invalid');
   const entries = [];
   for (const name of names.sort()) {
