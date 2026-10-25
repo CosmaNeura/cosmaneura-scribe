@@ -284,7 +284,6 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     validate(encounters);
     const entries = new Map(encounters.map(entry => [entry.appointmentRef, entry]));
     const ordered = [...encounters].sort((a, b) => (encounterTimestamp(a.detail) ?? Infinity) - (encounterTimestamp(b.detail) ?? Infinity));
-    for (const encounter of encounters) if (encounter.status === "draft_ready") listedDraftRefs.add(encounter.appointmentRef);
     const authorizedRefs = new Set(encounters.map(e => e.appointmentRef));
     for (const ref of recentStates.keys()) if (!authorizedRefs.has(ref)) recentStates.delete(ref);
     const pending = new Set<string>();
@@ -294,6 +293,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       ${encounters.length > 8 ? `<label class="provider-list-search">Find a patient<input data-visit-search type="search" placeholder="Patient name" value="${escape(listQuery)}" autocomplete="off"></label>` : ''}
       <ul class="provider-encounters" aria-label="Authorized encounters">${ordered.map(e => {
         const status = e.status === "draft_ready" ? e.status : recentStates.get(e.appointmentRef)?.status ?? e.status;
+        if (status === "draft_ready") listedDraftRefs.add(e.appointmentRef);
         if (status === "processing" || status === "recording_saved") pending.add(e.appointmentRef);
         return visitRow(e, status);
       }).join("")}</ul>
