@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
-import {createBotObservationRelay, createBotObservationRelayClient} from './bot-observation-relay.mjs';
+import {createBotObservationRelay, createBotObservationRelayClient, BOT_RELAY_RECORDING_LIMIT} from './bot-observation-relay.mjs';
 
 // Synthetic contract fixtures over real loopback sockets. No account, provider,
 // consent action, microphone, or live recording is used or qualified here.
@@ -142,6 +142,18 @@ test('late proof is refused within the unchanged two-second request budget', asy
   await delay(170);
   await assert.rejects(s.client.observe({requestNonce: randomUUID()}), /unavailable/);
   assert.equal(s.calls(), 1);
+});
+
+test('exhausted recording allowance preserves a separate bounded stop reconciliation lane', async t => {
+  const s = await setup(t);
+  assert.equal(BOT_RELAY_RECORDING_LIMIT, 4096);
+  for (let i = 0; i < BOT_RELAY_RECORDING_LIMIT; i++) await s.client.observe({requestNonce: randomUUID()});
+  await assert.rejects(s.client.observe({requestNonce: randomUUID()}), /unavailable/);
+  assert.equal((await raw(s.relay.endpoint)).status, 400); // Server also enforces the recording cap.
+  await delay(5);
+  const end = await s.client.observeStopped({requestNonce: randomUUID()});
+  assert.equal(end.provider.recordings[0].statusCode, 'done');
+  assert.equal(s.calls(), BOT_RELAY_RECORDING_LIMIT + 1);
 });
 
 test('abort and explicit close settle owned sockets without invoking provider mutation', async t => {

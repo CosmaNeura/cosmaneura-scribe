@@ -8,6 +8,8 @@ const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-
 const keys = (value, names) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).length === names.length && names.every(name => Object.hasOwn(value, name));
 const need = (value, code) => { if (!value) throw Error(code); };
+export const BOT_RELAY_RECORDING_LIMIT = 4096;
+export const BOT_RELAY_STOP_LIMIT = 64;
 const equalCapability = (a, b) => typeof a === 'string' && a.length === b.length
   && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
@@ -22,6 +24,7 @@ export async function createBotObservationRelay({expected, collector, signal}) {
   signal.throwIfAborted();
   const gate = new BotCaptureProofGate(expected), capability = randomBytes(32).toString('hex');
   const sockets = new Set(), nonces = new Set();
+  const counts = {observe: 0, observeStopped: 0};
   let busy = false, closed = false, recordingBlocked = false, closePromise, pending = null;
   const reply = (res, status, value) => {
     if (res.destroyed || res.writableEnded) return;
@@ -46,9 +49,10 @@ export async function createBotObservationRelay({expected, collector, signal}) {
         && ['observe', 'observeStopped'].includes(request.action)
         && equalCapability(request.capability, capability), 'bot_relay_request_refused');
       need(!closed && (!recordingBlocked || request.action === 'observeStopped')
-        && !busy && !nonces.has(request.requestNonce) && nonces.size < 4096,
+        && !busy && !nonces.has(request.requestNonce)
+        && counts[request.action] < (request.action === 'observe' ? BOT_RELAY_RECORDING_LIMIT : BOT_RELAY_STOP_LIMIT),
         'bot_relay_unavailable');
-      busy = true; nonces.add(request.requestNonce);
+      busy = true; nonces.add(request.requestNonce); counts[request.action]++;
       clearTimeout(timer);
       let deadline;
       try {
@@ -130,13 +134,15 @@ export function createBotObservationRelayClient({endpoint, signal}) {
   signal.throwIfAborted();
   let closed = false, busy = false, recordingBlocked = false, active = null;
   const nonces = new Set();
+  const counts = {observe: 0, observeStopped: 0};
   const close = () => { closed = true; active?.destroy(Error('bot_relay_closed')); signal.removeEventListener('abort', close); };
   signal.addEventListener('abort', close, {once: true});
   const request = async (action, {requestNonce}) => {
     signal.throwIfAborted();
     need(!closed && (!recordingBlocked || action === 'observeStopped') && !busy
-      && uuid(requestNonce) && !nonces.has(requestNonce) && nonces.size < 4096, 'bot_relay_client_unavailable');
-    nonces.add(requestNonce); busy = true;
+      && uuid(requestNonce) && !nonces.has(requestNonce)
+      && counts[action] < (action === 'observe' ? BOT_RELAY_RECORDING_LIMIT : BOT_RELAY_STOP_LIMIT), 'bot_relay_client_unavailable');
+    nonces.add(requestNonce); counts[action]++; busy = true;
     const started = now();
     try {
       const value = await new Promise((resolve, reject) => {

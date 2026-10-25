@@ -18,6 +18,8 @@ provider mutations remain outside this interface. The source measures the whole
 remote request using its own clock and revalidates the unmodified DTO. The
 two-second admission budget and source watchdog remain unchanged. A failed
 recording read blocks restart; explicit stop reconciliation remains possible.
+The 4096 recording-request allowance is separate from 64 explicit stop reads,
+so exhausting recording observations cannot consume stop reconciliation capacity.
 
 Validation includes real local sockets with synthetic contract DTOs, invalid
 capabilities/scope/extra fields, nonce replay, concurrent and late requests,
