@@ -82,6 +82,137 @@ describe("native microphone preparation metadata", () => {
       expect(view.getSnapshot()).toMatchObject({ status: "unavailable", microphone: null });
     } finally { await view.close(); }
   });
+  it("finishes the deliberate permission action after a visible UIKit resign outlasts the first metadata reopen", async () => {
+    vi.useFakeTimers();
+    const native = plugin(); let alive = false;
+    const failure = Object.assign(new Error("Synthetic native idle fence"), { code: "ios_capture_failed" });
+    native.beginMicrophoneCheck = vi.fn().mockResolvedValueOnce({ ...ready, status: "permission_required" })
+      .mockRejectedValueOnce(failure).mockRejectedValueOnce(failure)
+      .mockImplementation(async () => { alive = true; return ready; });
+    native.requestRecordingAccess = vi.fn().mockRejectedValue(failure);
+    native.readMicrophoneCheck = vi.fn(async () => ({ ...ready, status: alive ? "ready" : "unavailable" }));
+    const view = await openIOSAudioPreflight(new AbortController().signal, native);
+    try {
+      const result = view.requestRecordingAccess!().then(() => "ready", () => "rejected");
+      await vi.advanceTimersByTimeAsync(250);
+      expect(view.getSnapshot().status).toBe("checking");
+      await expect(view.requestRecordingAccess!()).rejects.toThrow();
+      await expect(view.selectMicrophone("synthetic-headset")).rejects.toThrow();
+      await vi.advanceTimersByTimeAsync(1250);
+      expect(await result).toBe("ready");
+      expect(document.visibilityState).toBe("visible");
+      expect(view.getSnapshot()).toMatchObject({ status: "ready", microphone: null });
+      expect(native.beginMicrophoneCheck).toHaveBeenCalledTimes(4);
+      expect(native.requestRecordingAccess).toHaveBeenCalledOnce();
+      expect(native.selectMicrophoneDevice).not.toHaveBeenCalled();
+      expect(native.endMicrophoneCheck).not.toHaveBeenCalled();
+    } finally { await view.close(); }
+  });
+  it.each(["ready", "permission_required"])("accepts a fresh %s metadata result without reopening an existing owner", async status => {
+    vi.useFakeTimers();
+    const native = plugin(), failure = Object.assign(new Error("Synthetic native idle fence"), { code: "ios_capture_failed" });
+    native.requestRecordingAccess = vi.fn().mockRejectedValue(failure);
+    native.readMicrophoneCheck = vi.fn(async () => ({ ...ready, status }));
+    const view = await openIOSAudioPreflight(new AbortController().signal, native);
+    try {
+      const result = view.requestRecordingAccess!().then(() => "settled", () => "rejected");
+      await vi.advanceTimersByTimeAsync(250); expect(await result).toBe("settled");
+      expect(view.getSnapshot()).toMatchObject({ status, microphone: null });
+      expect(native.beginMicrophoneCheck).toHaveBeenCalledOnce();
+      expect(native.requestRecordingAccess).toHaveBeenCalledOnce();
+      expect(native.endMicrophoneCheck).not.toHaveBeenCalled();
+    } finally { await view.close(); }
+  });
+  it("bounds post-permission metadata recovery and never ends or steals an unavailable native owner", async () => {
+    vi.useFakeTimers();
+    const native = plugin(), failure = Object.assign(new Error("Synthetic native idle fence"), { code: "ios_capture_failed" });
+    native.beginMicrophoneCheck = vi.fn().mockResolvedValueOnce(ready).mockRejectedValue(failure);
+    native.requestRecordingAccess = vi.fn().mockRejectedValue(failure);
+    native.readMicrophoneCheck = vi.fn(async () => ({ ...ready, status: "unavailable" }));
+    const view = await openIOSAudioPreflight(new AbortController().signal, native);
+    try {
+      const result = view.requestRecordingAccess!().then(() => "ready", () => "rejected");
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(await result).toBe("rejected");
+      const attempts = vi.mocked(native.beginMicrophoneCheck).mock.calls.length;
+      expect(attempts).toBeGreaterThan(2); expect(attempts).toBeLessThanOrEqual(21);
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(native.beginMicrophoneCheck).toHaveBeenCalledTimes(attempts);
+      expect(view.getSnapshot()).toMatchObject({ status: "unavailable", microphone: null });
+      expect(native.requestRecordingAccess).toHaveBeenCalledOnce();
+      expect(native.endMicrophoneCheck).not.toHaveBeenCalled();
+    } finally { await view.close(); }
+  });
+  it("joins post-permission recovery on close and rejects its late ready reply", async () => {
+    vi.useFakeTimers();
+    const native = plugin(), recovery = deferred(), order: string[] = [];
+    const failure = Object.assign(new Error("Synthetic native idle fence"), { code: "ios_capture_failed" });
+    native.beginMicrophoneCheck = vi.fn().mockResolvedValueOnce(ready).mockImplementation(() => { order.push("begin"); return recovery.promise; });
+    native.requestRecordingAccess = vi.fn().mockRejectedValue(failure);
+    native.readMicrophoneCheck = vi.fn(async () => ({ ...ready, status: "unavailable" }));
+    native.endMicrophoneCheck = vi.fn(async () => { order.push("end"); return {}; });
+    const view = await openIOSAudioPreflight(new AbortController().signal, native);
+    const result = view.requestRecordingAccess!().then(() => "ready", () => "rejected");
+    await vi.advanceTimersByTimeAsync(250);
+    expect(native.beginMicrophoneCheck).toHaveBeenCalledTimes(2);
+    const closing = view.close(); let closed = false; void closing.then(() => { closed = true; });
+    expect(closed).toBe(false); expect(native.endMicrophoneCheck).not.toHaveBeenCalled();
+    recovery.resolve(ready); await closing;
+    expect(await result).toBe("rejected"); expect(order).toEqual(["begin", "end"]);
+    expect(view.getSnapshot()).toMatchObject({ status: "unavailable", microphone: null });
+    await vi.advanceTimersByTimeAsync(6000); expect(native.beginMicrophoneCheck).toHaveBeenCalledTimes(2);
+  });
+  it.each(["account", "background"] as const)("cancels the post-permission recovery wait on %s invalidation", async kind => {
+    vi.useFakeTimers();
+    const native = plugin(), account = new AbortController();
+    const failure = Object.assign(new Error("Synthetic native idle fence"), { code: "ios_capture_failed" });
+    native.requestRecordingAccess = vi.fn().mockRejectedValue(failure);
+    native.readMicrophoneCheck = vi.fn(async () => ({ ...ready, status: "unavailable" }));
+    const view = await openIOSAudioPreflight(new AbortController().signal, native, account.signal);
+    try {
+      const result = view.requestRecordingAccess!().then(() => "ready", () => "rejected");
+      await vi.advanceTimersByTimeAsync(0);
+      if (kind === "account") account.abort(); else visibility("hidden");
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(await result).toBe("rejected");
+      expect(native.beginMicrophoneCheck).toHaveBeenCalledOnce();
+      expect(native.requestRecordingAccess).toHaveBeenCalledOnce();
+      expect(view.getSnapshot()).toMatchObject({ status: "unavailable", microphone: null });
+    } finally { await view.close(); }
+  });
+  it("does not accept a metadata reopen reply after the post-permission deadline", async () => {
+    vi.useFakeTimers();
+    const native = plugin(), recovery = deferred();
+    const failure = Object.assign(new Error("Synthetic native idle fence"), { code: "ios_capture_failed" });
+    native.beginMicrophoneCheck = vi.fn().mockResolvedValueOnce(ready).mockImplementation(() => recovery.promise);
+    native.requestRecordingAccess = vi.fn().mockRejectedValue(failure);
+    native.readMicrophoneCheck = vi.fn(async () => ({ ...ready, status: "unavailable" }));
+    const view = await openIOSAudioPreflight(new AbortController().signal, native);
+    try {
+      let outcome = "pending";
+      const result = view.requestRecordingAccess!().then(() => { outcome = "ready"; }, () => { outcome = "rejected"; });
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(outcome).toBe("rejected"); // Deadline does not wait for the late native promise.
+      recovery.resolve(ready); await result;
+      expect(view.getSnapshot()).toMatchObject({ status: "unavailable", microphone: null });
+      await vi.advanceTimersByTimeAsync(1000); expect(native.beginMicrophoneCheck).toHaveBeenCalledTimes(2);
+    } finally { recovery.resolve(ready); await view.close(); }
+  });
+  it("rejects malformed post-permission metadata instead of retrying or treating a meter as readiness", async () => {
+    vi.useFakeTimers();
+    const native = plugin(), failure = Object.assign(new Error("Synthetic native idle fence"), { code: "ios_capture_failed" });
+    native.beginMicrophoneCheck = vi.fn().mockResolvedValueOnce(ready).mockResolvedValue({ ...ready, microphone: { level: .2 } });
+    native.requestRecordingAccess = vi.fn().mockRejectedValue(failure);
+    native.readMicrophoneCheck = vi.fn(async () => ({ ...ready, status: "unavailable" }));
+    const view = await openIOSAudioPreflight(new AbortController().signal, native);
+    try {
+      const result = view.requestRecordingAccess!().then(() => "ready", () => "rejected");
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(await result).toBe("rejected"); expect(native.beginMicrophoneCheck).toHaveBeenCalledTimes(2);
+      expect(view.getSnapshot()).toMatchObject({ status: "unavailable", microphone: null });
+      expect(native.requestRecordingAccess).toHaveBeenCalledOnce();
+    } finally { await view.close(); }
+  });
   it("accepts granted access with an inactive empty catalogue and defers default microphone validation", async () => {
     const native = plugin(), empty = { ...ready, inputDevices: [], selectedInputId: null };
     native.beginMicrophoneCheck = vi.fn(async () => empty);

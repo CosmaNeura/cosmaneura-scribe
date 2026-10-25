@@ -18,7 +18,7 @@ export async function openIOSAudioPreflight(signal: AbortSignal,
   let closed = false, closing: Promise<void> | null = null, timer: ReturnType<typeof setTimeout> | undefined;
   const listeners = new Set<(snapshot: AudioPreflightSnapshot) => void>();
   let generation = 0, selecting = false, requesting = false, recovering = false, recoveryAttempted = false;
-  let wasVisible = document.visibilityState === "visible";
+  let wasVisible = document.visibilityState === "visible", cancelAccessRecovery: (() => void) | undefined;
   let operations: Promise<void> = Promise.resolve();
   let snapshot: AudioPreflightSnapshot = { status: "checking", inputDevices: [], selectedInputId: null, microphone: null };
   const active = (): boolean => !closed && !signal.aborted && !inheritedSignal?.aborted;
@@ -48,12 +48,12 @@ export async function openIOSAudioPreflight(signal: AbortSignal,
   const visibilityChanged = (): void => {
     const visible = document.visibilityState === "visible";
     if (visible === wasVisible || !active()) return;
-    wasVisible = visible; generation++;
+    wasVisible = visible; generation++; cancelAccessRecovery?.();
     if (visible) recoveryAttempted = false;
     unavailableSnapshot();
   };
   const close = (): Promise<void> => {
-    closed = true; generation++; snapshot = { ...snapshot, status: "unavailable", microphone: null };
+    closed = true; generation++; cancelAccessRecovery?.(); snapshot = { ...snapshot, status: "unavailable", microphone: null };
     clearTimeout(timer); listeners.clear(); signal.removeEventListener("abort", aborted);
     inheritedSignal?.removeEventListener("abort", aborted);
     document.removeEventListener("visibilitychange", visibilityChanged);
@@ -72,6 +72,42 @@ export async function openIOSAudioPreflight(signal: AbortSignal,
     try { publish(await operate(() => plugin.beginMicrophoneCheck(), restarted), restarted); }
     catch { if (accepted(restarted)) unavailableSnapshot(); }
     finally { recovering = false; }
+  };
+  // UIKit can end the metadata owner for the permission sheet while the web
+  // document remains visible. Finish only this deliberate action with a fresh
+  // advisory recheck; never replay the OS permission request or end an owner.
+  const afterPermissionFailure = async (observed: number): Promise<boolean> => {
+    const deadline = performance.now() + 5000;
+    recoveryAttempted = true;
+    const bounded = async <T>(operation: () => Promise<T>): Promise<T> => {
+      let cancel!: () => void, timeout: ReturnType<typeof setTimeout> | undefined;
+      const cancelled = new Promise<never>((_, reject) => {
+        cancel = () => reject(unavailable()); cancelAccessRecovery = cancel;
+        timeout = setTimeout(cancel, Math.max(0, deadline - performance.now()));
+      });
+      try { return await Promise.race([operation(), cancelled]); }
+      finally { clearTimeout(timeout); if (cancelAccessRecovery === cancel) cancelAccessRecovery = undefined; }
+    };
+    const fresh = (): void => { if (!accepted(observed) || performance.now() >= deadline) throw unavailable(); };
+    const read = (operation: () => Promise<unknown>): Promise<unknown> => bounded(() => operate(() => {
+      fresh(); return operation();
+    }, observed));
+    for (let attempt = 0; attempt < 20 && accepted(observed); attempt++) {
+      let delay: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await bounded(() => new Promise<void>(resolve => { delay = setTimeout(resolve, 250); }));
+        fresh();
+        let value = await read(() => plugin.readMicrophoneCheck()); fresh();
+        if (parseIOSAudioPreflight(value).status === "unavailable") {
+          value = await read(() => plugin.beginMicrophoneCheck()); fresh();
+        }
+        const status = parseIOSAudioPreflight(value).status;
+        if (status === "ready" || status === "permission_required") { publish(value, observed); return true; }
+      } catch (error) {
+        if (!nativePreparationFailed(error)) return false;
+      } finally { clearTimeout(delay); }
+    }
+    return false;
   };
   try {
     current(); const opened = generation; publish(await operate(() => plugin.beginMicrophoneCheck(), opened), opened);
@@ -97,7 +133,10 @@ export async function openIOSAudioPreflight(signal: AbortSignal,
       requesting = true; const requested = ++generation;
       snapshot = { ...snapshot, status: "checking", microphone: null }; notify();
       try { publish(await operate(() => plugin.requestRecordingAccess(), requested), requested); }
-      catch (error) { if (accepted(requested)) unavailableSnapshot(); throw error; }
+      catch (error) {
+        if (accepted(requested) && nativePreparationFailed(error) && await afterPermissionFailure(requested)) return;
+        if (accepted(requested)) unavailableSnapshot(); throw error;
+      }
       finally { requesting = false; }
     }, selectMicrophone: async id => {
       visibleCurrent(); if (selecting || requesting || recovering || !snapshot.inputDevices.some(device => device.id === id)) throw unavailable();
@@ -143,3 +182,7 @@ function exact(value: unknown, keys: readonly string[]): Record<string, unknown>
   return value as Record<string, unknown>;
 }
 function unavailable(): QueueInvariantError { return new QueueInvariantError("provider_microphone_check_unavailable"); }
+
+function nativePreparationFailed(value: unknown): boolean {
+  return !!value && typeof value === "object" && "code" in value && value.code === "ios_capture_failed";
+}
