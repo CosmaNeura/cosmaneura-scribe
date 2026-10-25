@@ -79,3 +79,25 @@ retain already-created journals and any external authorization for explicit
 same-run inspection. No production configuration or schema migration is part of
 this increment. Exact-head independent review and retained local/live scope
 receipts are required; a profile-only pass cannot close overall lab acceptance.
+
+The separate bot-proof increment is Tier 2 test tooling because it gates
+synthetic fixture emission on consent and recorder identity. It adds only a
+closed metadata contract and an explicitly selected participant proof branch;
+the default native branch remains unchanged. No live collector, guessed host
+locators, provider mutation or complete bot coordinator is introduced. The
+producer must supply real normal host consent and fresh exact-bot/recording
+responses with complete Core recording-scoped correspondence. Partial mappings
+remain pending; the potential Start Recording response-ID mismatch must be
+resolved independently before real playback can qualify.
+
+Recovery never turns absence into stop. Once recording was admitted, unsafe
+evidence or a collector exception blocks source restart after admission; only
+the same recording's terminal/completion
+and exact settled release evidence can establish stop. Closing a participant
+does not stop the remote bot. Normal host stop and normal account disconnection
+remain separately required before sequential A/B ownership. Revert this tooling
+to disable new bot-branch execution; retain evidence and any external bot for
+scoped normal cleanup. Tests prove contract rejection and mocked no-schedule
+behavior, not a live media or consent gate. A fresh transport rehearsal, real
+event/recording mapping, continuous monitor and independent final-head review
+remain prerequisites for the later live coordinator.
