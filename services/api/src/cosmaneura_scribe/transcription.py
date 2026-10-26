@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, Protocol, cast
 from urllib.parse import urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from azure.ai.transcription.aio import TranscriptionClient
 from azure.ai.transcription.models import (
@@ -61,6 +61,10 @@ class TranscriptionRequest:
     def __post_init__(self) -> None:
         if not self.tracks:
             raise ValueError("at least one assembled audio track is required")
+
+
+SpeechObserver = Callable[[SpeechBoundaryObservation], None]
+SpeechObserverFactory = Callable[[TranscriptionRequest], SpeechObserver | None]
 
 
 @dataclass(frozen=True)
@@ -148,11 +152,13 @@ class AzureSpeechTranscriber:
         max_speakers: int,
         credential: DefaultAzureCredential | None = None,
         endpoint_guard: SpeechEndpointGuard | None = None,
-        observer: Callable[[SpeechBoundaryObservation], None] | None = None,
+        observer: SpeechObserver | None = None,
+        observer_for_request: SpeechObserverFactory | None = None,
     ) -> None:
         self._client = client
         self._max_speakers = max_speakers
         self._observer = observer
+        self._observer_for_request = observer_for_request
         self._credential = credential
         self._endpoint_guard = endpoint_guard
 
@@ -161,7 +167,9 @@ class AzureSpeechTranscriber:
         return "azure_ai_speech"
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> AzureSpeechTranscriber:
+    def from_settings(
+        cls, settings: Settings, *, observer_for_request: SpeechObserverFactory | None = None
+    ) -> AzureSpeechTranscriber:
         if settings.azure_speech_endpoint is None:
             raise ValueError("azure_speech_endpoint is required for Azure transcription")
         endpoint = str(settings.azure_speech_endpoint).rstrip("/")
@@ -190,6 +198,7 @@ class AzureSpeechTranscriber:
             max_speakers=settings.azure_speech_max_speakers,
             credential=credential,
             endpoint_guard=endpoint_guard,
+            observer_for_request=observer_for_request,
         )
 
     async def transcribe(self, request: TranscriptionRequest) -> SttResult:
@@ -197,6 +206,13 @@ class AzureSpeechTranscriber:
         duration_ms = 0
 
         for track_index, track in enumerate(request.tracks):
+            scoped_observer = None
+            if self._observer_for_request is not None:
+                try:
+                    scoped_observer = self._observer_for_request(request)
+                except Exception:
+                    pass  # Diagnostics neither authorize nor fail/retry transcription.
+            observers = tuple(o for o in (self._observer, scoped_observer) if o is not None)
             if self._endpoint_guard is not None:
                 await self._endpoint_guard.verify()
             options = TranscriptionOptions(
@@ -214,11 +230,25 @@ class AzureSpeechTranscriber:
             )
             try:
                 with track.open() as audio_file:
-                    header = inspect_wave_header(audio_file) if self._observer else None
+                    body = TranscriptionContent(definition=options, audio=audio_file)
+                    call_id = None
+                    if observers:
+                        try:
+                            call_id = str(uuid4())
+                        except Exception:
+                            pass
                     result = await self._client.transcribe(
-                        TranscriptionContent(definition=options, audio=audio_file),
+                        body,
                         logging_enable=False,
                     )
+                    # Inspect after successful provider consumption. Even a
+                    # broken diagnostic seek cannot corrupt the audio sent.
+                    header = None
+                    if observers:
+                        try:
+                            header = inspect_wave_header(audio_file)
+                        except Exception:
+                            pass
             except OSError:
                 raise TranscriptionInputError("audio track unavailable") from None
             except (
@@ -236,19 +266,16 @@ class AzureSpeechTranscriber:
                 for phrase in result.phrases
                 if phrase.text.strip() and phrase.duration_milliseconds > 0
             ]
-            if self._observer is not None:
-                observed_max_speakers = (
-                    options.diarization_options.max_speakers
-                    if options.diarization_options is not None
-                    else None
-                )
-                if observed_max_speakers is None:
-                    raise TranscriptionInputError("speech_diarization_option_unavailable")
-                self._observer(
-                    SpeechBoundaryObservation(
+            if observers:
+                try:
+                    # Inspect the SDK serialization of the same body passed to
+                    # Azure. Never infer enablement from a setting/default.
+                    assert body.definition is not None
+                    diarization = body.definition.as_dict()["diarization"]
+                    observation = SpeechBoundaryObservation(
                         track_index=track_index,
                         sdk_version=azure_sdk_version(),
-                        max_speakers=observed_max_speakers,
+                        max_speakers=diarization["maxSpeakers"],
                         phrase_count=len(result.phrases),
                         missing_speaker_count=sum(p.speaker is None for p in result.phrases),
                         distinct_non_null_speaker_count=len(
@@ -257,8 +284,20 @@ class AzureSpeechTranscriber:
                         accepted_phrase_count=len(accepted),
                         accepted_distinct_speaker_count=len({p.speaker for p in accepted}),
                         wave_header=header,
+                        diarization_enabled=diarization.get("enabled"),
+                        call_id=call_id,
+                        accepted_missing_speaker_count=sum(p.speaker is None for p in accepted),
+                        accepted_distinct_non_null_speaker_count=len(
+                            {p.speaker for p in accepted if p.speaker is not None}
+                        ),
                     )
-                )
+                    for observer in observers:
+                        try:
+                            observer(observation)
+                        except Exception:
+                            pass  # A failed sink must not produce another ASR call.
+                except Exception:
+                    pass
             for phrase in accepted:
                 content = phrase.text.strip()
                 speaker = (
@@ -306,7 +345,11 @@ class AzureSpeechTranscriber:
             await self._credential.close()
 
 
-def build_speech_to_text_provider(settings: Settings) -> SpeechToTextProvider:
+def build_speech_to_text_provider(
+    settings: Settings, *, observer_for_request: SpeechObserverFactory | None = None
+) -> SpeechToTextProvider:
     if settings.transcription_backend == "azure":
-        return AzureSpeechTranscriber.from_settings(settings)
+        return AzureSpeechTranscriber.from_settings(
+            settings, observer_for_request=observer_for_request
+        )
     raise ValueError("a speech-to-text backend must be explicitly configured")

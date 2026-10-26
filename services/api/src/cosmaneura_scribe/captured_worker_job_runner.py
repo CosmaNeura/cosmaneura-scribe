@@ -22,6 +22,7 @@ from .captured_translation_worker import CapturedTranslationWorker
 from .captured_worker_settings import CapturedWorkerSettings
 from .postgres_repository import build_postgres_provider
 from .safe_logging import configure_standalone_logging, log_event
+from .scoped_speech_observation import capture_speech_observer
 from .speech_private_network import PrivateSpeechEndpointGuard
 from .transcription import build_speech_to_text_provider
 from .transcription_job_runner import (
@@ -133,7 +134,14 @@ async def _execute(settings: CapturedWorkerSettings, tenant: UUID, session: UUID
         if settings.captured_worker_stage == "speech":
             assembler = build_audio_track_assembler(settings, repositories)
             closers.insert(0, assembler.close)
-            transcriber = build_speech_to_text_provider(settings)
+            observer = capture_speech_observer(
+                settings.captured_speech_observation_scope, tenant_id=tenant
+            )
+            transcriber = (
+                build_speech_to_text_provider(settings, observer_for_request=observer)
+                if observer is not None
+                else build_speech_to_text_provider(settings)
+            )
             closers.insert(0, transcriber.close)
             worker = CapturedTranscriptionWorker(
                 repositories=repositories,

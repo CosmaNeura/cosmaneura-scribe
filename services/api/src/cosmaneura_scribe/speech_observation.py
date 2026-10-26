@@ -1,7 +1,8 @@
 """Opt-in count-only Azure boundary observations for scoped diagnostics.
 
-No observer is installed by the service. Callers must already hold consent and
-the intended synthetic session scope; this module neither authorizes nor logs.
+Callers must already hold consent and the intended synthetic session scope;
+this module neither authorizes nor logs. The capture worker can explicitly
+install a default-off, expiring metadata observer for one exact scope.
 """
 
 from __future__ import annotations
@@ -31,14 +32,19 @@ class SpeechBoundaryObservation:
     accepted_phrase_count: int
     accepted_distinct_speaker_count: int
     wave_header: WaveHeaderObservation | None
+    diarization_enabled: bool | None = None
+    call_id: str | None = None
+    accepted_missing_speaker_count: int | None = None
+    accepted_distinct_non_null_speaker_count: int | None = None
 
 
 def inspect_wave_header(stream: BinaryIO) -> WaveHeaderObservation | None:
-    """Inspect only the canonical 44-byte header and restore the exact position."""
+    """Inspect only the first canonical 44 bytes and restore the exact position."""
     if not stream.seekable():
         return None
     position = stream.tell()
     try:
+        stream.seek(0)
         header = stream.read(44)
     finally:
         stream.seek(position)

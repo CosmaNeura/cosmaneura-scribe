@@ -24,6 +24,8 @@ class CapturedWorkerSettings(Settings):
     captured_worker_enabled: bool = False
     captured_worker_stage: Literal["speech", "translation"] | None = None
     captured_worker_batch_size: int = Field(default=8, ge=1, le=32)
+    # Parse separately: malformed diagnostics must never prevent worker startup.
+    captured_speech_observation_scope: str | None = Field(default=None, repr=False)
     azure_translation_endpoint: str | None = None
     azure_translation_deployment: str | None = None
     azure_translation_private_endpoint_cidrs: tuple[IpNetwork, ...] = ()
