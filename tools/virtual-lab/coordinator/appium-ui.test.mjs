@@ -784,14 +784,16 @@ test('a caught scroll failure cannot dispatch input in a later steps or public r
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 });
 test('real HTTP scroll boundary uses attested async hash reads and returns to native context before touch', async () => {
-  let context = 'NATIVE_APP', reads = 0, touches = 0;
+  let context = 'NATIVE_APP', reads = 0, touches = 0, scriptTimeout = 0, timeoutWrites = 0;
   const server = createServer(async (request, response) => {
     let raw = ''; for await (const chunk of request) raw += chunk; const body = raw ? JSON.parse(raw) : null;
     let value;
     if (request.url.endsWith('/context')) { if (body) context = body.name; value = context; }
     else if (request.url.endsWith('/elements')) { assert.equal(context, 'NATIVE_APP'); value = []; }
     else if (request.url.endsWith('/window/rect')) { assert.equal(context, 'NATIVE_APP'); value = { x: 0, y: 0, width: 402, height: 874 }; }
+    else if (request.url.endsWith('/timeouts')) { assert.deepEqual(body, { script: 1000 }); scriptTimeout = body.script; timeoutWrites++; value = null; }
     else if (request.url.endsWith('/execute/async')) {
+      assert.equal(scriptTimeout, 1000); await new Promise(resolve => setTimeout(resolve, 5));
       assert.equal(context, 'WEBVIEW_123.1'); assert.match(body.script, /crypto\.subtle\.digest/);
       assert.match(body.script, /arguments\[arguments.length - 1\]/); assert.deepEqual(body.args, []); reads++; value = scrollSnapshot();
     } else if (request.url.endsWith('/execute/sync')) {
@@ -805,7 +807,7 @@ test('real HTTP scroll boundary uses attested async hash reads and returns to na
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   try {
     const ui = scrollingDriver(); ui.base = `http://127.0.0.1:${server.address().port}`; ui.session = 'owned';
-    await ui.safeScroll('down', AbortSignal.timeout(3000)); assert.equal(reads, 2); assert.equal(touches, 1);
+    await ui.safeScroll('down', AbortSignal.timeout(3000)); assert.equal(reads, 2); assert.equal(touches, 1); assert.equal(timeoutWrites, 1);
     assert.equal(context, 'NATIVE_APP'); assert.equal(ui.uncertainMutations.size, 0); assert.equal(ui.inputSafetyUncertain, false);
     ui.inputSafetyUncertain = true; const projected = await ui.webview('return { metadataOnly: true };', [], AbortSignal.timeout(3000));
     assert.deepEqual(projected, { metadataOnly: true }); assert.equal(touches, 1);
@@ -823,6 +825,47 @@ test('native context cannot interleave with a complete scroll observation/touch/
   while (!events.includes('touch')) await new Promise(resolve => setImmediate(resolve));
   const click = ui.request('/element/later/click', 'POST', {}); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(events, ['touch']); release(); await Promise.all([scrolling, click]); assert.deepEqual(events, ['touch', 'click']);
+});
+
+test('async observation timeout taints input only after a touch and does not extend caller cancellation', async () => {
+  for (const failure of ['before-touch', 'after-touch', 'caller-abort']) {
+    let context = 'NATIVE_APP', scriptTimeout = 0, reads = 0, touches = 0, received;
+    const arrived = new Promise(resolve => { received = resolve; });
+    const server = createServer(async (request, response) => {
+      let raw = ''; for await (const chunk of request) raw += chunk; const body = raw ? JSON.parse(raw) : null;
+      let value;
+      if (request.url.endsWith('/context')) { if (body) context = body.name; value = context; }
+      else if (request.url.endsWith('/elements')) value = [];
+      else if (request.url.endsWith('/window/rect')) value = { x: 0, y: 0, width: 402, height: 874 };
+      else if (request.url.endsWith('/timeouts')) { assert.deepEqual(body, { script: 1000 }); scriptTimeout = body.script; value = null; }
+      else if (request.url.endsWith('/execute/sync')) value = body.script === IOS_CONTEXT_DISCOVERY.script ? appContexts() : true;
+      else if (request.url.endsWith('/execute/async')) {
+        assert.equal(scriptTimeout, 1000); reads++; received();
+        if (failure === 'caller-abort') await new Promise(resolve => setTimeout(resolve, 100));
+        if (failure !== 'after-touch' || reads === 2) {
+          response.statusCode = 408;
+          return response.end('{"value":{"error":"script timeout","message":"bounded synthetic timeout"}}');
+        }
+        value = scrollSnapshot();
+      } else if (request.url.endsWith('/actions')) { assert.equal(context, 'NATIVE_APP'); touches++; value = null; }
+      else throw Error('unexpected endpoint');
+      response.end(JSON.stringify({ value }));
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const ui = scrollingDriver(); ui.base = `http://127.0.0.1:${server.address().port}`; ui.session = 'owned';
+      const cancel = new AbortController(), operation = ui.safeScroll('down', cancel.signal);
+      const rejected = assert.rejects(operation);
+      if (failure === 'caller-abort') { await arrived; cancel.abort(); }
+      await rejected;
+      assert.equal(touches, failure === 'after-touch' ? 1 : 0);
+      assert.equal(ui.inputSafetyUncertain, failure === 'after-touch');
+      assert.equal(ui.uncertainMutations.size, 0);
+      if (failure === 'caller-abort') assert.equal(ui.contextUncertain, true);
+      else { assert.equal(context, 'NATIVE_APP'); assert.equal(ui.contextUncertain, false); }
+      assert.equal(ui.asyncScriptTimeoutSession, 'owned');
+    } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+  }
 });
 
 test('ambiguous or missing native controls cannot choose an arbitrary first match', async () => {
