@@ -205,6 +205,13 @@ export class AppiumUI {
         await this.rawRequest('/context', 'POST', { name: context }, signal);
         if (await this.rawRequest('/execute/sync', 'POST', { script: IOS_CONTEXT_ATTESTATION, args: [] }, signal, { readOnlyObservation: true }) !== true)
           throw Error('owned_webview_identity_changed');
+        if (asynchronous && this.asyncScriptTimeoutSession !== this.session) {
+          // XCUITest's atoms backend otherwise defaults async scripts to 0 ms.
+          // This changes only our owned session; the caller's signal and full
+          // proof deadline still bound this entire context transaction.
+          await this.rawRequest('/timeouts', 'POST', { script: 1000 }, signal);
+          this.asyncScriptTimeoutSession = this.session;
+        }
         return await this.rawRequest(asynchronous ? '/execute/async' : '/execute/sync', 'POST', { script, args }, signal, { observerInstallation, readOnlyObservation: !observerInstallation });
       }
       finally {
