@@ -228,3 +228,22 @@ before removing only the owned observer. No product/native app rebuild, capture
 command, device setting or service deployment is involved. Preserve the failed
 resumes and their native-only replies; revert tooling only for new runs. Unit
 and transport tests do not replace the actual recovered and fresh UI journeys.
+
+The Desktop Save completion increment is Tier 2 lab observation tooling. The
+owner authorized a passive adapter for the existing normal `open_core` IPC
+response: a clean note's autosave flush can issue no new HTTP save. Preserve
+the original prepare/read/save receipt and join its session, note, source and
+ordered field hashes to one normal Save click, the same account, connection
+and encounter, a successful correlated `open_core` reply, and actual Saved for
+review UI. Its separate Desktop completion DTO never fabricates a native
+remount or an HTTP save. Field values stay inside the owned renderer; only
+their digest and field order leave it. Existing iOS completion and capture
+proof budgets are unchanged.
+
+The observer preserves the product handler's exact promise and rejects late,
+failed, superseded or foreign replies. Pending work retains existing cleanup
+ownership. Restore the prior tooling only for new runs; retain original failed
+run evidence and never replay a Save with an uncertain input response. Focused
+clean/dirty completion, actual clean-autosave, source/auth/encounter race and
+cleanup tests plus independent final-source review precede live use. These
+offline tests do not establish actual Desktop recording, Save or Listen.
