@@ -170,6 +170,40 @@ final class NativeRecordingBindingTests: XCTestCase {
     } catch {}
   }
 
+  func testReviewReopenNeverCreatesMissingOrUnconfirmedCustody() async throws {
+    let service = Service(try scope(), try published()), records = Records(), keys = Keys()
+    let bound = owner(service, records, keys)
+    await failure { _ = try await bound.reopenBound() }
+    let reads = await service.publishedReads, calls = await service.calls
+    XCTAssertEqual(reads, 0); XCTAssertTrue(calls.isEmpty); XCTAssertEqual(keys.count, 0)
+    await service.configure(fail: true)
+    await failure { _ = try await bound.open() }
+    let before = await service.calls.count
+    await failure { _ = try await bound.reopenBound() }
+    let after = await service.calls.count
+    XCTAssertEqual(before, after); XCTAssertEqual(keys.count, 1)
+  }
+
+  func testReviewReopenPreservesBoundKeyAndDoesNotRebindOrReplaceMissingKey() async throws {
+    let service = Service(try scope(), try published()), records = Records(), keys = Keys()
+    let bound = owner(service, records, keys), cipher = try await bound.open()
+    let restored = try await owner(service, records, keys).reopenBound()
+    XCTAssertEqual(restored.receipt, cipher.receipt)
+    let calls = await service.calls.count, reads = await service.publishedReads
+    XCTAssertEqual(calls, 1); XCTAssertEqual(reads, 1); XCTAssertEqual(keys.count, 1)
+    keys.loseCustody()
+    await failure { _ = try await bound.reopenBound() }
+    XCTAssertEqual(keys.count, 1)
+  }
+
+  func testReviewReopenRejectsChangedCurrentScope() async throws {
+    let service = Service(try scope(), try published()), records = Records(), keys = Keys()
+    let bound = owner(service, records, keys)
+    _ = try await bound.open()
+    await service.configure(scopes: [try scope()])
+    await failure { _ = try await bound.reopenBound() }
+  }
+
   func testFreshBindAndRestartUseOneKeyOneIntentAndNoFurtherPublishedKeyFetch() async throws {
     let service = Service(try scope(), try published())
     let records = Records()
