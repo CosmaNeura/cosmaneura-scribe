@@ -192,6 +192,14 @@ export async function runJourney({ scenario, adapter, output, labRoot = process.
     await journal.event('preflight', { evidenceSHA256: sha256(JSON.stringify(preflight)), evidenceFile: preflightFile, budgets: ENGINEERING_BUDGETS });
     await tracked('connect', signal => adapter.connect(scenario, { signal, output: runIdentity.outputCanonical }), Math.min(deadline, 180000));
     if (adapter.restore) await tracked('restore', signal => adapter.restore(journal.state, { output, signal, observations }), Math.min(deadline, 30000));
+    // Inspector setup precedes timed UI actions and is retained as its own phase.
+    // It is not native readiness/authority or evidence that the cold goal passed.
+    // A resumed or pending run must reconcile without another setup attempt.
+    if (!resume && !journal.state.pending && journal.state.completed.length === 0 && adapter.prepareInitialUI) {
+      const evidence = await tracked('initial_ui_readiness', signal => adapter.prepareInitialUI(scenario,
+        { signal, output: runIdentity.outputCanonical }), Math.min(deadline, 30000));
+      if (evidence) await journal.event('initial_ui_readiness', evidence);
+    }
     if (journal.state.pending) {
       const action = journal.state.pending;
       const evidence = await tracked('reconcile', signal => observe(action, () => adapter.reconcile(action, scenario, { signal })), Math.min(deadline, 30000));

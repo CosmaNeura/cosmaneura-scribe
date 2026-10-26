@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 import { ENGINEERING_BUDGETS, JOURNEY, nativeCleanupProvesStopped, runJourney, validateScenario } from './engine.mjs';
-import { lockTarget, sha256 } from './journal.mjs';
+import { Journal, lockTarget, sha256 } from './journal.mjs';
 
 const scenario = () => ({ schema: 1, syntheticOnly: true, runId: 'synthetic-engine-test', mode: 'fixed', executionKind: 'mock',
   targetId: `owned-test-target-${randomUUID()}`, sourceSHA: 'a'.repeat(40), build: { bundleId: 'test.scribe', number: '1', sha256: 'b'.repeat(64) },
@@ -41,6 +41,63 @@ test('ambiguous Finish is reconciled, never clicked twice after restart', async 
   const resumed = adapter(s, { reconcile: async action => observation(action, s) });
   await runJourney({ scenario: s, adapter: resumed, labRoot: output, output, resume: true });
   assert.ok(!resumed.calls.includes('finish')); assert.ok(!resumed.calls.includes('create_visit'));
+});
+test('initial UI setup runs before action intent, and never on resumed admitted or pending runs', async () => {
+  for (const pending of [false, true]) {
+    const output = await mkdtemp(join(tmpdir(), 'scribe-initial-ui-')), s = scenario(); let setups = 0;
+    const prepareInitialUI = async (_scenario, { signal, output: actual }) => {
+      assert.equal(signal.aborted, false); assert.equal(actual, await realpath(output));
+      const state = JSON.parse(await readFile(join(output, 'run.json')));
+      assert.equal(state.pending, null); assert.deepEqual(state.completed, []); setups++;
+      return { evidenceFile: 'test-only.json', evidenceSHA256: 'a'.repeat(64) };
+    };
+    const driver = adapter(s, { prepareInitialUI });
+    if (pending) driver.perform = async () => { throw Error('uncertain_sign_in'); };
+    try {
+      const initial = runJourney({ scenario: s, adapter: driver, output, labRoot: output, stopAfter: 'consent' });
+      if (pending) await assert.rejects(initial, /uncertain_sign_in/); else await initial;
+      const resumed = adapter(s, { prepareInitialUI: async () => { throw Error('setup_must_not_repeat'); },
+        reconcile: async action => observation(action, s) });
+      await runJourney({ scenario: s, adapter: resumed, output, labRoot: output, resume: true });
+      assert.equal(setups, 1); assert.ok(!resumed.calls.includes('sign_in'));
+    } finally { await rm(output, { recursive: true, force: true }); }
+  }
+});
+test('failed setup has no action intent, and cancellation is awaited before cleanup', async () => {
+  const output = await mkdtemp(join(tmpdir(), 'scribe-initial-ui-')), s = { ...scenario(), timeoutMs: 1000 };
+  const events = [], driver = adapter(s, {
+    prepareInitialUI: async (_s, { signal }) => {
+      await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+      await new Promise(resolve => setTimeout(resolve, 20)); events.push('settled'); throw Error('setup_cancelled');
+    },
+    cleanup: async () => { events.push('cleanup'); return { ownedResourcesSettled: true }; },
+  });
+  try {
+    await assert.rejects(runJourney({ scenario: s, adapter: driver, output, labRoot: output }), /operation_timeout/);
+    const state = JSON.parse(await readFile(join(output, 'run.json')));
+    assert.deepEqual(state.completed, []); assert.equal(state.pending, null); assert.deepEqual(driver.calls, []);
+    assert.ok(events.indexOf('settled') < events.lastIndexOf('cleanup'));
+  } finally { await rm(output, { recursive: true, force: true }); }
+});
+test('a recomputed journal cannot move startup after input or introduce a second setup', async () => {
+  const output = await mkdtemp(join(tmpdir(), 'scribe-initial-ui-')), s = scenario();
+  try {
+    await runJourney({ scenario: s, adapter: adapter(s, { prepareInitialUI: async () => ({ evidenceFile: 'test-only.json' }) }),
+      output, labRoot: output, stopAfter: 'sign_in' });
+    const original = JSON.parse(await readFile(join(output, 'run.json')));
+    for (const duplicate of [true, false]) {
+      const state = structuredClone(original), initial = state.events.find(event => event.kind === 'initial_ui_readiness');
+      if (duplicate) state.events.splice(state.events.indexOf(initial), 0, structuredClone(initial));
+      else { state.events.splice(state.events.indexOf(initial), 1); state.events.push(initial); }
+      let previous = null;
+      state.events = state.events.map((event, sequence) => {
+        const { sha256: _old, ...body } = event; Object.assign(body, { sequence, previous });
+        const sha = sha256(JSON.stringify(body)); previous = sha; return { ...body, sha256: sha };
+      });
+      await writeFile(join(output, 'run.json'), JSON.stringify(state));
+      await assert.rejects(Journal.load(join(output, 'run.json'), state.identity, true, { readOnly: true }), /journal_integrity_failed/);
+    }
+  } finally { await rm(output, { recursive: true, force: true }); }
 });
 test('an unconfirmed mutation blocks resume and preserves pending action', async () => {
   const output = await mkdtemp(join(tmpdir(), 'scribe-coordinator-')), s = scenario();

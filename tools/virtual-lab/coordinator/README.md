@@ -82,6 +82,28 @@ the operation blocked. Native controls and the entire context transaction
 remain serialized. This uses the detailed bundle metadata provided by the
 lab's pinned XCUITest driver; older drivers without it are unsupported.
 
+A fresh iOS run has a separate `initial_ui_readiness` setup phase after session
+connection/restoration and before sign-in intent or input. XCUITest's first
+`mobile: getContexts` call can initialize its remote inspector even with
+`waitForWebviewMs:0`. Setup allows at most 30 seconds, retries only the exact
+native-only response, and requires the same bundle/root selection, post-switch
+bridge attestation and return to native context. It installs no observer and
+calls no product method. Private `ios-webview-startup.*.json` receipts retain
+actual Node wall/monotonic brackets, read durations/counts and sanitized outcome;
+the successful journal event binds the receipt's canonical JSON hash.
+
+Setup is attempted once in a fresh run, never during resume or pending-action
+reconciliation. Later observer, input/capture and cleanup reads still discover
+and attest afresh under their unchanged 1500ms discovery limit and enclosing
+proof deadlines. Startup evidence does not grant capture readiness or get
+re-stamped as a current observation. The 30-second automation waiting ceiling
+does not change the 10-second cold-launch engineering goal: any cold-start
+measurement must retain session connection and inspector setup time, including
+failed setup. Setup receipts explicitly leave performance qualification
+`NOT_ESTABLISHED`; they do not establish native timestamp precision or an SLA.
+Timeout/cancellation retains the failed attempt, awaits owned cleanup and
+preserves quarantine if context or resource settlement cannot be proven.
+
 Failures save private screenshots plus metadata-only receipts. Cleanup closes
 only owned participant browser processes and the newly created Appium session,
 with native no-reset/no-terminate capabilities. An uncertain recorder stays
