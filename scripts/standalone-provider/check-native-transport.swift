@@ -1,5 +1,6 @@
 import CosmasNativeAuth
 import Foundation
+import Network
 
 // Offline URLProtocol fixture: intercepts every request before DNS/TLS. No
 // account, microphone, clinical content, network or persistent store is used.
@@ -156,6 +157,59 @@ private func checkTimingMetadata() throws {
               "legacy eight metrics unaffected by optional header")
 }
 
+#if SCRIBE_VIRTUAL_LAB_NETWORK
+private func checkLabNetworkConfiguration() throws {
+  let now = Date(timeIntervalSince1970: 1_800_000_000)
+  let valid: [String: Any] = [
+    "version": 1, "runId": "e7b47d81-7b6d-480a-81f5-31f6c9e73bf3",
+    "issuedAtUnixSeconds": 1_799_999_999, "expiresAtUnixSeconds": 1_800_000_010,
+    "proxyPort": 18443,
+  ]
+  let data = try JSONSerialization.data(withJSONObject: valid)
+  let continuousNow = ContinuousClock().now
+  let parsed = try ProviderLabNetworkConfiguration(data: data, now: now, continuousNow: continuousNow)
+  try require(parsed.proxyPort == 18443 && parsed.runId == (valid["runId"] as? String),
+              "fixed typed lab configuration")
+  for changed in [
+    ("version", true as Any), ("version", 2), ("version", "1"),
+    ("runId", "E7B47D81-7B6D-480A-81F5-31F6C9E73BF3"), ("runId", "invalid"),
+    ("proxyPort", 0), ("proxyPort", 1023), ("proxyPort", 65536),
+    ("proxyPort", 18443.5), ("proxyPort", "18443"), ("proxyPort", true),
+    ("issuedAtUnixSeconds", 1_800_000_001), ("issuedAtUnixSeconds", 0),
+    ("expiresAtUnixSeconds", 1_800_000_000), ("expiresAtUnixSeconds", 1_800_003_600),
+    ("proxyHost", "untrusted.invalid"), ("allowFailover", true),
+  ] {
+    var object = valid; object[changed.0] = changed.1
+    do {
+      _ = try ProviderLabNetworkConfiguration(data: JSONSerialization.data(withJSONObject: object), now: now)
+      throw CheckFailure.failed("invalid lab configuration accepted")
+    } catch is ProviderNativeError {}
+  }
+  for malformed in [Data("[]".utf8), Data("{}".utf8), Data(repeating: 32, count: 1025)] {
+    do {
+      _ = try ProviderLabNetworkConfiguration(data: malformed, now: now)
+      throw CheckFailure.failed("malformed lab configuration accepted")
+    } catch is ProviderNativeError {}
+  }
+  for invalidTime in [1_799_999_998.0, 1_800_000_010.0, Double.nan, Double.infinity] {
+    do {
+      try parsed.requireCurrent(now: Date(timeIntervalSince1970: invalidTime))
+      throw CheckFailure.failed("expired or unknown clock accepted")
+    } catch is ProviderNativeError {}
+  }
+  let bundled = try ProviderLabNetworkConfiguration.load()
+  do {
+    try parsed.requireCurrent(now: now, continuousNow: continuousNow.advanced(by: .seconds(11)))
+    throw CheckFailure.failed("wall clock cannot extend the original continuous deadline")
+  } catch is ProviderNativeError {}
+  try require(bundled.proxyPort == 18443, "explicit resource loaded from this offline fixture bundle")
+  do {
+    _ = try ProviderLabNetworkConfiguration.load(bundle: Bundle(for: NSObject.self))
+    throw CheckFailure.failed("missing lab resource accepted")
+  } catch is ProviderNativeError {}
+}
+#endif
+
 @main struct CheckNativeTransport {
   static func main() async throws {
     let factory = Factory()
@@ -167,6 +221,9 @@ private func checkTimingMetadata() throws {
     let retainedTransport = WeakTransport(transport!)
     var checks = 0
     try checkTimingMetadata(); checks += 1
+#if SCRIBE_VIRTUAL_LAB_NETWORK
+    try checkLabNetworkConfiguration(); checks += 1
+#endif
 
     for action in ["catalog", "mount", "recorder", "capture-operations", "catalog"] {
       let reply = try await transport!.send(request(action), token: "offline-token-\(action)")
@@ -217,6 +274,19 @@ private func checkTimingMetadata() throws {
           && config.urlCredentialStorage == nil && config.urlCache == nil
           && config.requestCachePolicy == .reloadIgnoringLocalAndRemoteCacheData,
         "no state/cache sharing")
+#if SCRIBE_VIRTUAL_LAB_NETWORK
+      if #available(macOS 14.0, iOS 17.0, *) {
+        try require(config.proxyConfigurations.count == 1
+          && config.proxyConfigurations[0].allowFailover == false
+          && config.proxyConfigurations[0].matchDomains.isEmpty
+          && config.proxyConfigurations[0].excludedDomains.isEmpty,
+          "every timeout pool uses one proxy without bypass or direct fallback")
+      } else { throw CheckFailure.failed("lab API unavailable") }
+#else
+      if #available(macOS 14.0, iOS 17.0, *) {
+        try require(config.proxyConfigurations.isEmpty, "ordinary build has no configured lab proxy")
+      }
+#endif
     }
     checks += 1
 
@@ -287,6 +357,21 @@ private func checkTimingMetadata() throws {
     let delegate = session.delegate as! URLSessionTaskDelegate
     try checkDelegate(session, delegate: delegate)
     checks += 1
+
+#if SCRIBE_VIRTUAL_LAB_NETWORK
+    do {
+      let expiry = try ProviderLabNetworkConfiguration.load().expiresAt
+      let waitSeconds = max(0, Double(expiry) - Date().timeIntervalSince1970 + 0.05)
+      try require(waitSeconds <= 20, "offline expiry test is bounded")
+      try await Task.sleep(for: .seconds(waitSeconds))
+      let requestsBeforeExpiry = Fixture.requests().count
+      let wire = transport!
+      try await rejected(Task { try await wire.send(request(), token: "offline-expired-token") })
+      try require(Fixture.requests().count == requestsBeforeExpiry && factory.sessions.count == 3,
+                  "expiry refuses pooled requests before proxy, network or URLProtocol dispatch")
+      checks += 1
+    }
+#endif
 
     transport = nil
     try require(retainedTransport.value == nil, "pooled delegate does not retain transport")
