@@ -10,7 +10,7 @@ const exec = promisify(execFile), hash = value => createHash('sha256').update(va
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
 const fail = code => Error(`kernel_clock_${code}`);
 const MAX_REPLY = 8192, MAX_NS = 2_000_000_000n;
-// Prospective owner-reviewed values. This module does not alter engine budgets
+// Prospectively reviewed engineering budgets, not user-agreed SLAs. This module does not alter engine budgets
 // or declare UI/native attribution from a clock-only result.
 export const NATIVE_PERFORMANCE_BUDGETS_NS = Object.freeze({ cold_launch: '10000000000', warm_launch: '4000000000',
   workspace: '4000000000', preparation: '7000000000', record: '4000000000', resume: '4000000000' });

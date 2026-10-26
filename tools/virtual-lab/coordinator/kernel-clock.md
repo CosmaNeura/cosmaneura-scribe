@@ -103,7 +103,8 @@ still rejected. Parsing never establishes native process/session attribution.
 
 The exported prospective budget table is cold launch 10 s, warm launch and
 workspace 4 s, consent-to-ready preparation 7 s, and Record/Resume to confirmed
-input 4 s. These owner-reviewed engineering values must be frozen with the
+input 4 s. These prospectively reviewed engineering budgets are not user-agreed SLAs.
+They must be frozen with the
 actual client, backend cohort, action boundaries, and UI readiness assertions
 before a run. They do not replace the engine's existing informational budget
 log or qualify earlier runs. Record operator/tool waiting separately, and
