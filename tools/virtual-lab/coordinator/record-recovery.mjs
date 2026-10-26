@@ -154,10 +154,15 @@ export async function recoverFirstRecord({ runtimeRoot, output, configPath, scen
         const options = { bundleId: this.config.app.bundleId };
         const state = await this.request('/execute/sync', 'POST', { script: 'mobile: queryAppState', args: [options] }, active);
         need([2, 3, 4].includes(state), 'saved_native_app_not_running');
-        if (state !== 4) await this.request('/execute/sync', 'POST', { script: 'mobile: activateApp', args: [options] }, active);
-        need(await this.request('/execute/sync', 'POST', { script: 'mobile: queryAppState', args: [options] }, active) === 4,
-          'saved_native_app_not_foreground');
-        checkTarget(await inspectTarget({ signal: active, session: this.session }), review, checked.previousOwnerPid, this.session);
+        const activation = Symbol('reviewed-reopen-activation');
+        if (state !== 4) this.uncertainMutations.add(activation);
+        try {
+          if (state !== 4) await this.request('/execute/sync', 'POST', { script: 'mobile: activateApp', args: [options] }, active);
+          need(await this.request('/execute/sync', 'POST', { script: 'mobile: queryAppState', args: [options] }, active) === 4,
+            'saved_native_app_not_foreground');
+          checkTarget(await inspectTarget({ signal: active, session: this.session }), review, checked.previousOwnerPid, this.session);
+          this.uncertainMutations.delete(activation);
+        } catch (error) { if (state !== 4) this.inputSafetyUncertain = true; throw error; }
       }
       return super.perform(action, currentScenario, active);
     }

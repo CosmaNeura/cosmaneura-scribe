@@ -129,7 +129,7 @@ async function integration(fn) {
     async captureStateSnapshot(){return{...structuredClone(f.baseline),nativeObservation:await this.readRecording()};},
     async steps(plan){calls.push(plan.action); if(plan.action==='record')currentPhase='recording';if(plan.action==='finish')currentPhase='sealed';},
     async perform(action,s,signal){await this.steps(this.config.journey[action],signal);return observe(action);},
-    async cleanup(){return{ownedResourcesSettled:true,nativeAppTerminated:false,nativeCaptureProof:{...structuredClone(f.baseline),
+    async cleanup(){return{ownedResourcesSettled:!this.inputSafetyUncertain&&this.uncertainMutations.size===0,nativeAppTerminated:false,nativeCaptureProof:{...structuredClone(f.baseline),
       observedAtEpochMs:Date.now(),nativeObservation:await this.readRecording()}};},
   };
   for(const [name,method] of Object.entries(methods)){originals[name]=AppiumUI.prototype[name];AppiumUI.prototype[name]=method;}
@@ -199,6 +199,15 @@ test('missing app after Save does not authorize a launch or another Record',()=>
   const result=await recoverFirstRecord(f.args);assert.equal(result.status,'RESUME_FAILED');
   assert.deepEqual(commands,['mobile: queryAppState']);assert.equal(f.calls.filter(x=>x==='record').length,1);
   assert(!f.calls.includes('reopen'));
+}));
+test('lost activation reply keeps uncertainty and quarantine even though native capture is sealed',()=>integration(async f=>{
+  const commands=[];AppiumUI.prototype.request=async(_path,_method,body)=>{
+    commands.push(body.script);if(body.script==='mobile: activateApp')throw Error('synthetic_activation_reply_lost');return 3;
+  };
+  const result=await recoverFirstRecord(f.args);assert.equal(result.status,'RESUME_FAILED');assert.equal(result.targetLeaseRetained,true);
+  assert.deepEqual(commands,['mobile: queryAppState','mobile: activateApp']);assert(!f.calls.includes('reopen'));
+  const cleanup=JSON.parse(await readFile(f.output+'/cleanup.json'));assert.equal(cleanup.ownedResourcesSettled,false);
+  assert.equal(cleanup.nativeCaptureSafeToRelease,true); // Physical stop does not settle uncertain UI control.
 }));
 for(const [name,mutate] of Object.entries({
   pid:t=>t.process={...t.process,pid:124},start:t=>t.process={...t.process,start:'new'},
