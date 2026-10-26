@@ -67,3 +67,15 @@ and actual idle/closed proof; it is not an automatic rollback.
 
 No API/worker/Core deployment, database/schema change, new dependency, purchase,
 production activation or PHI-bearing traffic is part of this preparation.
+
+## Relay implementation
+
+The separate Tier2 relay is documented in
+[`tools/virtual-lab/network/README.md`](../../tools/virtual-lab/network/README.md).
+Its CLI verifies the physical owned Mac and publishes a private exclusive port
+guard before binding. It passes only opaque TLS to the fixed staging authority,
+bounds parsing/sockets/bytes/lifetime, and preserves failures without automatic
+guard recovery. Actual local TLS tests use a disposable certificate with normal
+hostname verification; no system trust is changed. No instrumented-client or
+Toxiproxy activation accompanies this source change. Recovery and clinical
+acceptance remain the separate normal-flow gates above.
