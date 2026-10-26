@@ -1,5 +1,5 @@
 // Local UI fixture only: normal application + workspace, synthetic SDK replies.
-/* global document, window, URLSearchParams, AbortController, crypto */
+/* global document, window */
 import { mountProviderApplication } from "../../src/provider/application.ts";
 
 const options = new URLSearchParams(window.location.search);
