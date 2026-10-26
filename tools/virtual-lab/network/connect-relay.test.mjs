@@ -181,6 +181,23 @@ test('aggregate byte exhaustion stops accepting new work', { timeout: 5000 }, as
   assert.equal(done.reason, 'resource_limit'); assert.equal(done.activeConnections, 0);
 });
 
+test('simultaneous connection and aggregate exhaustion still drains the whole run', { timeout: 5000 }, async t => {
+  const upstreamPort = await server(t, net.createServer(socket => socket.on('data', () => {})));
+  const relay = await createRelay(config(await port()), {
+    limits: { ...LIMITS, connectionBytes: 10, totalBytes: 20, drainMs: 100 },
+    dial: () => net.connect({ host: '127.0.0.1', port: upstreamPort }),
+  });
+  t.after(() => relay.stop());
+  const a = await tunnel(t, relay), b = await tunnel(t, relay); a.resume(); b.resume();
+  a.write(Buffer.alloc(10)); b.write(Buffer.alloc(10));
+  await waitFor(relay.snapshot, value => value.counters.clientBytes === 20);
+  a.write(Buffer.alloc(1));
+  await waitFor(relay.snapshot, value => value.reason === 'resource_limit');
+  assert.notEqual(relay.snapshot().state, 'LISTENING');
+  const done = await relay.done; assert.equal(done.activeConnections, 0);
+  assert.equal(done.counters.clientBytes, 21);
+});
+
 test('accepted connection budget initiates bounded draining', { timeout: 5000 }, async t => {
   const { relay, calls } = await fixture(t, { limits: { ...LIMITS, acceptedConnections: 1, drainMs: 50 } });
   await client(t, relay); const b = await client(t, relay); await once(b, 'close');

@@ -114,10 +114,10 @@ export async function createRelay(config, { dial, limits = LIMITS, wallNow = Dat
     headerTimer = setTimeout(() => { counters.rejected++; close(); }, limits.headerMs);
     function count(length, side) {
       bytes += length; counters[side] += length;
-      if (bytes > limits.connectionBytes) { counters.resourceClosed++; close(); return false; }
       if (counters.clientBytes + counters.serverBytes > limits.totalBytes) {
         counters.resourceClosed++; close(); void stop('resource_limit'); return false;
       }
+      if (bytes > limits.connectionBytes) { counters.resourceClosed++; close(); return false; }
       return !closed;
     }
     function receive(chunk) {
