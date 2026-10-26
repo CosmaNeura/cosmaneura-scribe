@@ -1635,7 +1635,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         case "save": await noteAutosave?.flush(); break;
         case "finish-note": if (await noteAutosave?.flush() && (!privateNoteSession || await privateNoteSession.retry())) {
           requireValue(context && draft?.note_ref); await context.openInCore(draft.note_ref);
-          show('<section class="provider-completion"><p class="provider-completion-check" aria-hidden="true">✓</p><h1>Saved for review</h1><p>Your note is in the CosmaNeura dashboard. Review and sign it there.</p><button class="provider-primary" data-workspace-action="encounters">Back to today’s patients</button><button class="provider-text-link" data-workspace-action="core">Open the dashboard</button></section>');
+          show('<section class="provider-completion"><p class="provider-completion-check" aria-hidden="true">✓</p><h1>Saved for review</h1><p>Your note is in the CosmaNeura dashboard. Review it there.</p><button class="provider-primary" data-workspace-action="encounters">Back to today’s patients</button><button class="provider-text-link" data-workspace-action="core">Open the dashboard</button></section>');
         } break;
         case "save-and-leave": {
           const destination = pendingNavigation;
