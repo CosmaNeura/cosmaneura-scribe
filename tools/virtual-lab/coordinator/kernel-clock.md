@@ -5,9 +5,18 @@ It does not change the coordinator, source playback, capture permissions or
 product requests. Existing browser timing remains `UNKNOWN`. A clock mapping is
 not a product performance, source synchronization or clinical acceptance gate.
 
-The supported Node runtime is **24.22.1 / libuv 1.53.0**. Its Darwin
+The explicit supported pairs are **official Node 24.22.1 / libuv 1.52.1**
+and **Homebrew Node 24.22.1 / libuv 1.53.0**. The official release's
+[`version.h`](https://github.com/nodejs/node/blob/ce7aaf1cee78b8cf0ce17364260535c418d3ed26/deps/uv/include/uv/version.h)
+identifies 1.52.1. Its Darwin
 [`uv__hrtime`](https://github.com/nodejs/node/blob/ce7aaf1cee78b8cf0ce17364260535c418d3ed26/deps/uv/src/unix/darwin.c#L60)
 scales `mach_continuous_time()` into nanoseconds with integer arithmetic.
+That function is byte-identical in the independently checked
+[`libuv 1.53.0 source`](https://github.com/libuv/libuv/blob/840404ce8ba7cc0204be52389a6cfff9f2c90fb6/src/unix/darwin.c#L60).
+Other versions remain refused; a measurement window cannot mix runtime pairs.
+The first owned remote calibration correctly stopped before helper launch when
+its official 1.52.1 runtime did not match the initial Homebrew-only guard. Keep
+that failure and bind any new calibration to its actual runtime and binary.
 Continuous time includes system sleep. Apple's
 [`DispatchTime`](https://github.com/apple-oss-distributions/libdispatch/blob/2361ffb78a76f7ee488cd052eb0bc5c767118bf9/src/swift/Time.swift#L28)
 uses uptime, excluding sleep; the Swift property converts raw ticks with integer

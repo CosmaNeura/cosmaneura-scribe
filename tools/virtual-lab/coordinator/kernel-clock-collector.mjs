@@ -4,7 +4,7 @@ import { readFile, realpath, lstat } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { relative, isAbsolute } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
-import { projectKernelClockSample, boundKernelClockWindow } from './kernel-clock.mjs';
+import { projectKernelClockSample, boundKernelClockWindow, supportedKernelClockRuntime } from './kernel-clock.mjs';
 
 const exec = promisify(execFile), hash = value => createHash('sha256').update(value).digest('hex');
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
@@ -128,7 +128,7 @@ export class KernelClockPipe {
  * This does not acquire UI ownership, inspect native content, or launch an app. */
 export async function createKernelClockCollector({ executable, executableSHA256, target, runId, signal }) {
   signal?.throwIfAborted();
-  if (process.platform !== 'darwin' || process.versions.node !== '24.22.1' || process.versions.uv !== '1.53.0'
+  if (process.platform !== 'darwin' || !supportedKernelClockRuntime(process.versions.node, process.versions.uv)
       || !uuid(runId) || target?.hostname !== hostname()
       || !['owned-ios-simulator', 'owned-macos-lab', 'owned-macos-guest'].includes(target.role)
       || !/^[a-f0-9]{64}$/.test(executableSHA256 ?? '')) throw fail('target_invalid');

@@ -36,11 +36,11 @@ process.stdin.on('data',bytes=>{buffer+=bytes;let i;
  else process.stdout.write(line);
  }
 });`;
-async function fixture(mode = 'valid', signal) {
+async function fixture(mode = 'valid', signal, uvVersion = '1.53.0') {
   const child = spawn(process.execPath, ['-e', program, mode], { stdio: ['pipe', 'pipe', 'pipe'] });
   await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
   return new KernelClockPipe(child, { runId, signal, identity: { ...base, pid: child.pid, parentPID: process.pid },
-    nodeVersion: '24.22.1', uvVersion: '1.53.0' });
+    nodeVersion: '24.22.1', uvVersion });
 }
 test('prospective budgets keep accepted boundaries explicit, not legacy engine values', () => {
   assert.deepEqual(NATIVE_PERFORMANCE_BUDGETS_NS, { cold_launch: '10000000000', warm_launch: '4000000000',
@@ -124,4 +124,12 @@ test('collector lifetime cancellation closes its idle child and blocks future me
   await assert.rejects(pipe.sample(), /collector_aborted/);
   assert.equal(pipe.snapshot().qualification, 'NOT_ESTABLISHED');
   assert.equal(pipe.snapshot().sampleCount, 1);
+});
+test('official Node libuv1.52.1 responses pass the same actual child-pipe contract', async () => {
+  const pipe = await fixture('valid', undefined, '1.52.1');
+  try {
+    const a = await pipe.sample(), b = await pipe.sample();
+    assert.equal(a.uvVersion, '1.52.1'); assert.equal(pipe.window(a, b).qualification, 'CLOCK_MAPPING_ONLY');
+    assert.equal(pipe.snapshot().samples[0].uvVersion, '1.52.1');
+  } finally { assert.equal((await pipe.close()).ownedResourcesSettled, true); }
 });

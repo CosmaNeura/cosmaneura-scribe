@@ -1,4 +1,5 @@
-// Node v24.22.1/libuv 1.53.0 uses mach_continuous_time on Darwin.
+// Official Node24.22.1/libuv1.52.1 and Homebrew Node24.22.1/libuv1.53.0
+// use the verified identical mach_continuous_time implementation on Darwin.
 // Swift DispatchTime.uptimeNanoseconds uses scaled mach_absolute_time.
 // These are distinct clock domains. No browser timestamp participates here.
 const U64 = (1n << 64n) - 1n;
@@ -7,6 +8,7 @@ const U64 = (1n << 64n) - 1n;
 const samples = new WeakSet(), windows = new WeakSet();
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
 const fail = () => { throw Error('kernel_clock_sample_invalid'); };
+export const supportedKernelClockRuntime = (node, uv) => node === '24.22.1' && ['1.52.1', '1.53.0'].includes(uv);
 function uint(value) {
   if (typeof value !== 'string' || !/^(0|[1-9][0-9]{0,19})$/.test(value) || BigInt(value) > U64) fail();
   return BigInt(value);
@@ -25,7 +27,7 @@ const identityKeys = ['hostname', 'hardwareSHA256', 'bootSessionUUID', 'pid', 'p
  * product-response bracket or evidence of native session ownership. */
 export function projectKernelClockSample({ reply, nodeSentNs, nodeReceivedNs, expectedNonce, expectedRunId,
   expectedIdentity, nodeVersion, uvVersion }) {
-  if (nodeVersion !== '24.22.1' || uvVersion !== '1.53.0' || !uuid(expectedNonce) || !uuid(expectedRunId)) fail();
+  if (!supportedKernelClockRuntime(nodeVersion, uvVersion) || !uuid(expectedNonce) || !uuid(expectedRunId)) fail();
   exactKeys(reply, ['schema', 'source', 'runId', 'nonce', 'sequence', 'identity', 'timebase',
     'continuousBeforeTicks', 'continuousAfterTicks', 'absoluteBeforeTicks', 'absoluteAfterTicks',
     'dispatchRawTicks', 'dispatchUptimeNs', 'audioBeforeSeconds', 'audioAfterSeconds',

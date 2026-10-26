@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { projectKernelClockSample as project, boundKernelClockWindow as window, boundNativeResponse as response } from './kernel-clock.mjs';
+import { projectKernelClockSample as project, boundKernelClockWindow as window, boundNativeResponse as response, supportedKernelClockRuntime } from './kernel-clock.mjs';
 
 const runId = 'f7cb7381-a86a-47cc-a4e5-9e7c9fd118a6';
 const identity = { hostname: 'owned.example', hardwareSHA256: 'a'.repeat(64), bootSessionUUID: runId, pid: 123, parentPID: 124 };
@@ -17,6 +17,23 @@ function input({ sequence = 1, raw = 24000000n, sleep = 12000000n, numer = 125, 
       apiResolutionNs: { uptimeRaw: '1', monotonicRaw: '1' } } };
 }
 const after = options => input({ sequence: 2, raw: 48000000n, ...options });
+
+test('official and Homebrew exact runtime pairs retain separate identities and identical clock bounds', () => {
+  for (const uvVersion of ['1.52.1', '1.53.0']) {
+    assert.equal(supportedKernelClockRuntime('24.22.1', uvVersion), true);
+    const a = input(), b = after(); a.uvVersion = b.uvVersion = uvVersion;
+    const first = project(a), last = project(b);
+    assert.equal(first.uvVersion, uvVersion);
+    assert.equal(window(first, last).offsetLowerNs, '499999874');
+  }
+  for (const [node, uv] of [['24.22.0', '1.52.1'], ['24.22.2', '1.53.0'], ['24.22.1', '1.52.0'], ['24.22.1', '1.54.0'], ['24.22.1', '1.52.1-custom']]) {
+    assert.equal(supportedKernelClockRuntime(node, uv), false);
+    const value = input(); value.nodeVersion = node; value.uvVersion = uv;
+    assert.throws(() => project(value), /sample_invalid/);
+  }
+  const a = input(), b = after(); a.uvVersion = '1.52.1';
+  assert.throws(() => window(project(a), project(b)), /sample_invalid/);
+});
 
 test('continuous Node time has a nonzero sleep offset from native uptime', () => {
   const a = project(input()), b = project(after());
