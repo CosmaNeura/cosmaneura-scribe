@@ -12,6 +12,7 @@ import { recoveryStage } from './recovery.mjs';
 import { nativeIdentity, verifyBuild } from './native-identity.mjs';
 import { installAdmissionObserver } from '../native/admission-observer.mjs';
 import { installVisitScopeObserver } from '../native/visit-observer.mjs';
+import { SAVE_FIELDS_SCRIPT, SAVE_UI_SCRIPT, validateSaveCompletion } from './save-completion.mjs';
 import { createDesktopObserver } from './desktop-observer.mjs';
 import { projectNoteObservation } from '../native/note-observation.mjs';
 import { verifyDashboard } from './dashboard.mjs';
@@ -339,6 +340,25 @@ export class AppiumUI {
         || !Number.isFinite(note.observedAtMonotonicMs) || !Number.isFinite(note.browserTimeOriginMs)) throw Error('bound_note_response_not_observed');
     return note;
   }
+  async beginSaveAttempt(signal) {
+    this.saveAttempt = null; this.lastSaveCompletion = null;
+    const note = await this.readNote(null, signal), visit = await this.assertVisit(signal);
+    const fields = await this.withUIContext(() => this.rawWebview(SAVE_FIELDS_SCRIPT, [note.field_order], signal, false, true));
+    if (!fields || fields.source !== 'normal-note-editor-fields' || !/^[a-f0-9]{64}$/.test(fields.fieldsSHA256)
+        || this.config.journey?.save?.actions?.length !== 1 || this.config.journey.save.actions[0].action !== 'click')
+      throw Error('native_save_editor_unconfirmed');
+    this.saveAttempt = { nonce: randomUUID(), note, visit, fields };
+    this.lastSaveCompletion = { source: 'normal-native-save-completion', attempt: this.saveAttempt };
+  }
+  async completeSaveAttempt(currentVisit, signal) {
+    const attempt = this.saveAttempt; this.saveAttempt = null;
+    const handoff = await this.webview('return window.__scribeLabVisitObserver?.readNoteHandoff() ?? null;', [], signal);
+    const ui = await this.webview(SAVE_UI_SCRIPT, [], signal);
+    const completion = { source: 'normal-native-save-completion', attempt, handoff, currentVisit, ui };
+    this.lastSaveCompletion = completion;
+    validateSaveCompletion(handoff?.note, completion);
+    return { ...handoff.note, saveCompletion: completion };
+  }
   async restore(state, { observations, signal, output }) {
     this.output = await realpath(output);
     if (this.config.sources) {
@@ -468,7 +488,8 @@ export class AppiumUI {
       // Read/prepare/save all return the real session-bound persisted Core tuple.
       let note;
       if (action === 'review') note = await this.readNote(null, signal);
-      else note = await this.readNote(action === 'save' ? 'save' : 'read', signal);
+      else note = action === 'save' && !this.desktop
+        ? await this.completeSaveAttempt(value.visitScope, signal) : await this.readNote(action === 'save' ? 'save' : 'read', signal);
       if (note.browserTimeOriginMs + note.observedAtMonotonicMs
           < this.terminal.browserTimeOriginMs + this.terminal.observedAtMonotonicMs) throw Error('note_response_precedes_capture_stop');
       if (action === 'reopen' && (!this.savedNote || ['session_id', 'note_ref', 'transcript_ref', 'note_sha256']
@@ -686,9 +707,17 @@ export class AppiumUI {
     // Verify the actual recorder immediately before the final UI mutation;
     // a same-visit replacement session must never receive this run's Finish.
     if (action === 'finish') await this.assertFinishable(signal);
-    if (action === 'save') await this.readNote(null, signal);
+    if (action === 'save') {
+      if (this.desktop) await this.readNote(null, signal);
+      else await this.beginSaveAttempt(signal);
+    }
     if (action === 'record') await this.assertInputBeforeRecord(signal);
-    await this.steps(this.config.journey?.[action], signal);
+    try {
+      await this.steps(this.config.journey?.[action], signal);
+      if (action === 'save' && this.saveAttempt) this.saveAttempt.click = {
+        source: 'normal-native-control-response', action: 'click', completedAtEpochMs: Date.now(),
+      };
+    } catch (error) { if (action === 'save') this.saveAttempt = null; throw error; }
     if (action === 'prepare' && this.sources) await this.sources.connect({ signal });
     const observed = await this.observe(action, signal);
     if (action === 'record') this.assertMicrophoneSignal(observed.nativeObservation, 'initial');
@@ -802,6 +831,10 @@ export class AppiumUI {
     return observation;
   }
   async failureArtifact(path) {
+    if (this.lastSaveCompletion) {
+      try { await writeFile(`${path}.save-${randomUUID()}.json`, JSON.stringify(this.lastSaveCompletion), { mode: 0o600, flag: 'wx' }); }
+      catch { /* Preserve the original failure if diagnostics cannot be saved. */ }
+    }
     if (this.lastScrollEvidence) {
       try { await writeFile(`${path}.scroll-${randomUUID()}.json`, JSON.stringify(this.lastScrollEvidence), { mode: 0o600, flag: 'wx' }); }
       catch { /* Metadata collection cannot change the original failure. */ }

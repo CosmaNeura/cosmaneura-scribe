@@ -10,9 +10,10 @@ export function installVisitScopeObserver({ runId, observerSHA256 = null }) {
   let pendingObservedReplies = 0;
   let current = null, created = null, revision = null, generation = 0, alive = true, authCheckedAt = 0;
   let authObservation = null, authSequence = 0, authMutationsPending = 0;
+  let noteHandoff = null, handoffGeneration = 0;
   const userId = value => typeof value === "string" && /^user_[A-Za-z0-9_]{1,250}$/u.test(value);
   const invalidate = (auth = false) => {
-    generation += 1; current = null;
+    generation += 1; current = null; noteHandoff = null; handoffGeneration++;
     if (auth) { authSequence++; created = null; revision = null; authCheckedAt = 0; authObservation = null; }
     window.__scribeLabAdmissionObserver?.clear({ reason: auth ? 'auth' : 'navigation' });
   };
@@ -40,6 +41,17 @@ export function installVisitScopeObserver({ runId, observerSHA256 = null }) {
     return originalFromNative.call(this, result, ...rest);
   }
   function wrapped(plugin, method, options, ...rest) {
+    const sentAt = performance.now();
+    const mounting = plugin === 'CosmasWorkspaceAuth' && method === 'providerRequest' && options?.action === 'mount';
+    // Retain only the acknowledged note immediately preceding a normal mount.
+    // This is not a Save observation: the coordinator must separately prove the
+    // actual Save click, field hash and completed product UI transition.
+    const priorScope = mounting && current ? { ...current } : null;
+    let priorNote = null;
+    try { if (mounting) priorNote = window.__scribeLabAdmissionObserver?.readCurrentNote?.(); }
+    catch { /* Missing observer metadata must never prevent the product mount. */ }
+    if (plugin === 'CosmasWorkspaceAuth' && (method === 'providerRequest'
+      || ['openProviderRecording', 'providerRecordingCommand'].includes(method))) { noteHandoff = null; handoffGeneration++; }
     const isAuth = alive && plugin === "CosmasWorkspaceAuth" && ["getState", "getProviderState", "signIn", "signOut"].includes(method);
     const mutation = isAuth && ["signIn", "signOut"].includes(method);
     if (mutation) { invalidate(true); authMutationsPending++; }
@@ -73,6 +85,7 @@ export function installVisitScopeObserver({ runId, observerSHA256 = null }) {
       if (options.action === "mount" && !uuid(request.workspace_id)) return result;
     } catch { return result; }
     invalidate();
+    const handoffArmed = handoffGeneration;
     if (options.action === "encounters") created = null;
     const armed = generation;
     void Promise.resolve(result).then(response => {
@@ -93,7 +106,18 @@ export function installVisitScopeObserver({ runId, observerSHA256 = null }) {
           runId, workspaceId, appointmentRef, revision, requestId: options.requestId,
           observedAtMonotonicMs: performance.now(), browserTimeOriginMs: performance.timeOrigin });
         if (creating) created = scope;
-        else { current = scope; window.__scribeLabAdmissionObserver?.rebindCurrent(scope); }
+        else {
+          current = scope; window.__scribeLabAdmissionObserver?.rebindCurrent(scope);
+          if (handoffArmed === handoffGeneration && priorScope?.revision === scope.revision && priorNote?.source === 'normal-core-note-response'
+              && ['runId', 'workspaceId', 'appointmentRef'].every(key => priorScope[key] === scope[key] && priorNote[key] === scope[key])) {
+            const note = Object.fromEntries(['source', 'runId', 'workspaceId', 'appointmentRef', 'action', 'transportAction',
+              'session_id', 'note_ref', 'transcript_ref', 'schema_ref', 'note_sha256', 'source_sha256', 'requestNonce',
+              'status', 'observedAtMonotonicMs', 'browserTimeOriginMs'].filter(key => priorNote[key] !== undefined).map(key => [key, priorNote[key]]));
+            note.field_order = Array.isArray(priorNote.field_order) ? [...priorNote.field_order] : null;
+            noteHandoff = { ...scope, source: 'normal-native-note-mount-handoff',
+              requestedAtMonotonicMs: sentAt, note };
+          }
+        }
       } catch { /* Never change the product response. */ }
     }).catch(() => undefined);
     return result;
@@ -107,6 +131,10 @@ export function installVisitScopeObserver({ runId, observerSHA256 = null }) {
     },
     readCreated() { return created && { ...created }; },
     readCurrent() { return current && performance.now() - authCheckedAt <= 15000 ? { ...current } : null; },
+    readNoteHandoff() { return noteHandoff && current?.requestId === noteHandoff.requestId
+      && current.revision === revision && performance.now() - authCheckedAt <= 15000
+      ? { ...noteHandoff, note: { ...noteHandoff.note, field_order: noteHandoff.note.field_order && [...noteHandoff.note.field_order] },
+        pendingObservedReplies } : null; },
     clear() { invalidate(true); },
     uninstall() {
       if (cap.nativePromise !== wrapped || cap.fromNative !== fromNative || pendingObservedReplies !== 0)
