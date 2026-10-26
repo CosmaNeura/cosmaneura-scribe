@@ -14,6 +14,15 @@ configured signed bundle. Never regenerate a binding by copying a prior PID.
 Explicit PID configurations retain the same checks. No app is launched by this
 option; cold/warm launch trials need their own normal launch dispatch evidence.
 
+After a long checkpoint wait, `desktop.readCurrentRecording()` may explicitly
+issue the existing public IPC `kind: read` command for the already bound recorder.
+The command only returns the actual current getter. Its receipt keeps the prior
+event and original admission timestamps separately from the fresh read reply.
+It rejects changed recorder, session, auth, generation, failure or pending work;
+it does not prepare, start, renew consent or restamp cached state. The passive
+timing sampler never invokes this command. Call it separately within the normal
+current-state proof deadline before entering the timing adapter.
+
 ## Prospective targets and boundaries
 
 The user's strict **less than 5000 ms** targets are reported separately for:

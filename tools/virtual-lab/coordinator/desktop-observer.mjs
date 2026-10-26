@@ -12,7 +12,9 @@ const liveObservers = new WeakMap();
 export const isOwnedDesktopObserver = value => liveObservers.has(value) && liveObservers.get(value) === value.readPerformance;
 /** Serialized into an owned Electron 44 MAIN inspector. It wraps only existing
  * workspace/recorder handlers and subscribes to the existing renderer event APIs.
- * It never calls either product request API. Electron's internal handler Map is
+ * Passive methods never call either product request API. The separately named
+ * readCurrentRecording method issues only the public recorder's read command.
+ * Electron's internal handler Map is
  * version-specific: absence, replacement, or another owner fails closed. */
 export async function installDesktopMainObserver(owner, projectNoteObservation = null, saveFields = null, saveUIScript = null) {
   const requireModule = typeof require === 'function' ? require : process.mainModule?.require.bind(process.mainModule);
@@ -390,6 +392,34 @@ export async function installDesktopMainObserver(owner, projectNoteObservation =
       const age = authObservation && Date.now() - authObservation.browserTimeOriginMs - authObservation.observedAtMonotonicMs;
       return authObservation && authMutationsPending === 0 && age >= 0 && age <= 15000 ? { ...authObservation } : null;
     },
+    async readCurrentRecording() {
+      await refreshEvents();
+      const auth = await api.readAuth(), retained = recording && { ...recording };
+      if (!auth || !admission || !retained || !uuid(recorderId) || mutationPending || pending !== 0
+          || !current || !boundVisit || current.workspaceId !== boundVisit.workspaceId
+          || current.appointmentRef !== boundVisit.appointmentRef || retained.sessionId !== admission.sessionId)
+        throw Error('desktop_current_read_scope_unconfirmed');
+      const selected = { recorderId, generation, recordingGeneration, authEpoch, admission: JSON.stringify(admission) };
+      const requestId = requireModule('node:crypto').randomUUID(), invokedAtMonotonicMs = performance.now();
+      // Public IPC kind=read only returns the current getter; it performs no
+      // recorder operation. The installed normal wrapper observes its real
+      // reply and timestamps that reply, never re-dates the retained event.
+      const reply = await target.executeJavaScript(`(async()=>{const r=await window.scribeRecorder.request(${JSON.stringify({ kind: 'read', requestId, recorderId })});return {requestId:r?.requestId,ok:r?.ok,recorderId:r?.state?.recorderId,revision:r?.state?.revision,sessionId:r?.state?.snapshot?.sessionId};})()`);
+      await refreshEvents();
+      const afterAuth = await api.readAuth();
+      if (!reply || reply.requestId !== requestId || reply.ok !== true || reply.recorderId !== selected.recorderId
+          || reply.sessionId !== admission?.sessionId || reply.revision !== recording?.nativeRevision
+          || recorderId !== selected.recorderId || generation !== selected.generation
+          || recordingGeneration !== selected.recordingGeneration || authEpoch !== selected.authEpoch
+          || JSON.stringify(admission) !== selected.admission || mutationPending || pending !== 0
+          || !afterAuth || afterAuth.revision !== auth.revision || afterAuth.identitySHA256 !== auth.identitySHA256
+          || !recording || recording.observedAtMonotonicMs < invokedAtMonotonicMs || recording.pendingMutation !== false)
+        throw Error('desktop_current_read_identity_changed');
+      return { source: 'explicit-public-desktop-recorder-read', requestId, runId: owner.runId,
+        invokedAtMonotonicMs, observedAtMonotonicMs: performance.now(), browserTimeOriginMs: performance.timeOrigin,
+        retainedEvent: retained, recording: { ...recording }, admission: { ...admission }, auth: { ...afterAuth },
+        command: 'read', productMutation: false };
+    },
     async readPerformance() {
       // Read only the actual host's bounded metadata file. No diagnostic event
       // is created, and no recorder request or audio sample is issued/read.
@@ -539,6 +569,7 @@ export async function createDesktopObserver({ config, scenario, endpoint, pid, e
       readSaveFields:order=>client.evaluate(`globalThis.__scribeLabDesktopMainObserver.readSaveFields(${JSON.stringify(order)})`),
       readSaveUI:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.readSaveUI()'),
       readAuth:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.readAuth()'),
+      readCurrentRecording:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.readCurrentRecording()'),
       readPerformance:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.readPerformance()'),
       recoverySnapshot:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.recoverySnapshot()'),
       async close({ preserveForRecovery = false } = {}) { let result; try {

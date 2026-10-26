@@ -12,8 +12,10 @@ unavailable unless a separate actual observation establishes them.
 
 Only an owned Mac, signed configured client, sole loopback inspector and normal
 same-scope recorder qualify. Fresh listener/process discovery permits reusable
-named scenarios without hardcoded PIDs. The observer adds no product requests,
-audio, settings changes, backend calls, retry or clinical logging. Existing
+named scenarios without hardcoded PIDs. A separately named public recorder read
+returns actual current state after an unchanged ready event has aged; it retains
+the old event and consent timestamps. Passive sampling issues no such request.
+There are no product mutations, audio, settings changes, backend calls, retry or clinical logging. Existing
 consent, source custody, original errors and uncertain-lease cleanup remain.
 
 Validation: focused actual-loopback lifecycle and observer/timing regressions,
