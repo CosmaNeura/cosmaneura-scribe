@@ -23,7 +23,9 @@
       let current = session.currentRoute.inputs.first?.uid
       return (session.availableInputs ?? []).compactMap { port in
         guard let kind = inputKind(port.portType) else { return nil }
-        return AppleAudioInputDevice(id: port.uid, label: port.portName,
+        let label = port.portType == .builtInMic && port.portName == "MicrophoneBuiltIn"
+          ? "Built-in microphone" : port.portName
+        return AppleAudioInputDevice(id: port.uid, label: label,
           kind: kind, current: port.uid == current)
       }
     }
