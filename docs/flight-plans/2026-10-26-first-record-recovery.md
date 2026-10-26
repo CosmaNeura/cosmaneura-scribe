@@ -77,3 +77,48 @@ Recovery is to stop using this entry point, retain all artifacts/intent/leases,
 and return to read-only reconciliation. No deployed runtime rollback or data
 migration applies. Local tests use synthetic controls only; actual native
 recovery remains NOT_RUN until a separately reviewed operator succeeds.
+
+
+## A failed inspector before the permanent input intent
+
+An actual explicit recovery created and closed its passive inspector, then
+created a different continuation Appium session. That new session returned
+1.521 seconds before `owned_webview_not_ready`; the original 1500 ms context
+discovery bound was reached before a first-Record intent was published. The
+context response contents were not retained, so a native-only response or a
+particular cold WebKit cause is not established. The journal retained exactly
+its old prefix plus preflight, failure and quarantine. No new Record action or
+observation was appended.
+
+The explicit continuation now calls the existing read-only iOS inspector setup
+after its own `connect`, before `restore` binds admission or prepares sources.
+The consumed opaque lease, current target, independent review and absence of
+an existing dispatch intent bracket setup. Its own 30 second deadline remains
+inside the original tracked connect and outer operator deadlines. Ordinary
+restore still has its own original deadline. Every subsequent observer read
+rediscovers and attests the current page inside the unchanged 1500 ms discovery
+and two second whole-proof limits. Setup does not authorize capture or refresh
+consent. Its unique existing-format receipt is referenced from recovery result
+metadata and the eventual dispatch intent, not added as a second fresh-run
+`initial_ui_readiness` journal event. Setup remains unqualified for performance.
+
+One optional `recoverySetupPaths` dossier supports only this demonstrated
+additional failure. A fresh review's `recoverySetup` uses kind
+`single-inspector-failure-before-first-dispatch` and SHA256 fields for `journal`,
+`cleanup`, `result`, `intent`, `lease`, `operator` and `review`. These retain the
+exact failed recovery wrapper, previous approval, full result and owner intent.
+The original six evidence paths still refer to the original admission-wrapper
+failure. The validator requires exactly one additional three-event suffix;
+unchanged original events and completed actions; the original failed recovery's
+original-journal/lease hashes; settled controls; an untouched native inspection;
+and a successor lease bound to that recovery attempt and inspection digest.
+The operator reviewer must also trace the exact retained wrapper and helper
+bytes to prove the permanent intent precedes every input path. File absence or
+zero counters alone are insufficient.
+
+The permanent first-Record intent must be absent both before recovery and under
+its maintained guard. An existing intent, different successor owner, another
+failure suffix, input uncertainty or a pending operation is refused. This is
+one explicit reviewed continuation, not an automatic retry loop or generalized
+adoption of failed records. Existing artifacts and the original FAIL prefix
+remain immutable. A new failure returns to read-only reconciliation.

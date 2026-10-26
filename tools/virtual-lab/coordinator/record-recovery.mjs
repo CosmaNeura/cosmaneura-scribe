@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { sha256 } from './journal.mjs';
 import { publishExclusiveJSON } from './guard.mjs';
 import { readRetainedAdmission } from './retained-admission.mjs';
+import { RECOVERY_SETUP_KEYS, requireNoFirstRecordIntent, validateRecoverySetupFailure } from './record-recovery-chain.mjs';
 
 const prior = ['sign_in', 'workspace', 'create_visit', 'prepare', 'consent'];
 const scopeKeys = ['runId', 'workspaceId', 'appointmentRef', 'sessionId'];
@@ -111,7 +112,7 @@ async function privateBytes(path, maximum = 32000000) {
  * current speech-scope checks, not consent. All actual UI/source gates remain
  * in the original AppiumUI.perform implementation. */
 export async function recoverFirstRecord({ runtimeRoot, output, configPath, scenario, labRoot, reviewPath,
-  evidencePaths, signal, inspectTarget, beforeRecord }) {
+  evidencePaths, recoverySetupPaths, signal, inspectTarget, beforeRecord }) {
   need(signal instanceof AbortSignal && typeof inspectTarget === 'function' && typeof beforeRecord === 'function',
     'record_recovery_contract_required');
   signal.throwIfAborted();
@@ -119,14 +120,24 @@ export async function recoverFirstRecord({ runtimeRoot, output, configPath, scen
   const reviewBytes = await privateBytes(reviewPath, 65536), review = JSON.parse(reviewBytes);
   const evidence = {};
   for (const key of ['journal', 'operator', 'failure', 'cleanup', 'intent', 'lease']) evidence[key] = await privateBytes(evidencePaths[key]);
-  const checked = validateRecordRecoveryReview(review, evidence);
+  let checked = validateRecordRecoveryReview(review, evidence);
+  checked.currentJournalSHA256 = review.journalSHA256;
+  if (review.recoverySetup || recoverySetupPaths) {
+    need(review.recoverySetup && recoverySetupPaths, 'record_recovery_setup_review_required');
+    const files = {};
+    for (const key of RECOVERY_SETUP_KEYS) files[key] = await privateBytes(recoverySetupPaths[key]);
+    const setup = validateRecoverySetupFailure(review, files, checked);
+    validateUntouchedRecorder(setup.setupInspection, checked.baseline, setup.setupInspection.observedAtEpochMs);
+    checked = { ...checked, ...setup };
+  }
+  await requireNoFirstRecordIntent(output);
   const checkReview = async () => {
     signal.throwIfAborted(); validateRecordRecoveryReview(review, evidence);
     need(sha256(await privateBytes(reviewPath, 65536)) === sha256(reviewBytes), 'record_recovery_review_changed');
   };
   need(scenario.executionKind === 'live' && scenario.runId === review.runId && scenario.targetId === review.targetId,
     'record_recovery_scenario_changed');
-  need(sha256(await privateBytes(resolve(output, 'run.json'))) === review.journalSHA256, 'record_recovery_journal_changed');
+  need(sha256(await privateBytes(resolve(output, 'run.json'))) === checked.currentJournalSHA256, 'record_recovery_journal_changed');
   const load = name => import(pathToFileURL(resolve(runtimeRoot, 'coordinator', name)).href);
   const [{ AppiumUI }, { recoverRun }, { runJourney }, identity, journalAPI] = await Promise.all([
     load('appium-ui.mjs'), load('recovery.mjs'), load('engine.mjs'), load('tool-identity.mjs'), load('journal.mjs')]);
@@ -134,11 +145,12 @@ export async function recoverFirstRecord({ runtimeRoot, output, configPath, scen
     'record_recovery_runtime_changed');
   await journalAPI.Journal.load(resolve(output, 'run.json'), await identity.journalIdentity(scenario), true, { readOnly: true });
   await checkReview(); checkTarget(await inspectTarget({ signal, session: null }), review, checked.previousOwnerPid, null);
-  let lease, dispatched = false, inputBoundaryConsumed = false;
+  let lease, dispatched = false, inputBoundaryConsumed = false, continuationStage = 'not_started', setupEvidence = null;
   class Inspection extends AppiumUI {
     async recoveryInspect(options) {
       const owner = JSON.parse(await privateBytes(options.recoveryAuthority.leasePath, 65536));
       need(JSON.stringify(owner) === JSON.stringify(checked.leaseOwner), 'record_recovery_lease_changed');
+      await requireNoFirstRecordIntent(output);
       const result = await super.recoveryInspect(options);
       validateUntouchedRecorder(result, checked.baseline);
       checkTarget(await inspectTarget({ signal: options.signal, session: this.session }), review, checked.previousOwnerPid, this.session);
@@ -146,6 +158,22 @@ export async function recoverFirstRecord({ runtimeRoot, output, configPath, scen
     }
   }
   class Continuation extends AppiumUI {
+    async connect(currentScenario, options) {
+      need(journalAPI.targetLeaseConsumed(lease), 'record_recovery_not_authorized');
+      continuationStage = 'connect';
+      await super.connect(currentScenario, options);
+      await checkReview(); await requireNoFirstRecordIntent(output);
+      checkTarget(await inspectTarget({ signal: options.signal, session: this.session }), review, checked.previousOwnerPid, this.session);
+      // This is a new inspector session. Read-only setup has its existing 30s
+      // bound inside connect's original deadline, before restored admission or
+      // source setup. No context result is reused by any subsequent proof.
+      continuationStage = 'inspector_setup';
+      try { setupEvidence = await super.prepareInitialUI(currentScenario, options); }
+      finally { setupEvidence = this.iosStartupEvidence ?? setupEvidence; }
+      await checkReview(); await requireNoFirstRecordIntent(output);
+      checkTarget(await inspectTarget({ signal: options.signal, session: this.session }), review, checked.previousOwnerPid, this.session);
+      continuationStage = 'setup_complete';
+    }
     async perform(action, currentScenario, active) {
       if (action === 'reopen') {
         // A normal Save may hand off to the dashboard. Activate only the same
@@ -170,7 +198,9 @@ export async function recoverFirstRecord({ runtimeRoot, output, configPath, scen
       need(state.pending === 'record' && JSON.stringify(state.completed) === JSON.stringify(prior)
         && JSON.stringify(state.events.slice(0, checked.journal.events.length)) === JSON.stringify(checked.journal.events),
       'record_recovery_journal_changed');
+      continuationStage = 'restore';
       await super.restore(state, options);
+      continuationStage = 'restored';
     }
     async proveReady(active) {
       const started = performance.now();
@@ -195,15 +225,17 @@ export async function recoverFirstRecord({ runtimeRoot, output, configPath, scen
     }
     async reconcile(action, currentScenario, { signal: active }) {
       need(action === 'record' && !dispatched && journalAPI.targetLeaseConsumed(lease), 'record_recovery_not_authorized');
+      continuationStage = 'current_proof';
       const proof = await this.proveReady(active);
       // Exclusive fsynced intent is permanent even if the subsequent check,
       // click or reply fails. Another process can never silently retry it.
-      dispatched = true;
+      dispatched = true; continuationStage = 'dispatch_intent';
       await publishExclusiveJSON(resolve(output, 'first-record-recovery.intent.json'), {
         schema: 1, source: 'reviewed-first-record-dispatch-intent', runId: review.runId, pid: process.pid,
         createdAtEpochMs: Date.now(), reviewSHA256: sha256(reviewBytes), originalJournalSHA256: review.journalSHA256,
-        originalOperatorSHA256: review.operatorSHA256, proof, qualification: 'RECOVERED_ATTEMPT_ONLY' });
+        originalOperatorSHA256: review.operatorSHA256, continuedJournalSHA256: checked.currentJournalSHA256, setupEvidence, proof, qualification: 'RECOVERED_ATTEMPT_ONLY' });
       active.throwIfAborted();
+      continuationStage = 'record';
       return super.perform('record', currentScenario, active);
     }
     async steps(plan, active) {
@@ -214,10 +246,11 @@ export async function recoverFirstRecord({ runtimeRoot, output, configPath, scen
       return super.steps(plan, active);
     }
   }
-  return recoverRun({ scenario, output, signal, mode: 'resume', adapter: new Inspection(configPath),
+  const result = await recoverRun({ scenario, output, signal, mode: 'resume', adapter: new Inspection(configPath),
     resumeWithLease: async ownedLease => {
       lease = ownedLease; await checkReview();
       return runJourney({ scenario, output, labRoot, signal, resume: true,
         preacquiredLease: lease, adapter: new Continuation(configPath) });
     } });
+  return { ...result, firstRecordRecovery: { continuationStage, setupEvidence, dispatchIntentAttempted: dispatched, inputBoundaryConsumed } };
 }
