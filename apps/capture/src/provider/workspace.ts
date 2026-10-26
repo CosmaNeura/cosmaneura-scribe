@@ -1178,6 +1178,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   };
   const renderNote = (): void => {
     requireValue(draft);
+    const enteringNote = !content.querySelector(".provider-note");
     if (context && journal.progress?.sessionId && draft.status === "draft") {
       recentStates.set(context.encounter.appointmentRef, { sessionId: journal.progress.sessionId, status: "draft_ready" });
     }
@@ -1235,6 +1236,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       clearTimeout(stagedEditTimer);
       stopTranscriptTools(); content.removeEventListener("input", noteChanged); content.removeEventListener("focusin", rememberEditorField);
     };
+    // A newly opened note must not inherit the previous screen's scroll offset.
+    // Leave existing note/Conversation editing positions to their restoration path.
+    if (enteringNote) content.querySelector(".provider-note")?.scrollIntoView({ block: "start", behavior: "instant" });
   };
   const setNoteView = (transcript: boolean, rememberPosition = true): void => {
     const note = content.querySelector<HTMLElement>(".provider-note");

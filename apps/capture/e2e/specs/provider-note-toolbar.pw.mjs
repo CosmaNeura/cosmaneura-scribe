@@ -38,7 +38,12 @@ for (const { viewport, title, largeText = false, safeArea = false } of cases) {
     await testInfo.attach("initial-layout", { body: JSON.stringify(await save.boundingBox()), contentType: "application/json" });
     // No locator action may auto-scroll Save into view before this assertion.
     await expect(save).toBeInViewport({ ratio: 1 });
-    await expect(page.getByRole("heading", { name: title, exact: true })).toHaveCount(1);
+    const heading = page.getByRole("heading", { name: title, exact: true });
+    await expect(heading).toBeInViewport({ ratio: 1 });
+    const headingBox = await heading.boundingBox(), toolbarBox = await page.locator(".provider-note-actions").boundingBox();
+    expect(headingBox.y).toBeGreaterThanOrEqual(toolbarBox.y + toolbarBox.height);
+    expect(await heading.evaluate(el => { const r = el.getBoundingClientRect();
+      return [4, r.height / 2, r.height - 4].every(y => el.contains(document.elementFromPoint(r.x + r.width / 2, r.y + y))); })).toBe(true);
     expect((await save.boundingBox()).height).toBeGreaterThanOrEqual(44);
     for (const [name, text] of Object.entries(fields)) await expect(page.getByRole("textbox", { name, exact: true })).toHaveValue(text);
     const objective = page.getByRole("textbox", { name: "Objective", exact: true });

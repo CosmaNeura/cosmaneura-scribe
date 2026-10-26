@@ -133,6 +133,7 @@
 .provider-save-bar>div { display:flex; flex-wrap:wrap; gap:12px; }
 /* Keep the one dashboard action reachable without scrolling through editors. */
 html:has(.provider-note) { min-width:320px; }
+.provider-note { scroll-margin-top:env(safe-area-inset-top,0px); }
 .provider-note-actions { position:sticky; top:env(safe-area-inset-top,0px); z-index:3; padding:8px 0; margin-bottom:16px; background:#f1f5f2; border-bottom:1px solid var(--scribe-border); }
 .provider-note-review-help { color:var(--scribe-muted); font-size:16px; }
 .provider-note-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:24px; align-items:start; }
