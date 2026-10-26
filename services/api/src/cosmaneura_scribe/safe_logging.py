@@ -7,6 +7,8 @@ import re
 from typing import TextIO
 from uuid import UUID
 
+from .speech_observation import SpeechBoundaryObservation
+
 LOGGER_NAME = "cosmaneura_scribe"
 LOG_FIELD_ALLOWLIST = frozenset({"action", "entity_id", "tenant_id", "error_class", "duration_ms"})
 PRIVATE_API_ACCEPTANCE_RESULT_FIELD_ALLOWLIST = frozenset(
@@ -41,6 +43,127 @@ _PHI_RISK_LOG_NAMESPACES = ("azure", "httpcore", "httpx")
 
 _SAFE_LABEL = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,79}$")
 _LOGGER = logging.getLogger(LOGGER_NAME)
+
+SPEECH_BOUNDARY_FIELD_ALLOWLIST = frozenset(
+    {
+        "action",
+        "version",
+        "tenant_id",
+        "session_id",
+        "consent_record_id",
+        "scope_sha256",
+        "observed_at_ms",
+        "call_id",
+        "track_index",
+        "sdk_version",
+        "diarization_enabled",
+        "max_speakers",
+        "phrase_count",
+        "missing_speaker_count",
+        "distinct_non_null_speaker_count",
+        "accepted_phrase_count",
+        "accepted_missing_speaker_count",
+        "accepted_distinct_non_null_speaker_count",
+        "accepted_distinct_speaker_count",
+        "wave_header",
+    }
+)
+
+
+def log_speech_boundary(
+    *,
+    tenant_id: UUID,
+    session_id: UUID,
+    consent_record_id: UUID,
+    scope_sha256: str,
+    observed_at_ms: int,
+    observation: SpeechBoundaryObservation,
+) -> None:
+    """Closed provider-response metadata, not evidence of durable publication or roles."""
+
+    def integer(value: object, maximum: int = 10_000_000) -> int:
+        if type(value) is not int or not 0 <= value <= maximum:
+            raise ValueError("speech_observation_metadata_invalid")
+        return value
+
+    def valid_identifier(value: object) -> bool:
+        return isinstance(value, UUID) and value.int != 0
+
+    for identifier in (tenant_id, session_id, consent_record_id):
+        if not valid_identifier(identifier):
+            raise ValueError("speech_observation_metadata_invalid")
+    if (
+        not isinstance(observation.call_id, str)
+        or re.fullmatch(r"[0-9a-f-]{36}", observation.call_id) is None
+        or str(UUID(observation.call_id)) != observation.call_id
+        or UUID(observation.call_id).int == 0
+    ):
+        raise ValueError("speech_observation_metadata_invalid")
+    if re.fullmatch(r"[0-9a-f]{64}", scope_sha256) is None:
+        raise ValueError("speech_observation_metadata_invalid")
+    if re.fullmatch(r"[0-9][0-9A-Za-z.+-]{0,31}", observation.sdk_version) is None:
+        raise ValueError("speech_observation_metadata_invalid")
+    if type(observation.diarization_enabled) is not bool:
+        raise ValueError("speech_observation_metadata_invalid")
+    counts = {
+        key: integer(getattr(observation, key))
+        for key in (
+            "phrase_count",
+            "missing_speaker_count",
+            "distinct_non_null_speaker_count",
+            "accepted_phrase_count",
+            "accepted_missing_speaker_count",
+            "accepted_distinct_non_null_speaker_count",
+            "accepted_distinct_speaker_count",
+        )
+    }
+    if not (
+        counts["accepted_phrase_count"] <= counts["phrase_count"]
+        and counts["missing_speaker_count"] <= counts["phrase_count"]
+        and counts["accepted_missing_speaker_count"] <= counts["missing_speaker_count"]
+        and counts["accepted_missing_speaker_count"] <= counts["accepted_phrase_count"]
+        and counts["distinct_non_null_speaker_count"]
+        <= counts["phrase_count"] - counts["missing_speaker_count"]
+        and counts["accepted_distinct_non_null_speaker_count"]
+        <= counts["distinct_non_null_speaker_count"]
+        and counts["accepted_distinct_non_null_speaker_count"]
+        <= counts["accepted_phrase_count"] - counts["accepted_missing_speaker_count"]
+        and counts["accepted_distinct_speaker_count"]
+        == counts["accepted_distinct_non_null_speaker_count"]
+        + int(counts["accepted_missing_speaker_count"] > 0)
+        and counts["accepted_distinct_speaker_count"] <= counts["accepted_phrase_count"]
+    ):
+        raise ValueError("speech_observation_metadata_invalid")
+    header = observation.wave_header
+    wave = (
+        None
+        if header is None
+        else {
+            "channels": integer(header.channels, 64),
+            "sample_rate_hz": integer(header.sample_rate_hz, 384000),
+            "sample_width_bits": integer(header.sample_width_bits, 64),
+            "format_code": integer(header.format_code, 65535),
+        }
+    )
+    payload: dict[str, object] = {
+        "action": "captured_speech.provider_boundary",
+        "version": 1,
+        "tenant_id": str(tenant_id),
+        "session_id": str(session_id),
+        "consent_record_id": str(consent_record_id),
+        "scope_sha256": scope_sha256,
+        "observed_at_ms": integer(observed_at_ms, 10**15),
+        "call_id": str(observation.call_id),
+        "track_index": integer(observation.track_index, 63),
+        "sdk_version": observation.sdk_version,
+        "diarization_enabled": observation.diarization_enabled,
+        "max_speakers": integer(observation.max_speakers, 36),
+        **counts,
+        "wave_header": wave,
+    }
+    if frozenset(payload) != SPEECH_BOUNDARY_FIELD_ALLOWLIST:
+        raise ValueError("speech_observation_metadata_invalid")
+    _LOGGER.log(logging.INFO, json.dumps(payload, sort_keys=True, separators=(",", ":")))
 
 
 class _StandaloneSafeLogHandler(logging.StreamHandler[TextIO]):
