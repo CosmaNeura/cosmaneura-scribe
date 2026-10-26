@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import vm from 'node:vm';
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID, createHash, webcrypto } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { stripTypeScriptTypes } from 'node:module';
 import { installDesktopMainObserver, missingDesktopObserver, validateInspectorEndpoint } from './desktop-observer.mjs';
 import { projectNoteObservation } from '../native/note-observation.mjs';
+import { snapshotSaveFields, SAVE_UI_SCRIPT } from './save-completion.mjs';
 
 const workspaceChannel='scribe:provider:workspace:v1',recorderChannel='scribe:provider:recorder:v1';
 const appointment='appointment_01m5q661ryetaa28yxe7vbqrex',otherAppointment='appointment_01m5q661ryetaa28yxe7vbqrey';
@@ -13,7 +16,7 @@ const deferred=()=>{let resolve;const promise=new Promise(yes=>{resolve=yes;});r
 async function setup() {
   let sessionListener,recorderListener,subscriptionRequests=0;
   const performance={now:()=>Date.now()-1000,timeOrigin:1000};
-  const renderer=vm.createContext({performance,window:{scribeProvider:{subscribe:fn=>{sessionListener=fn;return()=>{sessionListener=null;};},request:()=>{subscriptionRequests++;}},
+  const renderer=vm.createContext({performance,TextEncoder,crypto:webcrypto,window:{scribeProvider:{subscribe:fn=>{sessionListener=fn;return()=>{sessionListener=null;};},request:()=>{subscriptionRequests++;}},
     scribeRecorder:{subscribe:fn=>{recorderListener=fn;return()=>{recorderListener=null;};},request:()=>{subscriptionRequests++;}}}});
   const replies=new Map(),calls=[];
   const original=function(_event,request){calls.push(request.requestId);return replies.get(request.requestId);};
@@ -22,7 +25,7 @@ async function setup() {
   const owner={runId:randomUUID(),observerSHA256:createHash('sha256').update(installDesktopMainObserver.toString()).digest('hex'),pid:123,executablePath:'/owned/App/Contents/MacOS/Scribe',appPath:'/owned/App/Contents/Resources/app',webContentsId:41};
   const electron={app:{getAppPath:()=>owner.appPath},webContents:{getAllWebContents:()=>[target]},ipcMain:{_invokeHandlers:handlers}};
   const context=vm.createContext({Map,performance,Date,process:{pid:owner.pid,execPath:owner.executablePath,versions:{electron:'44.4.3'}},require:()=>electron});
-  await vm.runInContext(`(${installDesktopMainObserver.toString()})`,context)(owner, projectNoteObservation);
+  await vm.runInContext(`(${installDesktopMainObserver.toString()})`,context)(owner, projectNoteObservation, snapshotSaveFields, SAVE_UI_SCRIPT);
   const api=context.__scribeLabDesktopMainObserver,revision=randomUUID(),connectionId=randomUUID(),workspaceId=randomUUID(),encounterId=randomUUID(),sessionId=randomUUID(),consentRecordId=randomUUID();
   async function call(method,result,options={}) {
     const request={requestId:randomUUID(),method,connectionId,encounterId:null,payload:{},...options};
@@ -257,6 +260,100 @@ test('normal desktop saved note response retains only the actual session/version
   const note = await h.api.readNote('save'); assert.equal(note.session_id, h.sessionId);
   assert(!JSON.stringify(note).includes('must-not-be-retained')); assert(!JSON.stringify(note).includes('binding_ref'));
   await h.open(otherAppointment); assert.equal(await h.api.readNote('save'), null); await h.api.uninstall();
+});
+
+async function saveHarness() {
+  const h = await setup(); await h.prepared();
+  await h.call('session_read', { phase: 'ready', revision: h.revision, accountIdentitySHA256: 'd'.repeat(64) }, { connectionId: null });
+  h.note = async (action = 'prepare') => {
+    const nonce = randomUUID(), suffix = '01m5q661ryetaa28yxe7vbqrex';
+    await h.call('core', { status: 200, body: { contract_version: '1', binding_ref: bindingRef,
+      workspace_id: h.workspaceId, request_nonce: nonce, action, receipt: { status: 'draft', session_id: h.sessionId,
+        note_ref: `visit_note_${suffix}`, transcript_ref: `ai_visit_transcript_${suffix}`, schema_ref: `doctor_note_schema_${suffix}`,
+        note_sha256: 'a'.repeat(64), source_sha256: 'b'.repeat(64), field_order: ['HPI'], privateText: 'must-not-be-retained' } } },
+    { encounterId: h.encounterId, payload: { path: '/service/v1/agent/scribe/capture-notes', body: {
+      binding_ref: bindingRef, workspace_id: h.workspaceId, request_nonce: nonce, expected_session_id: h.sessionId, action } } });
+    return h.api.readCurrentNote();
+  };
+  h.preparedNote = await h.note();
+  h.openCoreRequest = () => ({ requestId: randomUUID(), method: 'open_core', connectionId: h.connectionId,
+    encounterId: h.encounterId, payload: { noteRef: h.preparedNote.note_ref } });
+  h.openCore = () => h.call('open_core', null, { encounterId: h.encounterId, payload: { noteRef: h.preparedNote.note_ref } });
+  return h;
+}
+
+test('actual NoteAutosave clean flush issues no save; normal open_core retains the real prepare receipt', async () => {
+  const source = readFileSync(new URL('../../../apps/capture/src/provider/note-autosave.ts', import.meta.url), 'utf8');
+  const { NoteAutosave } = await import(`data:text/javascript,${encodeURIComponent(stripTypeScriptTypes(source, { mode: 'transform' }))}`);
+  const h = await saveHarness(), before = await h.api.read('current'); let saves = 0;
+  const autosave = new NoteAutosave({ active: () => true, dirty: () => false, save: async () => { saves++; return true; }, failed: () => assert.fail('unexpected failure') });
+  assert.equal(await autosave.flush(), true); const request = await h.openCore();
+  const observed = await h.api.readSaveHandoff();
+  assert.equal(saves, 0); assert.equal(observed.source, 'normal-desktop-open-core-response');
+  assert.equal(observed.openCoreRequestId, request.requestId); assert.equal(observed.mountRequestId, before.requestId);
+  assert.equal(observed.note.action, 'prepare'); assert.equal(observed.note.requestNonce, h.preparedNote.requestNonce);
+  assert.equal(observed.accountIdentitySHA256, 'd'.repeat(64)); assert.equal(observed.pendingObservedReplies, 0);
+  assert.equal((await h.api.read('current')).requestId, before.requestId);
+  assert(!JSON.stringify(observed).includes('must-not-be-retained')); assert(!JSON.stringify(observed).includes('binding_ref'));
+  assert.equal(h.subscriptionRequests(), 0); autosave.dispose(); await h.api.uninstall();
+});
+
+for (const [name, mutate] of [
+  ['wrong note', r => { r.payload.noteRef = 'visit_note_01m5q661ryetaa28yxe7vbqrey'; }],
+  ['foreign encounter', r => { r.encounterId = randomUUID(); }],
+  ['foreign connection', r => { r.connectionId = randomUUID(); }],
+  ['extra payload key', r => { r.payload.privateText = 'must-not-be-retained'; }],
+  ['missing note', r => { r.payload.noteRef = null; }],
+]) test(`open_core ${name} cannot create or retain a completion`, async () => {
+  const h = await saveHarness(); await h.openCore(); assert(await h.api.readSaveHandoff());
+  const request = h.openCoreRequest(); mutate(request);
+  await h.call('open_core', null, request); assert.equal(await h.api.readSaveHandoff(), null); await h.api.uninstall();
+});
+
+for (const [name, alter] of [
+  ['failed response', reply => { reply.ok = false; }],
+  ['wrong request ID', reply => { reply.requestId = randomUUID(); }],
+  ['unexpected result', reply => { reply.result = {}; }],
+  ['extra reply key', reply => { reply.extra = true; }],
+]) test(`open_core ${name} is not navigation completion`, async () => {
+  const h = await saveHarness(), request = h.openCoreRequest(), reply = { requestId: request.requestId, ok: true, result: null };
+  alter(reply); const promise = Promise.resolve(reply); h.replies.set(request.requestId, promise);
+  assert.equal(h.handlers.get(workspaceChannel)({ sender: { id: 41 } }, request), promise);
+  await promise; await tick(); assert.equal(await h.api.readSaveHandoff(), null); await h.api.uninstall();
+});
+
+for (const change of ['note', 'auth', 'visit', 'newer open_core']) test(`pending open_core cannot survive a ${change} change`, async () => {
+  const h = await saveHarness(), held = deferred(), request = h.openCoreRequest();
+  h.replies.set(request.requestId, held.promise); h.handlers.get(workspaceChannel)({ sender: { id: 41 } }, request);
+  assert.equal((await h.api.uninstall()).ownedResourcesSettled, false);
+  if (change === 'note') await h.note('save');
+  if (change === 'auth') { h.sessionEvent({ kind: 'session', state: { phase: 'ready', revision: randomUUID(), accountIdentitySHA256: 'e'.repeat(64) } }); await h.api.readAuth(); }
+  if (change === 'visit') await h.open(otherAppointment);
+  if (change === 'newer open_core') await h.openCore();
+  held.resolve({ requestId: request.requestId, ok: true, result: null }); await tick();
+  const value = await h.api.readSaveHandoff();
+  if (change === 'newer open_core') assert.notEqual(value.openCoreRequestId, request.requestId);
+  else assert.equal(value, null);
+  assert.equal((await h.api.uninstall()).ownedResourcesSettled, true);
+});
+
+test('fixed renderer reads return only field digest and actual completion, and reject a page change', async () => {
+  const h = await saveHarness(), action = { disabled: false, isConnected: true };
+  const field = { name: 'note-0', value: 'synthetic only', disabled: false, readOnly: false, isConnected: true };
+  const buttons = ['encounters', 'core'].map(workspaceAction => ({ disabled: false, dataset: { workspaceAction } }));
+  h.renderer.document = { visibilityState: 'visible', querySelectorAll: query => query.includes('finish-note') ? [action] : [field],
+    querySelector: () => ({ querySelectorAll: () => buttons, querySelector: () => ({ textContent: 'Saved for review' }) }) };
+  const fields = await h.api.readSaveFields(['HPI']); assert.equal(fields.source, 'normal-note-editor-fields');
+  assert(!JSON.stringify(fields).includes(field.value)); assert.equal(await h.api.readSaveFields(['wrong']), null);
+  h.renderer.document.querySelectorAll = () => [];
+  assert.equal((await h.api.readSaveUI()).heading, 'Saved for review');
+  const execute = h.target.executeJavaScript;
+  h.target.executeJavaScript = async script => {
+    const result = await execute(script);
+    if (script.includes('provider-completion')) h.sessionEvent({ kind: 'session', state: { phase: 'signedOut', revision: randomUUID() } });
+    return result;
+  };
+  assert.equal(await h.api.readSaveUI(), null); await h.api.uninstall();
 });
 
 async function closedHarness() {

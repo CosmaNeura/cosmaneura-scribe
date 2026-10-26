@@ -5,13 +5,14 @@ import { isAbsolute, relative } from 'node:path';
 import { verifyBuild } from './native-identity.mjs';
 import { sha256 } from './journal.mjs';
 import { projectNoteObservation } from '../native/note-observation.mjs';
+import { snapshotSaveFields, SAVE_UI_SCRIPT } from './save-completion.mjs';
 
 const exec = promisify(execFile);
 /** Serialized into an owned Electron 44 MAIN inspector. It wraps only existing
  * workspace/recorder handlers and subscribes to the existing renderer event APIs.
  * It never calls either product request API. Electron's internal handler Map is
  * version-specific: absence, replacement, or another owner fails closed. */
-export async function installDesktopMainObserver(owner, projectNoteObservation = null) {
+export async function installDesktopMainObserver(owner, projectNoteObservation = null, saveFields = null, saveUIScript = null) {
   const requireModule = typeof require === 'function' ? require : process.mainModule?.require.bind(process.mainModule);
   if (!requireModule) throw Error('desktop_main_require_unavailable');
   const electron = requireModule('electron'), uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
@@ -58,6 +59,7 @@ export async function installDesktopMainObserver(owner, projectNoteObservation =
   let connectionId = null, revision = null, current = null, created = null, createdCandidate = null, admission = null, recording = null, terminal = null;
   let scopeBinding = null, boundVisit = null, recorderId = null, lastEvent = { session: 0, recording: 0, closed: 0 };
   let notes = {}, noteRequests = {}, noteSession = null, currentNote = null, currentNoteRequest = null;
+  let saveHandoff = null, saveSequence = 0;
   let authObservation = null, authSequence = 0, authMutationsPending = 0, authEpoch = 0;
   let recordingOwner = null, closedLifecycle = null, captureMutationSequence = 0;
   const wrappers = new Map(), observedReplies = new Set();
@@ -79,6 +81,7 @@ export async function installDesktopMainObserver(owner, projectNoteObservation =
   const clearCapture = () => { admission = recording = terminal = null; recorderId = null; recordingGeneration++; mutationPending = false; };
   const clearVisit = () => {
     notes = {}; noteRequests = {}; noteSession = null; currentNote = currentNoteRequest = null;
+    saveHandoff = null; saveSequence++;
     generation++; current = created = null; scopeBinding = boundVisit = null; clearCapture();
     const recorder = wrappers.get(recorderChannel);
     if (recorder && handlers.get(recorderChannel) === recorder.wrapped) handlers.set(recorderChannel, recorder.original);
@@ -180,7 +183,7 @@ export async function installDesktopMainObserver(owner, projectNoteObservation =
     handlers.set(channel, wrapped); wrappers.set(channel, { original, wrapped }); return true;
   }
   function workspaceRequest(request) {
-    if (!uuid(request?.requestId) || !['session_read', 'sign_in', 'sign_out', 'connect', 'disconnect', 'list', 'create', 'open', 'encounter_setup', 'core', 'cancel', 'recorder'].includes(request.method)
+    if (!uuid(request?.requestId) || !['session_read', 'sign_in', 'sign_out', 'connect', 'disconnect', 'list', 'create', 'open', 'open_core', 'encounter_setup', 'core', 'cancel', 'recorder'].includes(request.method)
         || request.connectionId !== null && !uuid(request.connectionId) || request.encounterId !== null && !uuid(request.encounterId)) return null;
     const method = request.method, payload = request.payload;
     const closingOwner = ['list', 'open'].includes(method) && request.connectionId === connectionId ? recordingOwner : null;
@@ -197,6 +200,15 @@ export async function installDesktopMainObserver(owner, projectNoteObservation =
       if (meta.authMutation) authMutationsPending++;
     }
     if (method === 'open') meta.appointmentRef = ref(payload?.appointmentRef, 'appointment') ? payload.appointmentRef : null;
+    if (method === 'open_core') {
+      saveHandoff = null; saveSequence++;
+      if (payload && Object.keys(payload).join() === 'noteRef' && ref(payload.noteRef, 'visit_note')
+          && currentNote?.note_ref === payload.noteRef && request.connectionId === connectionId
+          && request.encounterId === current?.encounterId && authObservation?.revision === revision && authMutationsPending === 0) {
+        meta.save = { sequence: saveSequence, note: currentNote, noteRequest: currentNoteRequest,
+          identitySHA256: authObservation.identitySHA256, revision, ...stamp() };
+      }
+    }
     if (method === 'core' && payload?.path === '/service/v1/agent/scribe/capture-admissions') {
       invalidateLifecycle();
       clearCapture(); meta.recordingGeneration = recordingGeneration; meta.admission = true;
@@ -217,6 +229,7 @@ export async function installDesktopMainObserver(owner, projectNoteObservation =
       delete notes[meta.noteAction];
       noteRequests[meta.noteAction] = request.requestId;
       currentNote = null; currentNoteRequest = request.requestId;
+      saveHandoff = null; saveSequence++;
     }
     return meta;
   }
@@ -239,6 +252,16 @@ export async function installDesktopMainObserver(owner, projectNoteObservation =
     }
     if (meta.generation !== generation || reply?.requestId !== meta.requestId || reply.ok !== true) return;
     const result = reply.result;
+    if (meta.save && meta.save.sequence === saveSequence && meta.connectionId === connectionId
+        && meta.encounterId === current?.encounterId && meta.save.note === currentNote && meta.save.noteRequest === currentNoteRequest
+        && meta.save.revision === revision && authObservation?.identitySHA256 === meta.save.identitySHA256 && authMutationsPending === 0
+        && result === null && Object.keys(reply).sort().join() === 'ok,requestId,result') {
+      saveHandoff = { source: 'normal-desktop-open-core-response', runId: owner.runId,
+        workspaceId: current.workspaceId, appointmentRef: current.appointmentRef, encounterId: current.encounterId,
+        connectionId, revision, mountRequestId: current.requestId, openCoreRequestId: meta.requestId,
+        accountIdentitySHA256: meta.save.identitySHA256, note: { ...currentNote },
+        requestObservedAtMonotonicMs: meta.save.observedAtMonotonicMs, requestBrowserTimeOriginMs: meta.save.browserTimeOriginMs, ...stamp() };
+    }
     if (meta.noteRequest && noteRequests[meta.noteAction] === meta.requestId
         && meta.connectionId === connectionId && meta.encounterId === current?.encounterId
         && result?.status === 200 && typeof projectNoteObservation === 'function') {
@@ -257,7 +280,7 @@ export async function installDesktopMainObserver(owner, projectNoteObservation =
           || !ref(scope.bindingRef, 'scribe_capture_binding')) return;
       current = { source: 'normal-native-mount-response', transport: 'electron-main-ipc', runId: owner.runId,
         workspaceId: scope.workspaceId, appointmentRef: scope.appointmentRef, encounterId: result.encounterId,
-        revision, requestId: meta.requestId, ...stamp() };
+        connectionId, revision, requestId: meta.requestId, ...stamp() };
       scopeBinding = scope.bindingRef;
       if (recordingOwner && (recordingOwner.workspaceId !== current.workspaceId || recordingOwner.appointmentRef !== current.appointmentRef)) invalidateLifecycle();
       if (createdCandidate?.appointmentRef === current.appointmentRef && createdCandidate.revision === revision)
@@ -315,6 +338,15 @@ export async function installDesktopMainObserver(owner, projectNoteObservation =
     for (const [channel, { original, wrapped }] of wrappers) if (handlers.get(channel) === wrapped) handlers.set(channel, original);
     await target.executeJavaScript(`window.${eventKey}?.close()`); throw error;
   }
+  async function readSaveRenderer(script) {
+    await refreshEvents();
+    const selected = current, note = currentNote, epoch = generation, account = authObservation?.identitySHA256;
+    if (!selected || !note || !account || authMutationsPending !== 0) return null;
+    const result = await target.executeJavaScript(script);
+    await refreshEvents();
+    return current === selected && currentNote === note && generation === epoch
+      && authObservation?.identitySHA256 === account && authMutationsPending === 0 ? result : null;
+  }
   const api = Object.freeze({
     async bindVisit(scope) {
       await refreshEvents();
@@ -342,6 +374,14 @@ export async function installDesktopMainObserver(owner, projectNoteObservation =
     },
     async readNote(action) { await refreshEvents(); return notes[action] ? { ...notes[action] } : null; },
     async readCurrentNote() { await refreshEvents(); return currentNote ? { ...currentNote } : null; },
+    async readSaveHandoff() { await refreshEvents(); return saveHandoff ? { ...saveHandoff, note: { ...saveHandoff.note }, pendingObservedReplies: pending } : null; },
+    async readSaveFields(order) {
+      if (typeof saveFields !== 'function' || !Array.isArray(order) || !order.length || order.length > 100
+          || order.some(key => typeof key !== 'string' || !key.trim() || key.length > 200)
+          || JSON.stringify(order) !== JSON.stringify(currentNote?.field_order)) return null;
+      return readSaveRenderer(`(${saveFields.toString()})(${JSON.stringify(order)})`);
+    },
+    async readSaveUI() { return typeof saveUIScript === 'string' ? readSaveRenderer(`(()=>{${saveUIScript}})()`) : null; },
     async readClosed() { await refreshEvents(); return closedSnapshot(); },
     async readAuth() {
       await refreshEvents();
@@ -424,7 +464,7 @@ export async function createDesktopObserver({ config, scenario, endpoint, pid, e
     const identity = await client.evaluate(`(()=>{const r=typeof require==='function'?require:process.mainModule?.require.bind(process.mainModule);const e=r?.('electron');return {pid:process.pid,executablePath:process.execPath,appPath:e?.app.getAppPath(),version:process.versions.electron,targets:e?.webContents.getAllWebContents().filter(w=>!w.isDestroyed()&&/^app:\\/\\/cosmas\\//.test(w.getURL())).map(w=>({id:w.id,url:w.getURL()}))};})()`);
     if (identity?.pid !== pid || identity.executablePath !== executable || identity.appPath !== application
         || !identity.version?.startsWith('44.') || identity.targets?.length !== 1) throw Error('inspector_candidate_identity_mismatch');
-    const owner = { runId:scenario.admissionBinding.runId,observerSHA256:sha256(installDesktopMainObserver.toString() + projectNoteObservation.toString()),pid,executablePath:executable,appPath:application,webContentsId:identity.targets[0].id };
+    const owner = { runId:scenario.admissionBinding.runId,observerSHA256:sha256(installDesktopMainObserver.toString() + projectNoteObservation.toString() + snapshotSaveFields.toString() + SAVE_UI_SCRIPT),pid,executablePath:executable,appPath:application,webContentsId:identity.targets[0].id };
     if (readOnly) {
       const prior = await client.evaluate('globalThis.__scribeLabDesktopMainObserver?.describe() ?? null');
       if (prior === null && allowMissing) return missingDesktopObserver(client, owner.observerSHA256);
@@ -432,13 +472,16 @@ export async function createDesktopObserver({ config, scenario, endpoint, pid, e
         throw Error('desktop_recovery_observer_missing_or_changed');
     } else {
       installationAttempted = true;
-      await client.evaluate(`(${installDesktopMainObserver.toString()})(${JSON.stringify(owner)}, (${projectNoteObservation.toString()}))`);
+      await client.evaluate(`(${installDesktopMainObserver.toString()})(${JSON.stringify(owner)}, (${projectNoteObservation.toString()}), (${snapshotSaveFields.toString()}), ${JSON.stringify(SAVE_UI_SCRIPT)})`);
     }
     const read = kind => client.evaluate(`globalThis.__scribeLabDesktopMainObserver.read(${JSON.stringify(kind)})`);
     return { targetId:client.targetId, observerSHA256:owner.observerSHA256, bindVisit:scope=>client.evaluate(`globalThis.__scribeLabDesktopMainObserver.bindVisit(${JSON.stringify(scope)})`), readCreated:()=>read('created'), currentVisit:()=>read('current'), readAdmission:()=>read('admission'), readRecording:()=>read('recording'), readTerminal:()=>read('terminal'),
       readClosed:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.readClosed()'),
       readNote:action=>client.evaluate(`globalThis.__scribeLabDesktopMainObserver.readNote(${JSON.stringify(action)})`),
       readCurrentNote:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.readCurrentNote()'),
+      readSaveHandoff:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.readSaveHandoff()'),
+      readSaveFields:order=>client.evaluate(`globalThis.__scribeLabDesktopMainObserver.readSaveFields(${JSON.stringify(order)})`),
+      readSaveUI:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.readSaveUI()'),
       readAuth:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.readAuth()'),
       recoverySnapshot:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.recoverySnapshot()'),
       async close({ preserveForRecovery = false } = {}) { let result; try {

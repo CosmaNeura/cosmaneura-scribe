@@ -14,6 +14,7 @@ import { nativeIdentity, verifyBuild } from './native-identity.mjs';
 import { installAdmissionObserver } from '../native/admission-observer.mjs';
 import { installVisitScopeObserver } from '../native/visit-observer.mjs';
 import { SAVE_FIELDS_SCRIPT, SAVE_UI_SCRIPT, validateSaveCompletion } from './save-completion.mjs';
+import { validateDesktopSaveCompletion } from './desktop-save-completion.mjs';
 import { createDesktopObserver } from './desktop-observer.mjs';
 import { projectNoteObservation } from '../native/note-observation.mjs';
 import { verifyDashboard } from './dashboard.mjs';
@@ -421,15 +422,24 @@ export class AppiumUI {
   async beginSaveAttempt(signal) {
     this.saveAttempt = null; this.lastSaveCompletion = null;
     const note = await this.readNote(null, signal), visit = await this.assertVisit(signal);
-    const fields = await this.withUIContext(() => this.rawWebview(SAVE_FIELDS_SCRIPT, [note.field_order], signal, false, true));
+    const auth = this.desktop ? await this.readAuth(signal) : null;
+    const fields = this.desktop ? await this.desktop.readSaveFields(note.field_order)
+      : await this.withUIContext(() => this.rawWebview(SAVE_FIELDS_SCRIPT, [note.field_order], signal, false, true));
     if (!fields || fields.source !== 'normal-note-editor-fields' || !/^[a-f0-9]{64}$/.test(fields.fieldsSHA256)
         || this.config.journey?.save?.actions?.length !== 1 || this.config.journey.save.actions[0].action !== 'click')
       throw Error('native_save_editor_unconfirmed');
-    this.saveAttempt = { nonce: randomUUID(), note, visit, fields };
-    this.lastSaveCompletion = { source: 'normal-native-save-completion', attempt: this.saveAttempt };
+    this.saveAttempt = { nonce: randomUUID(), note, visit, fields, ...(this.desktop ? { auth } : {}) };
+    this.lastSaveCompletion = { source: this.desktop ? 'normal-desktop-save-completion' : 'normal-native-save-completion', attempt: this.saveAttempt };
   }
   async completeSaveAttempt(currentVisit, signal) {
     const attempt = this.saveAttempt; this.saveAttempt = null;
+    if (this.desktop) {
+      const auth = await this.readAuth(signal), ui = await this.desktop.readSaveUI(), handoff = await this.desktop.readSaveHandoff();
+      const completion = { source: 'normal-desktop-save-completion', attempt, handoff, currentVisit, auth, ui };
+      this.lastSaveCompletion = completion;
+      validateDesktopSaveCompletion(handoff?.note, completion);
+      return { ...handoff.note, saveCompletion: completion };
+    }
     const handoff = await this.webview('return window.__scribeLabVisitObserver?.readNoteHandoff() ?? null;', [], signal);
     const ui = await this.webview(SAVE_UI_SCRIPT, [], signal);
     const completion = { source: 'normal-native-save-completion', attempt, handoff, currentVisit, ui };
@@ -562,7 +572,7 @@ export class AppiumUI {
       // Read/prepare/save all return the real session-bound persisted Core tuple.
       let note;
       if (action === 'review') note = await this.readNote(null, signal);
-      else note = action === 'save' && !this.desktop
+      else note = action === 'save'
         ? await this.completeSaveAttempt(value.visitScope, signal) : await this.readNote(action === 'save' ? 'save' : 'read', signal);
       if (note.browserTimeOriginMs + note.observedAtMonotonicMs
           < this.terminal.browserTimeOriginMs + this.terminal.observedAtMonotonicMs) throw Error('note_response_precedes_capture_stop');
@@ -729,7 +739,17 @@ export class AppiumUI {
         continue;
       }
       const element = await this.find(step.locator, signal);
-      if (step.action === 'click') await this.request(`/element/${element}/click`, 'POST', {}, signal);
+      if (step.action === 'click' && this.desktop && this.saveAttempt) {
+        const attempt = this.saveAttempt;
+        await this.withUIContext(async () => {
+          if (attempt !== this.saveAttempt || attempt.click) throw Error('desktop_save_click_changed');
+          // Bracket dispatch after locator discovery and the UI mutex, not
+          // before a possibly slow search which could admit an earlier reply.
+          const startedAtEpochMs = Date.now();
+          await this.rawRequest(`/element/${element}/click`, 'POST', {}, signal);
+          attempt.click = { source: 'normal-desktop-control-response', action: 'click', startedAtEpochMs, completedAtEpochMs: Date.now() };
+        });
+      } else if (step.action === 'click') await this.request(`/element/${element}/click`, 'POST', {}, signal);
       else if (step.action === 'clear') await this.request(`/element/${element}/clear`, 'POST', {}, signal);
       else if (step.action === 'type') {
         const text = step.env ? process.env[step.env] : step.text;
@@ -781,14 +801,11 @@ export class AppiumUI {
     // Verify the actual recorder immediately before the final UI mutation;
     // a same-visit replacement session must never receive this run's Finish.
     if (action === 'finish') await this.assertFinishable(signal);
-    if (action === 'save') {
-      if (this.desktop) await this.readNote(null, signal);
-      else await this.beginSaveAttempt(signal);
-    }
+    if (action === 'save') await this.beginSaveAttempt(signal);
     if (action === 'record') await this.assertInputBeforeRecord(signal);
     try {
       await this.steps(this.config.journey?.[action], signal);
-      if (action === 'save' && this.saveAttempt) this.saveAttempt.click = {
+      if (action === 'save' && this.saveAttempt && !this.desktop) this.saveAttempt.click = {
         source: 'normal-native-control-response', action: 'click', completedAtEpochMs: Date.now(),
       };
     } catch (error) { if (action === 'save') this.saveAttempt = null; throw error; }
