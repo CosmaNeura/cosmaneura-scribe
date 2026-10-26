@@ -51,7 +51,7 @@ function fixture() {
     admission: { source: 'normal-native-admission-response', ...scope, consentRecordId: runId, revision: scope.authRevision, requestId: runId, requestNonce: runId },
     initialRecording: { source: 'normal-native-recording-response', phase: 'ready', busy: false, timingObservation: first },
     after: { ...before, status: 'READ', bytes, sha256: hash(bytes) },
-    window: boundKernelClockWindow(clockSample(1000000000n, 1), clockSample(9000000000n, 2)),
+    window: boundKernelClockWindow(clockSample(1450000000n, 1), clockSample(9000000000n, 2)),
     timeline: { source: 'normal-ui-adapter-action-observation', action: 'record', status: 'OBSERVED', configuredFinds: 1,
       commands: [{ kind: 'click', invokedNs: '2000000000', settledNs: '2600000000', status: 'FULFILLED' }],
       checks: [{ kind: 'ui-assertions', invokedNs: '2600000000', settledNs: '2800000000', status: 'FULFILLED' }] },
@@ -82,6 +82,23 @@ test('consistent supplied evidence keeps the physical-touch/browser/whole-workfl
 });
 test('retained JSON cannot impersonate a live owned-process export', () => {
   assert.throws(() => bindNativePerformanceEvidence(fixture()), /export_unconfirmed/);
+});
+test('an attempt starting after the baseline and clock sample but before the observed click cannot qualify', () => {
+  const value = fixture();
+  editJournal(value, rows => { rows[0].monotonic_ns = '1475000000'; });
+  assert.throws(() => analyze(value));
+});
+test('an attempt start overlapping the click within mapping uncertainty cannot qualify', () => {
+  const value = fixture();
+  editJournal(value, rows => { rows[0].monotonic_ns = '1500000000'; });
+  assert.throws(() => analyze(value), /start_not_attributed_to_action/);
+});
+test('the conservative start boundary retains a nonnegative mapped interval', () => {
+  const value = fixture();
+  editJournal(value, rows => { rows[0].monotonic_ns = '1500000004'; });
+  assert.deepEqual(analyze(value).actionToNativeStart, {
+    lowerNs: '0', upperNs: '8', attribution: 'NOT_BEFORE_OBSERVED_ACTION',
+  });
 });
 for (const [name, edit] of [
   ['changed process', v => { v.after.process = { ...v.after.process, pid: 999 }; }],

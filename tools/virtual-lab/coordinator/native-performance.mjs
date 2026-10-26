@@ -171,6 +171,13 @@ export function analyzeNativePerformanceEvidence({ phase, timeline, before, afte
   const command = timeline.commands[0], actionNs = BigInt(command.invokedNs), uiNs = BigInt(timeline.checks[0].settledNs);
   if (uiNs < actionNs || BigInt(command.settledNs) < actionNs || uiNs > BigInt(window.nodeWindowEndNs)
       || BigInt(command.settledNs) > BigInt(window.nodeWindowEndNs)) throw fail('action_clock_changed');
+  // A new attempt after the baseline can still precede this click. Attribute
+  // only when the entire mapped start interval is at or after its invocation.
+  const startBound = boundNativeResponse({ window, nodeActionLowerNs: command.invokedNs, nodeActionUpperNs: command.invokedNs,
+    nativeEventNs: data.events[0].monotonicNs, budgetNs: NATIVE_PERFORMANCE_BUDGETS_NS[phase] });
+  if (BigInt(startBound.lowerNs) < 0n) throw fail('start_not_attributed_to_action');
+  const actionToNativeStart = { lowerNs: startBound.lowerNs, upperNs: startBound.upperNs,
+    attribution: 'NOT_BEFORE_OBSERVED_ACTION' };
   const measurements = endpoints.map(event => {
     const matches = data.events.filter(value => value.event === event);
     if (matches.length !== 1) return { event, status: matches.length ? 'AMBIGUOUS' : 'NOT_OBSERVED', qualification: 'NOT_ESTABLISHED' };
@@ -190,7 +197,7 @@ export function analyzeNativePerformanceEvidence({ phase, timeline, before, afte
   return { source: 'owned-native-action-performance', phase, scope: Object.fromEntries(scopeKeys.map(key => [key, data.last[key]])),
     admission, admissionMetadataSHA256: sha256(JSON.stringify(admission)),
     captureAttempt: data.last.sample.captureAttempt, process: after.process, build: after.build, journalSHA256: after.sha256,
-    timeline: clones(timeline), clockWindow: clones(window), retention: data.retention, input,
+    timeline: clones(timeline), clockWindow: clones(window), retention: data.retention, input, actionToNativeStart,
     readinessBudgetNs: NATIVE_PERFORMANCE_BUDGETS_NS[phase], budgetBasis: 'PROSPECTIVE_ENGINEERING_NOT_USER_SLA', measurements,
     commandRoundTripNs: (BigInt(command.settledNs) - actionNs).toString(),
     commandToUIAssertionsNs: (uiNs - actionNs).toString(), toolWaitsSubtracted: false,

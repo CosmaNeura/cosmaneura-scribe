@@ -81,7 +81,10 @@ The prior normal admission's consent ID, request IDs and auth revision are
 retained and bound to that same session; an admission change refuses timing.
 The new native attempt's `startRequested` and required readiness endpoints must
 remain in the journal, ordered, inside the new clock window, with zero observed
-queue/admission drops. Changed process/build/boot, skipped attempts, discarded
+queue/admission drops. The complete mapped `startRequested` interval must be at
+or after the observed click invocation; a start before that click or overlapping
+it within clock uncertainty refuses attribution. A new attempt after the
+baseline alone is insufficient. Changed process/build/boot, skipped attempts, discarded
 replies, missing anchors or missing endpoints refuse qualification.
 
 The native ring is 128 events/32 KiB. Its drop counter counts admission-budget
