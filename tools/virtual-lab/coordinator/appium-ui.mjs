@@ -21,6 +21,8 @@ import { inspectParticipantResources } from '../zoom/resource-owner.mjs';
 import { createSessionAttempt, recoverSessionCreations, sessionReturned, sessionClosed, sessionNotDispatched,
   sessionCapsMatch, SESSION_ATTEMPT_CAPABILITY, SESSION_CREATION_TIMEOUT_MS } from './session-attempt.mjs';
 
+import { SCROLL_DOCUMENT_SCRIPT, validateScrollSnapshot, scrollTouchActions, unchangedScrollFields } from './safe-scroll.mjs';
+
 const exec = promisify(execFile);
 const elementKey = 'element-6066-11e4-a52e-4f735466cecf';
 const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -35,6 +37,7 @@ function assertionError(error) {
     default: return 'driver_error';
   }
 }
+
 export const IOS_OBSERVER_HASHES = Object.freeze({
   visit: sha256(installVisitScopeObserver.toString()),
   admission: sha256(installAdmissionObserver.toString() + projectNoteObservation.toString()),
@@ -46,7 +49,7 @@ export class AppiumUI {
     this.lifetime = new AbortController(); this.pending = new Set(); this.uiTail = Promise.resolve();
     this.observerLifetime = new AbortController(); this.desktop = null;
     this.uncertainMutations = new Set(); this.commandSequence = 0;
-    this.checkSequence = 0; this.lastCheckFailure = null;
+    this.checkSequence = 0; this.lastCheckFailure = null; this.inputSafetyUncertain = false; this.lastScrollEvidence = null;
   }
   async loadConfig(scenario) {
     const bytes = await readFile(this.configPath);
@@ -118,7 +121,7 @@ export class AppiumUI {
     active.throwIfAborted();
     // A lost reply cannot establish whether Appium/WDA executed the mutation.
     // Closing the session later does not undo or prove settlement of that work.
-    const mutation = method === 'POST' && (!['/element', '/elements', '/context', '/execute/sync'].includes(path)
+    const mutation = method === 'POST' && (!['/element', '/elements', '/context', '/execute/sync', '/execute/async'].includes(path)
       || path === '/execute/sync' && body?.script === 'mobile: scroll');
     const command = mutation ? ++this.commandSequence : null;
     if (mutation) this.uncertainMutations.add(command);
@@ -188,7 +191,9 @@ export class AppiumUI {
     finally { signal.removeEventListener('abort', abortObserver); }
   }
   webview(script, args = [], signal, observerInstallation = false) {
-    return this.withUIContext(async () => {
+    return this.withUIContext(() => this.rawWebview(script, args, signal, observerInstallation));
+  }
+  async rawWebview(script, args, signal, observerInstallation = false, asynchronous = false) {
       const previous = await this.rawRequest('/context', 'GET', undefined, signal);
       if (previous !== 'NATIVE_APP') throw Error('native_context_unconfirmed');
       const context = await discoverOwnedIOSWebview(active => this.rawRequest('/execute/sync', 'POST', IOS_CONTEXT_DISCOVERY, active), this.config.app?.bundleId, signal);
@@ -197,13 +202,12 @@ export class AppiumUI {
         await this.rawRequest('/context', 'POST', { name: context }, signal);
         if (await this.rawRequest('/execute/sync', 'POST', { script: IOS_CONTEXT_ATTESTATION, args: [] }, signal) !== true)
           throw Error('owned_webview_identity_changed');
-        return await this.rawRequest('/execute/sync', 'POST', { script, args }, signal, { observerInstallation });
+        return await this.rawRequest(asynchronous ? '/execute/async' : '/execute/sync', 'POST', { script, args }, signal, { observerInstallation });
       }
       finally {
         try { await this.rawRequest('/context', 'POST', { name: previous }, signal); this.contextUncertain = false; }
         catch (error) { this.contextUncertain = true; throw error; }
       }
-    });
   }
   async installObserver(signal) {
     if (!this.binding) throw Error('created_visit_binding_missing');
@@ -564,6 +568,44 @@ export class AppiumUI {
       consent: { sessionId, state: 'granted' }, nativeObservation,
       capture: { sessionId, state: nativeObservation.phase, nativeState: nativeObservation.phase, elapsedSeconds } };
   }
+  async safeScroll(direction, signal) {
+    if (this.inputSafetyUncertain) throw Error('native_input_recovery_required');
+    this.lastScrollEvidence = null;
+    if (this.config?.target?.role !== 'owned-ios-simulator' || this.config.capabilities?.platformName !== 'iOS'
+        || this.config.capabilities?.['appium:automationName'] !== 'XCUITest') throw Error('native_scroll_target_unsupported');
+    return this.withUIContext(async () => {
+      let dispatched = false;
+      const keyboardAbsent = async () => {
+        if (await this.rawRequest('/context', 'GET', undefined, signal) !== 'NATIVE_APP') throw Error('native_context_unconfirmed');
+        const matches = await this.rawRequest('/elements', 'POST', { using: 'class name', value: 'XCUIElementTypeKeyboard' }, signal);
+        if (!Array.isArray(matches) || matches.length > 4) throw Error('native_scroll_keyboard_unknown');
+        for (const match of matches) {
+          const id = match?.['element-6066-11e4-a52e-4f735466cecf'] ?? match?.ELEMENT;
+          if (typeof id !== 'string' || !id) throw Error('native_scroll_keyboard_unknown');
+          const visible = await this.rawRequest(`/element/${id}/displayed`, 'GET', undefined, signal);
+          if (visible !== false) throw Error('native_scroll_keyboard_visible');
+        }
+      };
+      try {
+        await keyboardAbsent();
+        const frame = await this.rawRequest('/window/rect', 'GET', undefined, signal);
+        const before = validateScrollSnapshot(await this.rawWebview(SCROLL_DOCUMENT_SCRIPT, [], signal, false, true), frame);
+        this.lastScrollEvidence = { schema: 1, before, direction, status: 'BEFORE_TOUCH' };
+        signal?.throwIfAborted();
+        dispatched = true;
+        await this.rawRequest('/actions', 'POST', scrollTouchActions(before, direction), signal);
+        await keyboardAbsent();
+        const after = validateScrollSnapshot(await this.rawWebview(SCROLL_DOCUMENT_SCRIPT, [], signal, false, true),
+          await this.rawRequest('/window/rect', 'GET', undefined, signal));
+        this.lastScrollEvidence.after = after;
+        unchangedScrollFields(before, after);
+        this.lastScrollEvidence.status = 'UNCHANGED_FIELDS';
+      } catch (error) {
+        if (dispatched) { this.inputSafetyUncertain = true; if (this.lastScrollEvidence) this.lastScrollEvidence.status = 'INPUT_UNCONFIRMED'; }
+        throw error;
+      }
+    });
+  }
   async steps(plan, signal) {
     for (const step of plan?.actions ?? []) {
       if (signal?.aborted) throw Error('native_action_aborted');
@@ -577,7 +619,7 @@ export class AppiumUI {
             || step.count < 1 || step.count > 3) throw Error('native_scroll_arguments_invalid');
         for (let index = 0; index < step.count; index++) {
           if (signal?.aborted) throw Error('native_action_aborted');
-          await this.request('/execute/sync', 'POST', { script: 'mobile: scroll', args: [{ direction: step.direction }] }, signal);
+          await this.safeScroll(step.direction, signal);
         }
         continue;
       }
@@ -749,6 +791,10 @@ export class AppiumUI {
     return observation;
   }
   async failureArtifact(path) {
+    if (this.lastScrollEvidence) {
+      try { await writeFile(`${path}.scroll-${randomUUID()}.json`, JSON.stringify(this.lastScrollEvidence), { mode: 0o600, flag: 'wx' }); }
+      catch { /* Metadata collection cannot change the original failure. */ }
+    }
     if (this.lastCheckFailure) {
       try { await writeFile(`${path}.assertions-${randomUUID()}.json`, JSON.stringify(this.lastCheckFailure), { mode: 0o600, flag: 'wx' }); }
       catch { /* Missing diagnostics never change the failed gate. */ }
@@ -871,6 +917,7 @@ export class AppiumUI {
     }
   }
   async cleanup({ preserveForRecovery = false, captureProofAtOrAfterEpochMs, captureMayBeActive = false } = {}) {
+    if (this.inputSafetyUncertain) preserveForRecovery = true;
     let nativeCaptureProof = this.cleanupNativeCaptureProof;
     if ((this.session || this.desktop) && Number.isFinite(captureProofAtOrAfterEpochMs) && !this.lifetime.signal.aborted) {
       try {
@@ -922,11 +969,11 @@ export class AppiumUI {
     return { source: source ?? { syntheticParticipantsClosed: true, ownedResourcesSettled: true }, observer, appiumSessionClosed: closed,
       ...(nativeTiming ? { nativeTiming } : {}),
       ...(nativeCaptureProof ? { nativeCaptureProof } : {}),
-      uncertainNativeMutationCount: this.uncertainMutations.size,
+      uncertainNativeMutationCount: this.uncertainMutations.size, inputSafetyUncertain: this.inputSafetyUncertain === true,
       observerInstallationUncertain: this.observerInstallationUncertain === true,
       ...(this.inputWatchSummary ? { inputScope: this.inputWatchSummary } : {}),
       ...(this.inputWatchUnsafeEvidence ? { inputUnsafeEvidence: this.inputWatchUnsafeEvidence } : {}),
-      ownedResourcesSettled: closed && this.pending.size === 0 && this.uncertainMutations.size === 0 && !this.contextUncertain && !this.observerInstallationUncertain && !this.observerCleanupUncertain && !this.dashboardCleanupUncertain && !this.inputWatchCleanupUncertain
+      ownedResourcesSettled: !this.inputSafetyUncertain && closed && this.pending.size === 0 && this.uncertainMutations.size === 0 && !this.contextUncertain && !this.observerInstallationUncertain && !this.observerCleanupUncertain && !this.dashboardCleanupUncertain && !this.inputWatchCleanupUncertain
         && (!source || source.ownedResourcesSettled === true) && (!observer || observer.ownedResourcesSettled === true),
       nativeAppTerminated: false, nativeCaptureState: 'requires-product-state-inspection' };
   }

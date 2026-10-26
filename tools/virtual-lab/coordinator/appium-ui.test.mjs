@@ -668,67 +668,135 @@ function scrollingDriver() {
   ui.config.capabilities = { platformName: 'iOS', 'appium:automationName': 'XCUITest' };
   return ui;
 }
-test('bounded native scrolling precedes the unchanged visible control assertion and unique click', async () => {
-  const ui = scrollingDriver(), calls = [];
-  ui.request = async (path, method, body) => { calls.push({ path, method, body }); };
-  ui.value = async () => false;
+function scrollSnapshot() { return { version: 1, timeOriginMs: 1000, observedAtMs: 20,
+  viewport: { width: 402, height: 874, visualWidth: 402, visualHeight: 874, scale: 1, offsetLeft: 0, offsetTop: 0 },
+  focusedEditing: false, fieldCount: 4, fieldSHA256: 'a'.repeat(64), margins: [8], top: 245, bottom: 629 }; }
+function scrollHarness(ui, action = async () => {}) {
+  ui.rawWebview = async () => scrollSnapshot();
+  ui.rawRequest = async (path, method, body) => {
+    if (path === '/context') return 'NATIVE_APP';
+    if (path === '/elements') return [];
+    if (path === '/window/rect') return { x: 0, y: 0, width: 402, height: 874 };
+    if (path === '/actions') return action(body);
+    throw Error('unexpected_scroll_request');
+  };
+}
+test('bounded short touches precede unchanged visible assertion and unique click', async () => {
+  const ui = scrollingDriver(), calls = []; scrollHarness(ui, async body => calls.push(body));
+  ui.request = async path => calls.push(path); ui.value = async () => false;
   ui.find = async () => { throw Error('hidden control must not be clicked'); };
   const plan = { actions: [{ action: 'scroll', direction: 'down', count: 2 },
     { action: 'wait', waitMs: 1, assertions: [{ locator: {}, kind: 'visible', expected: true }] },
     { action: 'click', locator: {} }] };
   await assert.rejects(ui.steps(plan), /native_state_not_observed/);
-  assert.deepEqual(calls, Array.from({ length: 2 }, () => ({ path: '/execute/sync', method: 'POST',
-    body: { script: 'mobile: scroll', args: [{ direction: 'down' }] } })));
+  assert.equal(calls.length, 2); assert(calls.every(x => x.actions[0].parameters.pointerType === 'touch'));
   calls.length = 0; ui.value = async () => true; ui.find = async () => 'unique-visible-note';
-  await ui.steps(plan);
-  assert.equal(calls.length, 3); assert.equal(calls[2].path, '/element/unique-visible-note/click');
-  calls.length = 0; await ui.steps({ actions: [{ action: 'scroll', direction: 'up', count: 3 }] });
-  assert.equal(calls.length, 3); assert.equal(calls[0].body.args[0].direction, 'up');
+  await ui.steps(plan); assert.equal(calls.length, 3); assert.equal(calls[2], '/element/unique-visible-note/click');
+  assert.equal(ui.lastScrollEvidence.status, 'UNCHANGED_FIELDS');
 });
-test('scroll rejects unsupported targets, ambiguous directions, unbounded counts and extra commands before dispatch', async () => {
+test('scroll rejects unsupported targets, directions, unbounded counts and extra commands before dispatch', async () => {
   const step = { action: 'scroll', direction: 'down', count: 1 };
-  const invalid = [{ direction: 'left' }, { direction: 'down; tap' }, { count: 0 }, { count: -1 },
-    { count: 4 }, { count: 1.5 }, { count: Infinity }, { count: '1' }, { count: null },
-    { count: undefined }, { locator: {} }, { script: 'other' }];
-  for (const change of invalid) {
-    const ui = scrollingDriver(); ui.request = async () => { throw Error('must not dispatch'); };
+  for (const change of [{ direction: 'left' }, { direction: 'down; tap' }, { count: 0 }, { count: -1 },
+    { count: 4 }, { count: 1.5 }, { count: Infinity }, { count: '1' }, { count: null }, { count: undefined }, { locator: {} }, { script: 'other' }]) {
+    const ui = scrollingDriver(); ui.safeScroll = async () => { throw Error('must not dispatch'); };
     await assert.rejects(ui.steps({ actions: [{ ...step, ...change }] }), /native_scroll_arguments_invalid/);
   }
-  for (const change of [ui => { ui.config.target.role = 'owned-macos-lab'; },
-    ui => { ui.config.capabilities.platformName = 'mac'; },
+  for (const change of [ui => { ui.config.target.role = 'owned-macos-lab'; }, ui => { ui.config.capabilities.platformName = 'mac'; },
     ui => { ui.config.capabilities['appium:automationName'] = 'Mac2'; }]) {
-    const ui = scrollingDriver(); change(ui); ui.request = async () => { throw Error('must not dispatch'); };
+    const ui = scrollingDriver(); change(ui); ui.safeScroll = async () => { throw Error('must not dispatch'); };
     await assert.rejects(ui.steps({ actions: [step] }), /native_scroll_target_unsupported/);
   }
 });
-test('scroll cancellation or uncertain first response prevents remaining scrolls and later clicks', async () => {
-  for (const outcome of ['cancel', 'failure']) {
-    const ui = scrollingDriver(), cancel = new AbortController(); let calls = 0;
-    ui.request = async () => { calls++; if (outcome === 'cancel') cancel.abort(); else throw Error('lost_scroll_reply'); };
-    ui.find = async () => { throw Error('later click must not run'); };
-    await assert.rejects(ui.steps({ actions: [{ action: 'scroll', direction: 'down', count: 3 },
-      { action: 'click', locator: {} }] }, cancel.signal), /native_action_aborted|lost_scroll_reply/);
-    assert.equal(calls, 1);
+test('focused editor, visible or unknown keyboard refuses before touch without clearing input uncertainty', async () => {
+  for (const condition of ['editor', 'keyboard', 'invalid-keyboard']) {
+    const ui = scrollingDriver(); let gestures = 0; scrollHarness(ui, async () => { gestures++; });
+    if (condition === 'editor') ui.rawWebview = async () => ({ ...scrollSnapshot(), focusedEditing: true });
+    else { const request = ui.rawRequest; ui.rawRequest = async (path, ...rest) => path === '/elements'
+      ? condition === 'keyboard' ? [{ ELEMENT: 'keyboard' }] : null : path.endsWith('/displayed') ? true : request(path, ...rest); }
+    await assert.rejects(ui.steps({ actions: [{ action: 'scroll', direction: 'down', count: 1 }] }), /native_scroll_(editor_focused|keyboard_)/);
+    assert.equal(gestures, 0); assert.notEqual(ui.inputSafetyUncertain, true);
   }
 });
-test('transport-lost mobile scroll is retained as an uncertain native mutation', async () => {
+test('changed field or new focus after touch quarantines input and blocks remaining gestures and clicks', async () => {
+  for (const condition of ['field', 'focus', 'unavailable']) {
+    const ui = scrollingDriver(); let reads = 0, gestures = 0; scrollHarness(ui, async () => { gestures++; });
+    ui.rawWebview = async () => ++reads === 1 ? scrollSnapshot() : condition === 'field'
+      ? { ...scrollSnapshot(), fieldSHA256: 'b'.repeat(64) } : condition === 'focus' ? { ...scrollSnapshot(), focusedEditing: true } : null;
+    ui.find = async () => { throw Error('must not click'); };
+    await assert.rejects(ui.steps({ actions: [{ action: 'scroll', direction: 'down', count: 3 }, { action: 'click', locator: {} }] }), /native_scroll_/);
+    assert.equal(gestures, 1); assert.equal(ui.inputSafetyUncertain, true); assert.equal(ui.lastScrollEvidence.status, 'INPUT_UNCONFIRMED');
+  }
+});
+test('scroll cancellation or lost touch reply blocks subsequent input and retains uncertainty', async () => {
+  for (const outcome of ['cancel', 'failure']) {
+    const ui = scrollingDriver(), cancel = new AbortController(); let calls = 0;
+    scrollHarness(ui, async () => { calls++; if (outcome === 'cancel') { cancel.abort(); cancel.signal.throwIfAborted(); } else throw Error('lost_scroll_reply'); });
+    ui.find = async () => { throw Error('later click must not run'); };
+    await assert.rejects(ui.steps({ actions: [{ action: 'scroll', direction: 'down', count: 3 }, { action: 'click', locator: {} }] }, cancel.signal));
+    assert.equal(calls, 1); assert.equal(ui.inputSafetyUncertain, true);
+  }
+});
+test('actual transport-lost W3C touch is retained as uncertain native mutation', async () => {
   let seen; const arrived = new Promise(resolve => { seen = resolve; });
   const server = createServer(async (request, response) => {
     let raw = ''; for await (const chunk of request) raw += chunk;
     if (request.url.endsWith('/context')) return response.end('{"value":"NATIVE_APP"}');
-    assert.equal(JSON.parse(raw).script, 'mobile: scroll'); seen();
+    if (request.url.endsWith('/elements')) return response.end('{"value":[]}');
+    if (request.url.endsWith('/window/rect')) return response.end('{"value":{"x":0,"y":0,"width":402,"height":874}}');
+    assert.equal(request.url, '/session/owned/actions'); assert.equal(JSON.parse(raw).actions[0].parameters.pointerType, 'touch'); seen();
     setTimeout(() => response.end('{"value":null}'), 40);
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   try {
-    const ui = scrollingDriver(); ui.base = `http://127.0.0.1:${server.address().port}`; ui.session = 'owned';
-    const cancel = new AbortController();
-    const rejected = assert.rejects(ui.steps({ actions: [{ action: 'scroll', direction: 'down', count: 1 }] }, cancel.signal));
+    const ui = scrollingDriver(); ui.base = `http://127.0.0.1:${server.address().port}`; ui.session = 'owned'; ui.rawWebview = async () => scrollSnapshot();
+    const cancel = new AbortController(), rejected = assert.rejects(ui.steps({ actions: [{ action: 'scroll', direction: 'down', count: 1 }] }, cancel.signal));
     await arrived; cancel.abort(); await rejected;
-    assert.equal(ui.uncertainMutations.size, 1);
-    await new Promise(resolve => setTimeout(resolve, 50));
-    assert.equal(ui.uncertainMutations.size, 1);
+    assert.equal(ui.uncertainMutations.size, 1); assert.equal(ui.inputSafetyUncertain, true);
+    await new Promise(resolve => setTimeout(resolve, 50)); assert.equal(ui.uncertainMutations.size, 1);
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});
+test('input uncertainty keeps observers and target cleanup unsettled even after touch acknowledgement', async () => {
+  const ui = scrollingDriver(); ui.inputSafetyUncertain = true;
+  await assert.rejects(ui.safeScroll('down'), /native_input_recovery_required/);
+  const cleanup = await ui.cleanup(); assert.equal(cleanup.inputSafetyUncertain, true); assert.equal(cleanup.ownedResourcesSettled, false);
+});
+test('real HTTP scroll boundary uses attested async hash reads and returns to native context before touch', async () => {
+  let context = 'NATIVE_APP', reads = 0, touches = 0;
+  const server = createServer(async (request, response) => {
+    let raw = ''; for await (const chunk of request) raw += chunk; const body = raw ? JSON.parse(raw) : null;
+    let value;
+    if (request.url.endsWith('/context')) { if (body) context = body.name; value = context; }
+    else if (request.url.endsWith('/elements')) { assert.equal(context, 'NATIVE_APP'); value = []; }
+    else if (request.url.endsWith('/window/rect')) { assert.equal(context, 'NATIVE_APP'); value = { x: 0, y: 0, width: 402, height: 874 }; }
+    else if (request.url.endsWith('/execute/async')) {
+      assert.equal(context, 'WEBVIEW_123.1'); assert.match(body.script, /crypto\.subtle\.digest/);
+      assert.match(body.script, /arguments\[arguments.length - 1\]/); assert.deepEqual(body.args, []); reads++; value = scrollSnapshot();
+    } else if (request.url.endsWith('/execute/sync')) {
+      if (body.script === IOS_CONTEXT_DISCOVERY.script) { assert.equal(context, 'NATIVE_APP'); value = appContexts(); }
+      else { assert.equal(body.script, IOS_CONTEXT_ATTESTATION); assert.equal(context, 'WEBVIEW_123.1'); value = true; }
+    } else if (request.url.endsWith('/actions')) { assert.equal(context, 'NATIVE_APP'); assert.equal(body.actions[0].parameters.pointerType, 'touch'); touches++; value = null; }
+    else throw Error('unexpected endpoint');
+    response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ value }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const ui = scrollingDriver(); ui.base = `http://127.0.0.1:${server.address().port}`; ui.session = 'owned';
+    await ui.safeScroll('down', AbortSignal.timeout(3000)); assert.equal(reads, 2); assert.equal(touches, 1);
+    assert.equal(context, 'NATIVE_APP'); assert.equal(ui.uncertainMutations.size, 0); assert.equal(ui.inputSafetyUncertain, false);
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});
+test('native context cannot interleave with a complete scroll observation/touch/invariance transaction', async () => {
+  const ui = scrollingDriver(), events = []; let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  scrollHarness(ui, async () => { events.push('touch'); await blocked; });
+  const request = ui.rawRequest; ui.rawRequest = async (path, ...rest) => {
+    if (path === '/element/later/click') { events.push('click'); return; }
+    return request(path, ...rest);
+  };
+  const scrolling = ui.steps({ actions: [{ action: 'scroll', direction: 'down', count: 1 }] });
+  while (!events.includes('touch')) await new Promise(resolve => setImmediate(resolve));
+  const click = ui.request('/element/later/click', 'POST', {}); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(events, ['touch']); release(); await Promise.all([scrolling, click]); assert.deepEqual(events, ['touch', 'click']);
 });
 
 test('ambiguous or missing native controls cannot choose an arbitrary first match', async () => {
