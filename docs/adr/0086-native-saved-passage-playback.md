@@ -20,6 +20,16 @@ renderer selects only a source segment identifier. Native code selects its
 original time range, limits it to 30 seconds, authenticates the original AAD and
 envelopes, and restores the existing Swift-held key without replacement or
 rebind. No tenant, time range, key, URL or file path comes from the renderer.
+An additive device-encrypted frame index is derived from authenticated chunk
+lengths and bound to the immutable manifest digest. It avoids reading preceding
+envelopes to open a late passage; old archives without the index retain the
+original bounded scan. Retention and decoding run in owned cancellable native
+work off MainActor, with current authority checked before and after the await.
+Close cancels and joins retention work before releasing recording ownership.
+Playback Stop fences audio immediately and cancels preparation; the initiating
+play task remains responsible for awaiting that preparation. Caller cancellation
+also propagates to the owned preparation task.
+
 Audio remains in native memory and is passed to an owned native player. Only
 playback metadata and Stop/Read commands cross the bridge.
 

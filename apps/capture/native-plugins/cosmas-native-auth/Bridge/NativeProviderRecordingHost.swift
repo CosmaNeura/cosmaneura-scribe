@@ -295,16 +295,14 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   func sealForUpload() async throws {
     inputChangeGeneration = UUID()
     if let sealing { return try await sealing.value }
-    if phase == .sealed {
-      try await retainPassageAudio()
-      return
-    }
+    let alreadySealed = phase == .sealed
     guard !retired, saved?.phase != .incomplete || sourceCheckpoint != nil,
-      [.ready, .starting, .recording, .pausing, .paused, .stopPending].contains(phase)
+      alreadySealed || [.ready, .starting, .recording, .pausing, .paused, .stopPending].contains(phase)
     else {
       throw ProviderNativeError.unavailable
     }
     let task = Task { @MainActor [self] in
+      if alreadySealed { try await retainPassageAudio(); return }
       try await stop(reconcile: false)
       phase = .sealing
       do {
@@ -344,8 +342,12 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     if cipher == nil { cipher = try await binding.reopenBound() }
     try current(ticket)
     guard let cipher else { throw ProviderNativeError.unavailable }
-    try NativeRecordingPassageArchive.retain(encryption: cipher, recovery: recoveryScope,
-      chunks: saved.committedChunks, records: records, current: { try self.current(ticket) })
+    let recovery = recoveryScope, records = records, chunks = saved.committedChunks
+    try await nativePassageWork {
+      try NativeRecordingPassageArchive.retain(encryption: cipher, recovery: recovery,
+        chunks: chunks, records: records, current: { try Task.checkCancellation() })
+    }
+    try current(ticket)
   }
 
   /// Refresh is metadata only. Terminal native interruption states become an

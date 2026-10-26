@@ -4,8 +4,8 @@ import Foundation
 
 /// Native-only, device-encrypted review copies. Upload queue registration and
 /// purge remain independent. The generic SecureQueue bridge rejects this prefix.
-public final class NativeRecordingPassageArchive {
-  private struct Manifest: Codable, Equatable {
+public final class NativeRecordingPassageArchive: Sendable {
+  private struct Manifest: Codable, Equatable, Sendable {
     let version: Int, tenant: UUID, workspace: UUID, session: UUID, recovery: UUID
     let account: String, keyVersion: String, wrappedDEK: String
     let chunks: Int, complete: Bool
@@ -14,11 +14,13 @@ public final class NativeRecordingPassageArchive {
     let version: Int, object: UUID, sequence: Int, frames: Int
     let aad: String, envelope: Data, digest: String
   }
+  private struct Index: Codable { let version: Int; let manifestSHA256: String; let frames: [Int] }
+  private let frameIndex: [Int]?
   private let manifest: Manifest
   private let prefix: String
   private let records: any NativeRecordingBindingRecordStore
-  private init(_ manifest: Manifest, prefix: String, records: any NativeRecordingBindingRecordStore) {
-    self.manifest = manifest; self.prefix = prefix; self.records = records
+  private init(_ manifest: Manifest, frameIndex: [Int]?, prefix: String, records: any NativeRecordingBindingRecordStore) {
+    self.frameIndex = frameIndex; self.manifest = manifest; self.prefix = prefix; self.records = records
   }
   private static func prefix(account: String, recovery: UUID, workspace: UUID, session: UUID) throws -> String {
     guard account.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
@@ -54,6 +56,7 @@ public final class NativeRecordingPassageArchive {
     let keys = try records.listRecordingKeys(prefix: queue)
     guard keys.count <= 2048, Set(keys).count == keys.count else { throw NativeRecordingFailure.invalidPacket }
     var positions = Set<Int>(), complete = true
+    var frames = [Int](repeating: 0, count: chunks)
     for key in keys {
       try current()
       guard key.hasPrefix(queue), let object = UUID(uuidString: String(key.dropFirst(queue.count))),
@@ -80,6 +83,7 @@ public final class NativeRecordingPassageArchive {
           if let saved = try records.readBinding(key: key) {
             let chunk = try decodeChunk(saved, sequence: sequence)
             guard chunk.object == object, chunk.aad == aad else { throw NativeRecordingFailure.invalidBinding }
+            frames[sequence] = chunk.frames
           } else { complete = false }
           return
         }
@@ -92,6 +96,7 @@ public final class NativeRecordingPassageArchive {
         let bytes = try encryption.authenticatedPlaintextBytes(envelope: envelope, objectID: object,
           sequence: sequence, additionalAuthenticatedData: aad)
         try current()
+        frames[sequence] = (bytes - 44) / 2
         guard try records.availableBytes() >= 67_108_864 + envelope.count * 4 else { throw NativeRecordingFailure.storageUnavailable }
         try write(Chunk(version: 1, object: object, sequence: sequence, frames: (bytes - 44) / 2,
           aad: aad, envelope: envelope, digest: digest), key: key, records: records)
@@ -102,6 +107,12 @@ public final class NativeRecordingPassageArchive {
     let manifest = Manifest(version: 1, tenant: scope.tenantID, workspace: scope.workspaceID,
       session: scope.sessionID, recovery: recovery, account: scope.accountDigest,
       keyVersion: encryption.receipt.keyVersion, wrappedDEK: encryption.receipt.wrappedDEK, chunks: chunks, complete: complete)
+    if complete {
+      guard frames.allSatisfy({ (1...160_000).contains($0) }) else { throw NativeRecordingFailure.invalidPacket }
+      let digest = SHA256.hash(data: try encode(manifest)).map { String(format: "%02x", $0) }.joined()
+      try write(Index(version: 1, manifestSHA256: digest, frames: frames), key: archive + "frame-index", records: records)
+    }
+    try current()
     try write(manifest, key: archive + "manifest", records: records)
   }
   /// Native caller must freshly authorize this exact current account, mount,
@@ -114,7 +125,18 @@ public final class NativeRecordingPassageArchive {
     let m = try JSONDecoder().decode(Manifest.self, from: saved.data)
     guard m.version == 1, m.account == account, m.recovery == recovery, m.workspace == workspace,
       m.session == session, (1...2048).contains(m.chunks) else { throw NativeRecordingFailure.invalidBinding }
-    return m.complete ? NativeRecordingPassageArchive(m, prefix: prefix, records: records) : nil
+    guard m.complete else { return nil }
+    var frameIndex: [Int]?
+    if let savedIndex = try records.readBinding(key: prefix + "frame-index") {
+      guard savedIndex.revision == 1, savedIndex.data.count <= 32_768 else { throw NativeRecordingFailure.invalidPacket }
+      let index = try JSONDecoder().decode(Index.self, from: savedIndex.data)
+      guard index.version == 1, index.frames.count == m.chunks,
+        index.frames.allSatisfy({ (1...160_000).contains($0) }),
+        index.manifestSHA256 == SHA256.hash(data: saved.data).map({ String(format: "%02x", $0) }).joined()
+      else { throw NativeRecordingFailure.invalidPacket }
+      frameIndex = index.frames
+    }
+    return NativeRecordingPassageArchive(m, frameIndex: frameIndex, prefix: prefix, records: records)
   }
   private static func decodeChunk(_ saved: NativeRecordingStoredRecord, sequence: Int) throws -> Chunk {
     guard saved.revision == 1, saved.data.count <= 524_288 else { throw NativeRecordingFailure.invalidPacket }
@@ -147,8 +169,12 @@ public final class NativeRecordingPassageArchive {
     var position = 0
     for sequence in 0..<manifest.chunks {
       try current()
+      if let frameIndex, position + frameIndex[sequence] <= from {
+        position += frameIndex[sequence]; continue
+      }
       guard let saved = try records.readBinding(key: prefix + "chunk:\(sequence)") else { return nil }
       let c = try Self.decodeChunk(saved, sequence: sequence)
+      if let frameIndex, c.frames != frameIndex[sequence] { throw NativeRecordingFailure.invalidPacket }
       if position + c.frames > from && position < until {
         var wav = try encryption.authenticatedWav(envelope: c.envelope, objectID: c.object,
           sequence: sequence, additionalAuthenticatedData: c.aad)

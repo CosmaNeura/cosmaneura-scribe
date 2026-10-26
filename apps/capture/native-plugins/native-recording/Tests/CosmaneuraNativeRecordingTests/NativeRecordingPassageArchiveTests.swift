@@ -12,8 +12,9 @@ final class NativeRecordingPassageArchiveTests: XCTestCase {
   }
   private final class Records: NativeRecordingFlowStore, @unchecked Sendable {
     var rows: [String: NativeRecordingStoredRecord] = [:]
+    var bindingReads: [String] = []
     var failAfterWrite = false, failBeforeWrite = false
-    func readBinding(key: String) -> NativeRecordingStoredRecord? { rows[key] }
+    func readBinding(key: String) -> NativeRecordingStoredRecord? { bindingReads.append(key);return rows[key] }
     func read(key: String) throws -> NativeRecordingStoredRecord { try XCTUnwrap(rows[key]) }
     func createBinding(key: String, data: Data) throws {
       if failBeforeWrite { throw NativeRecordingFailure.storageUnavailable }
@@ -57,7 +58,7 @@ final class NativeRecordingPassageArchiveTests: XCTestCase {
     let cipher = try NativeRecordingEncryption.create(scope: scope, published: published, storage: keys)
     for sequence in 0..<chunks {
       let object = UUID(), aad = nativeBase64URL(try scope.additionalData(objectID: object, sequence: sequence))
-      var pcm = Data(repeating: UInt8(sequence + 1), count: frames * 2)
+      var pcm = Data(repeating: UInt8(truncatingIfNeeded: sequence + 1), count: frames * 2)
       let envelope = try cipher.seal(pcm16: &pcm, objectID: object, sequence: sequence, additionalAuthenticatedData: aad)
       XCTAssertTrue(pcm.allSatisfy { $0 == 0 })
       let row: [String: Any] = ["state": "encrypted", "reservation": ["protocolVersion": "1.0", "sessionId": scope.sessionID.uuidString.lowercased(), "objectId": object.uuidString.lowercased(), "sequenceNumber": sequence, "channel": "microphone", "additionalAuthenticatedData": aad], "envelope": nativeBase64URL(envelope), "byteLength": envelope.count, "sha256": SHA256.hash(data: envelope).map { String(format: "%02x", $0) }.joined()]
@@ -110,4 +111,38 @@ final class NativeRecordingPassageArchiveTests: XCTestCase {
   func testMissingQueuePositionRefusesCompleteArchive() throws {
     let f = try fixture();f.records.rows.removeValue(forKey: f.queue[0]);XCTAssertThrowsError(try f.retain());XCTAssertNil(try f.open())
   }
+  func testThreeHourRetentionAndFinalPassageCost() throws {
+    let f = try fixture(chunks: 1080, frames: 160_000)
+    let start = DispatchTime.now().uptimeNanoseconds
+    try f.retain()
+    let retained = DispatchTime.now().uptimeNanoseconds
+    let archive = try XCTUnwrap(f.open())
+    f.records.bindingReads = []
+    let audio = try XCTUnwrap(archive.audio(startMs: 10_770_000, endMs: 10_800_000, keys: f.keys, current: {}))
+    let played = DispatchTime.now().uptimeNanoseconds
+    XCTAssertEqual(audio.count, 960_044)
+    XCTAssertEqual(f.records.bindingReads.filter { $0.contains(":chunk:") }.count, 3)
+    XCTAssertEqual(audio.suffix(320_000), Data(repeating: UInt8(truncatingIfNeeded: 1080), count: 320_000))
+    print("synthetic_passage_cost chunks=1080 frames=172800000 retention_ms=\(Double(retained - start) / 1_000_000) late_passage_ms=\(Double(played - retained) / 1_000_000) storage=in_memory disk_cost_excluded=true")
+  }
+
+  func testIndexAbsentUsesOriginalAuthenticatedArchive() throws {
+    let f = try fixture();try f.retain()
+    let key = try XCTUnwrap(f.records.rows.keys.first { $0.hasSuffix("frame-index") })
+    f.records.rows.removeValue(forKey: key)
+    let archive = try XCTUnwrap(f.open())
+    XCTAssertEqual(try archive.audio(startMs: 20, endMs: 40, keys: f.keys, current: {})?.count, 684)
+  }
+  func testIndexRejectsWrongManifestAndSelectedFrameMismatch() throws {
+    for field in ["manifestSHA256", "frames"] {
+      let f = try fixture();try f.retain()
+      let key = try XCTUnwrap(f.records.rows.keys.first { $0.hasSuffix("frame-index") })
+      var raw = try JSONSerialization.jsonObject(with: f.records.rows[key]!.data) as! [String: Any]
+      raw[field] = field == "manifestSHA256" ? String(repeating: "0", count: 64) : [321, 320] as Any
+      f.records.rows[key] = NativeRecordingStoredRecord(data: try JSONSerialization.data(withJSONObject: raw), revision: 1)
+      if field == "manifestSHA256" { XCTAssertThrowsError(try f.open()) }
+      else { let archive = try XCTUnwrap(f.open());XCTAssertThrowsError(try archive.audio(startMs: 0, endMs: 10, keys: f.keys, current: {})) }
+    }
+  }
+
 }

@@ -18,9 +18,11 @@ import Foundation
   private var pending: UUID?, active: UUID?, lastStopped: UUID?
   private var earlyStops = Set<UUID>()
   private var player: (any NativePassagePlayer)?
+  private var preparation: Task<Data?, Error>?
   public init() {}
   public func stopAll() {
     generation = UUID()
+    preparation?.cancel(); preparation = nil
     lastStopped = active ?? pending ?? lastStopped
     active = nil; pending = nil
     player?.stop(); player = nil
@@ -34,18 +36,22 @@ import Foundation
   }
   public func play(requestID: UUID,
     current: @MainActor () throws -> Void,
-    prepare: @MainActor () async throws -> Data?,
+    prepare: @escaping @MainActor () async throws -> Data?,
     makePlayer: @MainActor (Data) throws -> any NativePassagePlayer) async throws -> State? {
     try current();try Task.checkCancellation()
     guard requestID != lastStopped, earlyStops.remove(requestID) == nil else { throw CancellationError() }
     stopAll(); let ticket = generation; pending = requestID
     defer {
       if pending == requestID {
-        pending = nil
+        pending = nil; preparation = nil
         if active != requestID { lastStopped = requestID }
       }
     }
-    var wav = try await prepare()
+    let preparing = Task { @MainActor in try await prepare() }
+    preparation = preparing
+    var wav = try await withTaskCancellationHandler {
+      try await preparing.value
+    } onCancel: { preparing.cancel() }
     defer { if wav != nil { wav!.resetBytes(in: 0..<wav!.count) } }
     try Task.checkCancellation();try current()
     guard generation == ticket, pending == requestID else { throw CancellationError() }

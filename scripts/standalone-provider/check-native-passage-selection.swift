@@ -39,6 +39,10 @@ import Foundation
     }
     envelope["receipt"] = ["schema_version": "1.0", "session_id": session, "capture_continuity": [:]]
     try check(try selected.range(reply: reply(envelope), nonce: nonce, now: now) == nil);checks += 1
+    for age in [31.0, -6.0] {
+      do { try NativeProviderPassageSelection.requireFresh(now.addingTimeInterval(-age), now: now);throw Failed(line: #line) }
+      catch is Failed { throw Failed(line: #line) } catch { checks += 1 }
+    }
     print("native passage selection checks passed: \(checks)")
     return checks
   }

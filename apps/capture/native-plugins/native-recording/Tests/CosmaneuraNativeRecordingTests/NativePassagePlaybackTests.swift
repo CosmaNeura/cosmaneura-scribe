@@ -75,4 +75,33 @@ import XCTest
     do { _ = try await owner.play(requestID: final, current: {}, prepare: { self.audio() }, makePlayer: { _ in XCTFail();return Player() }); XCTFail() } catch {}
   }
 
+  func testStopCancelsPreparationInsteadOfWaitingForItsLongTimeout() async throws {
+    let owner = NativePassagePlayback(), player = Player()
+    var started = false
+    let task = Task { @MainActor in
+      try await owner.play(requestID: UUID(), current: {}, prepare: {
+        started = true;try await Task.sleep(for: .seconds(5));return self.audio()
+      }, makePlayer: { _ in player })
+    }
+    while !started { await Task.yield() }
+    let at = ContinuousClock.now;owner.stopAll()
+    do { _ = try await task.value;XCTFail() } catch is CancellationError {} catch { XCTFail() }
+    XCTAssertLessThan(at.duration(to: .now), .seconds(1));XCTAssertEqual(player.starts, 0)
+  }
+
+  func testCallerCancellationCancelsAndAwaitsOwnedPreparation() async throws {
+    let owner = NativePassagePlayback(), player = Player()
+    var started = false, settled = false
+    let task = Task { @MainActor in
+      try await owner.play(requestID: UUID(), current: {}, prepare: {
+        started = true;defer { settled = true }
+        try await Task.sleep(for: .seconds(5));return self.audio()
+      }, makePlayer: { _ in player })
+    }
+    while !started { await Task.yield() }
+    let at = ContinuousClock.now;task.cancel()
+    do { _ = try await task.value;XCTFail() } catch is CancellationError {} catch { XCTFail() }
+    XCTAssertTrue(settled);XCTAssertLessThan(at.duration(to: .now), .seconds(1));XCTAssertEqual(player.starts, 0)
+  }
+
 }

@@ -18,7 +18,7 @@ struct NativeProviderPassageSelection {
   /// Parse only fresh, server-selected passage metadata. Transcript content is
   /// neither logged nor returned to this bridge. Continuity corrections with an
   /// unproven audio-time mapping remain unavailable, as on Desktop.
-  @MainActor func range(reply: ProviderNativeReply, nonce: String, now: Date = Date()) throws -> (Int, Int)? {
+  @MainActor func range(reply: ProviderNativeReply, nonce: String, now: Date = Date()) throws -> (Int, Int, Date)? {
     try NativeProviderConnection.requireRecordingResponse(reply.status)
     guard reply.status == 200, reply.body.count <= 32 * 1024 * 1024 + 8192,
       let e = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
@@ -39,7 +39,10 @@ struct NativeProviderPassageSelection {
         start >= 0, end > start, end <= 12_600_000 else { throw ProviderNativeError.response }
       if id == segmentID { selected = (start, min(end, start + 30_000)) }
     }
-    return selected
+    return selected.map { ($0.0, $0.1, date) }
+  }
+  static func requireFresh(_ checkedAt: Date, now: Date = Date()) throws {
+    guard (-5...30).contains(now.timeIntervalSince(checkedAt)) else { throw ProviderNativeError.response }
   }
   private static func integer(_ value: Any?) -> Int? {
     guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite,

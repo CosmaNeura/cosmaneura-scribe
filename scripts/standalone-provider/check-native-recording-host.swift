@@ -25,10 +25,22 @@ import Security
     }
     throw Failed(line: #line)
   }
+  private final class PassageGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var started = false, released = false
+    var running: Bool { condition.lock();defer { condition.unlock() };return started }
+    func hold() throws {
+      condition.lock();defer { condition.unlock() };started = true
+      let deadline = Date().addingTimeInterval(5)
+      while !released { guard condition.wait(until: deadline) else { throw CancellationError() } }
+    }
+    func release() { condition.lock();released = true;condition.broadcast();condition.unlock() }
+  }
   private final class Records: NativeProviderRecordingHost.Records, @unchecked Sendable {
     var rows: [String: NativeRecordingStoredRecord] = [:]
     var failSeal = false, failInventory = false, loseSealReply = false
     var failCheckpoint = false, failPassage = false
+    var passageGate: PassageGate?
     func read(key: String) throws -> NativeRecordingStoredRecord {
       guard let row = rows[key] else { throw NativeRecordingFailure.storageUnavailable }
       return row
@@ -49,6 +61,7 @@ import Security
       return rows.keys.filter { $0.hasPrefix(prefix) }
     }
     func createBinding(key: String, data: Data) throws {
+      if key.hasPrefix("scribe-native-passage:") { try passageGate?.hold() }
       if failPassage && key.hasPrefix("scribe-native-passage:") { throw NativeRecordingFailure.storageUnavailable }
       try compareAndSwap(key: key, expectedRevision: 0, data: data)
     }
@@ -308,6 +321,20 @@ import Security
 
   static func run() async throws -> Int {
     var checks = 0
+    do {
+      let f = try Fixture(), host = f.host(), gate = PassageGate()
+      try await host.open();try await host.start();f.records.passageGate = gate
+      let sealing = Task { try await host.sealForUpload() }
+      try await wait { gate.running }
+      try check(host.busy && f.runs[0].isPhysicallyIdle)
+      let closing = Task { try await host.close() }
+      try await wait { host.requiresReopen }
+      let other = f.host();try await rejects { try await other.open() };try await other.close()
+      gate.release()
+      try await rejects { try await sealing.value };try await closing.value
+      try check(host.phase == .closed && !f.records.rows.keys.contains { $0.hasSuffix(":manifest") })
+      let reopened = f.host();try await reopened.open();try await reopened.close();checks += 3
+    }
     do {
       let f = try Fixture(), host = f.host()
       try await host.open();try await host.start()

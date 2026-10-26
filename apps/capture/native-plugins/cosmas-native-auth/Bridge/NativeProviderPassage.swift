@@ -8,7 +8,7 @@ import CosmaneuraSecureQueue
 #if os(iOS)
 @MainActor final class LiveNativePassagePlayer: NativePassagePlayer {
   private let player: AVAudioPlayer
-  init(_ data: Data) throws { player = try AVAudioPlayer(data: data, fileTypeHint: "wav") }
+  init(_ data: Data) throws { player = try AVAudioPlayer(data: data) }
   var playing: Bool { player.isPlaying }
   var positionMs: Int { Int(player.currentTime * 1000) }
   var durationMs: Int { Int((player.duration * 1000).rounded()) }
@@ -37,10 +37,18 @@ extension NativeProviderConnection {
     guard try recordingMount(workspaceID: s.workspaceID, bindingRef: s.bindingRef, revision: s.revision) == mount,
       try passageAccountDigest(revision: s.revision) == account else { throw ProviderNativeError.authorityChanged }
     guard let range = try s.range(reply: reply, nonce: nonce) else { return nil }
-    let records = try NativeRecordingQueueStore()
-    guard let archive = try NativeRecordingPassageArchive.open(account: account, recovery: mount.recoveryScope,
-      workspace: s.workspaceID, session: s.sessionID, records: records) else { return nil }
-    return try archive.audio(startMs: range.0, endMs: range.1, current: current)
+    let recovery = mount.recoveryScope, workspace = s.workspaceID, session = s.sessionID
+    let result = try await nativePassageWork {
+      let records = try NativeRecordingQueueStore()
+      guard let archive = try NativeRecordingPassageArchive.open(account: account, recovery: recovery,
+        workspace: workspace, session: session, records: records) else { return nil as Data? }
+      return try archive.audio(startMs: range.0, endMs: range.1, current: { try Task.checkCancellation() })
+    }
+    try current(); try Task.checkCancellation()
+    guard try recordingMount(workspaceID: s.workspaceID, bindingRef: s.bindingRef, revision: s.revision) == mount,
+      try passageAccountDigest(revision: s.revision) == account else { throw ProviderNativeError.authorityChanged }
+    try NativeProviderPassageSelection.requireFresh(range.2)
+    return result
   }
 }
 #endif
