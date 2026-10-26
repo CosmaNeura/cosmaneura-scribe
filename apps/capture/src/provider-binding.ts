@@ -1,3 +1,4 @@
+import type { PlayPassage } from "../../review-ui/src/passage-playback";
 import type { NativeClockCorrelation } from "./provider/native-recording-timing";
 import type { MicrophoneInput } from "./native/microphone-input";
 import type { CaptureFlowSnapshot } from "./flow";
@@ -87,7 +88,7 @@ export interface ProviderCaptureBinding {
   readonly authorizedRequest: AuthorizedReviewRequest;
   readonly journal: CreatorReviewJournal;
   readonly editJournal?: CreatorEditJournal;
-  readonly playPassage?: (sessionId: string, segmentId: string, signal: AbortSignal) => Promise<{ wavBase64: string } | null>;
+  readonly playPassage?: PlayPassage;
   readonly speakerNameSuggestions?: SpeakerNameSuggestions;
   /** Abort on sign-out, revocation, encounter change or native host teardown. */
   readonly signal: AbortSignal;

@@ -47,6 +47,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   private let id = UUID()
   let scope: NativeRecordingScope
   let recoveryScope: UUID
+  private let records: any Records
   private let flow: NativeRecordingFlowOwner
   private let service: any Service
   private let binding: NativeRecordingBindingOwner
@@ -93,6 +94,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   ) {
     self.scope = scope
     self.service = service
+    self.records = records
     self.recoveryScope = recoveryScope
     self.requireCurrent = requireCurrent
     self.recoverSources = recoverSources
@@ -294,7 +296,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     inputChangeGeneration = UUID()
     if let sealing { return try await sealing.value }
     if phase == .sealed {
-      try requireCurrent()
+      try await retainPassageAudio()
       return
     }
     guard !retired, saved?.phase != .incomplete || sourceCheckpoint != nil,
@@ -313,6 +315,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
         try current(generation)
         saved = try await flow.sealForUpload(encryption: cipher, lease: lease)
         try current(generation)
+        try await retainPassageAudio()
         phase = .sealed
         #if os(iOS)
           ScribeRecordingActivity.end()
@@ -329,6 +332,20 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     sealing = task
     defer { sealing = nil }
     try await task.value
+  }
+
+  private func retainPassageAudio() async throws {
+    let ticket = generation
+    try current(ticket)
+    guard let saved, saved.phase == .sealed, source == nil,
+      run.map({ $0.isPhysicallyIdle && $0.phase == .stopped }) ?? true else {
+      throw ProviderNativeError.unavailable
+    }
+    if cipher == nil { cipher = try await binding.reopenBound() }
+    try current(ticket)
+    guard let cipher else { throw ProviderNativeError.unavailable }
+    try NativeRecordingPassageArchive.retain(encryption: cipher, recovery: recoveryScope,
+      chunks: saved.committedChunks, records: records, current: { try self.current(ticket) })
   }
 
   /// Refresh is metadata only. Terminal native interruption states become an

@@ -634,6 +634,11 @@ protocol ProviderNativeWire: Sendable {
         return state.revision
     }
 
+    func passageAccountDigest(revision: String) throws -> String {
+        try current(revision)
+        return try auth.recordingAccountDigest(expectedRevision: revision)
+    }
+
     func recordingMount(workspaceID: UUID, bindingRef: String, revision: String) throws -> NativeProviderRecordingMount {
         try current(revision)
         guard let saved = recordingMounts[workspaceID], saved.revision == revision,

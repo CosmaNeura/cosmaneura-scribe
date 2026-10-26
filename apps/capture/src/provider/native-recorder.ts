@@ -112,7 +112,9 @@ export async function connectNativeProviderRecorder(options: {
     current();
     uploadProgress = undefined; status = null; publish();
     try {
-      if (state?.phase !== "sealed") await invoke("seal");
+      // Repeated seal is source-idempotent. It also completes native review
+      // retention after a crash before the existing uploader can purge envelopes.
+      await invoke("seal");
       current();
       const sealed = state;
       if (sealed?.phase !== "sealed" || !sealed.completion) throw failure();

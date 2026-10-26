@@ -18,11 +18,14 @@ export interface NativeProviderSession {
   addListener(event: "authStateChanged", listener: (state: ProviderSessionState) => void): Promise<PluginListenerHandle>;
 }
 export interface NativeProviderState {
-  readonly phase: string; readonly revision: string; readonly providerReady?: boolean; readonly nativeRecordingVersion?: number;
+  readonly phase: string; readonly revision: string; readonly providerReady?: boolean; readonly nativeRecordingVersion?: number; readonly nativePassagePlaybackVersion?: number;
   readonly providerDisplayName?: string;
   readonly recordingSignInPreparationVersion?: 1;
 }
 export interface ProviderNativePlugin {
+  playProviderPassage?(request: { requestId: string; revision: string; workspaceId: string; bindingRef: string; sessionId: string; segmentId: string }): Promise<unknown>;
+  readProviderPassage?(request: { requestId: string; revision: string }): Promise<unknown>;
+  stopProviderPassage?(request: { requestId: string }): Promise<void>;
   /** Numeric renderer duration only; never start intent, authorization or content. */
   recordProviderReadyTiming?(request: { revision: string; durationMs: number }): Promise<void>;
   /** Optional current-mount auth work only; no consent, session or source grant. */

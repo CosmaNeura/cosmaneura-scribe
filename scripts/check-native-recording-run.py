@@ -64,6 +64,7 @@ BRIDGE = [
         "NativeProviderRecordingRun",
         "NativeProviderRecordingHost",
         "NativeProviderRecordingBridge",
+        "NativeProviderPassageSelection",
     ]
 ]
 
@@ -157,7 +158,16 @@ def main() -> None:
         # Retained SecItem noninteractive policy emits an SDK deprecation warning.
         bridge_flags = [flag for flag in common if flag != "-warnings-as-errors"]
         if platform == "ios":
-            run("ios-run-typecheck", bridge_flags + ["-typecheck", *map(str, BRIDGE)])
+            # Build the real native queue core without its unrelated Capacitor
+            # wrapper; its production package retains Swift 5 language mode.
+            queue_sources = sorted((PLUGINS / "secure-queue/ios/Sources/CosmaneuraSecureQueue").glob("*.swift"))
+            queue_flags = [flag for flag in bridge_flags]
+            queue_flags[queue_flags.index("-swift-version") + 1] = "5"
+            run("ios-native-queue-module", queue_flags + ["-emit-module", "-module-name", "CosmaneuraSecureQueue",
+                "-emit-module-path", str(target / "CosmaneuraSecureQueue.swiftmodule"),
+                *[str(path) for path in queue_sources if path.name != "SecureQueuePlugin.swift"]])
+            run("ios-run-typecheck", bridge_flags + ["-typecheck", *map(str, BRIDGE),
+                str(AUTH / "Bridge/NativeProviderPassage.swift")])
         else:
             executable = str(target / "run-checks")
             run(
@@ -181,6 +191,7 @@ def main() -> None:
                     str(REPO / "scripts/standalone-provider/check-native-provider.swift"),
                     str(REPO / "scripts/standalone-provider/check-native-recording-run.swift"),
                     str(REPO / "scripts/standalone-provider/check-native-recording-host.swift"),
+                    str(REPO / "scripts/standalone-provider/check-native-passage-selection.swift"),
                 ],
             )
             run("mac-run-checks", [executable])

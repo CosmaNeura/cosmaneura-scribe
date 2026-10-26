@@ -1,3 +1,4 @@
+import { nativePassagePlayer } from "./native-passage";
 import { scopedSignInPreparation } from "./signin-preparation";
 import { parseEncounterDisplay } from "./encounter-display";
 import { speakerNameSuggestion } from "../../../review-ui/src/creator-edit";
@@ -44,6 +45,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
   const abort = new AbortController();
   let signInPreparationSupported = false;
   let nativeRecording = false;
+  let nativePassage = false;
   let nativeContextReuse = false;
   let revision: string | null = null, observed: NativeState | null = null;
   let listener: PluginListenerHandle | undefined, timer: ReturnType<typeof setInterval> | undefined;
@@ -115,6 +117,8 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     providerDisplayName = speakerNameSuggestion(state.providerDisplayName);
     nativeRecording = [1, 2].includes(state.nativeRecordingVersion ?? 0) && typeof plugin.openProviderRecording === "function"
       && typeof plugin.providerRecordingCommand === "function";
+    nativePassage = state.nativePassagePlaybackVersion === 1 && typeof plugin.playProviderPassage === "function"
+      && typeof plugin.readProviderPassage === "function" && typeof plugin.stopProviderPassage === "function";
     nativeContextReuse = nativeRecording && state.nativeRecordingVersion === 2;
     signInPreparationSupported = state.recordingSignInPreparationVersion === 1
       && typeof plugin.prepareProviderSignIn === "function" && typeof plugin.abandonProviderSignIn === "function";
@@ -262,6 +266,8 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       let recordingAuthorization: string | null = null;
       return {
         encounter: displayed, recoveryScope: value.recoveryScope, scope, signal,
+        ...(nativePassage ? { playPassage: nativePassagePlayer(plugin, { ...scope, revision },
+          [abort.signal, signal], () => current(signal)) } : {}),
         ...(signInPreparationSupported ? { signInPreparation: scopedSignInPreparation({
           signal: AbortSignal.any([abort.signal, signal]), current: () => current(signal),
           prepare: async (preparationId, operationSignal) => {
