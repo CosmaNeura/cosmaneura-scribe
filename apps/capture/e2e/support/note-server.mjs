@@ -10,7 +10,7 @@ const canonical = value => Array.isArray(value) ? `[${value.map(canonical).join(
       .map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);
 
 export async function installNoteServer(context, { loseSaveResponse, origin = "http://127.0.0.1:5173", saveDelayMs = 0,
-  statusPending = false, draftPending = false, clockNow = () => new Date().toISOString() }) {
+  statusPending = false, draftPending = false, fields, visitTitle = "Synthetic saved visit", clockNow = () => new Date().toISOString() }) {
   const scope = { workspaceId: randomUUID(), appointmentRef: ref("appointment"), bindingRef: ref("scribe_capture_binding") };
   const session = randomUUID(), working = randomUUID(), segment = randomUUID();
   const source = { kind: "reviewed_english", source_version: 1, working_transcript_id: working, working_version: 1 };
@@ -22,8 +22,8 @@ export async function installNoteServer(context, { loseSaveResponse, origin = "h
         resolution: "english_source", content: "Synthetic speech. No treatment plan was discussed." }] },
     review_queue: { schema_version: "1.0", session_id: session, source_transcript_version: 1,
       working_transcript_id: working, working_transcript_version: 1, status: "complete", items: [] } };
-  const template = { schema_ref: ref("doctor_note_schema"), note_type: "Synthetic SOAP", field_names: ["Patient", "Plan"] };
-  const initialFields = { Patient: "Invented patient — no real patient.", Plan: "No treatment plan discussed." };
+  const template = { schema_ref: ref("doctor_note_schema"), note_type: "Synthetic SOAP", field_names: fields ? Object.keys(fields) : ["Patient", "Plan"] };
+  const initialFields = fields ?? { Patient: "Invented patient — no real patient.", Plan: "No treatment plan discussed." };
   let note = { session_id: session, scribe_source_id: working, source_sha256: "a".repeat(64),
     schema_ref: template.schema_ref, transcript_ref: ref("ai_visit_transcript"), note_ref: ref("visit_note"),
     status: "draft", note_type: template.note_type, fields: initialFields, field_order: template.field_names,
@@ -41,7 +41,7 @@ export async function installNoteServer(context, { loseSaveResponse, origin = "h
     try {
       if (url.pathname === "/note-lab/context") {
         await route.fulfill({ json: { scope, review, encounters: [
-          { appointmentRef: scope.appointmentRef, title: "Synthetic saved visit", detail: "Target visit" },
+          { appointmentRef: scope.appointmentRef, title: visitTitle, detail: "Target visit" },
           { appointmentRef: ref("appointment", "1"), title: "Synthetic saved visit", detail: "Different visit" },
         ] } }); return;
       }
