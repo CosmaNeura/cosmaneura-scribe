@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildNativeTimingMeasurement, projectNativeTimingHistory } from './native-timing.mjs';
 import { sha256 } from './journal.mjs';
+import { readFile } from 'node:fs/promises';
 
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const scope = { runId: id(1), workspaceId: id(2), appointmentRef: 'appointment_01m5q8r3kzeng9szb5frh6ppk3',
@@ -119,4 +120,17 @@ test('missing timing stays explicitly unavailable and journal parsing is bounded
     bytes([{ ...event('startRequested', '1'), private: 'never retain' }]),
     bytes([event('firstInputSignal', '2'), event('startRequested', '1')])])
     assert.throws(() => buildNativeTimingMeasurement({ history: history([]), journalBytes }), /native_timing_journal_invalid/);
+});
+
+test('current native diagnostic enum, including packet persistence and terminal reasons, is accepted exactly', async () => {
+  const source = await readFile(new URL('../../../apps/capture/native-plugins/ios-pcm-capture/Sources/CosmaneuraIOSPCMCore/PCMStartupDiagnostics.swift', import.meta.url), 'utf8');
+  const body = source.split('public enum PCMStartupEvent: String, Codable, Sendable {')[1].split('\n}')[0];
+  const names = [...body.matchAll(/case ([^\n]+)/g)].flatMap(match => match[1].split(',').map(value => value.trim()));
+  assert.equal(names.includes('firstPacketPersistenceCompleted'), true);
+  assert.equal(names.includes('driverAdmissionOverflow'), true);
+  const entries = names.map((name, index) => event(name, String(100 + index)));
+  const result = buildNativeTimingMeasurement({ history: history([]), journalBytes: bytes(entries) });
+  assert.deepEqual(result.journal.events.map(value => value.event), names);
+  assert.equal(result.qualification, 'NOT_ESTABLISHED');
+  assert.throws(() => buildNativeTimingMeasurement({ history: history([]), journalBytes: bytes([event('arbitraryVendorError', '1')]) }), /journal_invalid/);
 });

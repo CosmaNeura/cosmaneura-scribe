@@ -12,7 +12,12 @@ const eventNames = new Set(['startRequested', 'ticketAccepted', 'permissionAccep
   'sessionActivated', 'tapInstalled', 'engineStarted', 'driverArmed', 'driverRejected', 'engineConfigurationChanged',
   'sessionConfigurationChanged', 'routeChanged', 'interrupted', 'mediaServicesLost', 'mediaServicesReset',
   'backgrounded', 'permissionRevoked', 'captureFailed', 'inputFrozen', 'driverReleased', 'stopRequested',
-  'stopAccepted', 'stopRejected', 'recordToNativeReady']);
+  'stopAccepted', 'stopRejected', 'recordToNativeReady', 'inputAdmissionOverflow', 'firstPacketPersistenceStarted',
+  'firstPacketPersistenceCompleted', 'packetPersistenceFailed', 'driverAdmissionOverflow', 'pcmHeartbeatExpired',
+  'pcmInvalidInput', 'pcmBufferOverflow', 'pcmOutputLimit', 'pcmSinkFailed', 'windowAuthorityExpired', 'windowFrameLimit',
+  'windowInterrupted', 'windowRouteChanged', 'continuationAuthorityExpired', 'continuationSourceRetired',
+  'continuationRenewalRejected', 'continuationCaptureFailed', 'continuationStorageFailed', 'continuationClosureUnconfirmed',
+  'finalizationAuthorityChanged', 'finalizationStorageFailed', 'physicalStopRejected', 'sourceStopRejected']);
 
 function project(value) {
   const sample = value?.sample, transport = value?.transport;
