@@ -66,3 +66,19 @@ default devices, or disable host security to make a preflight pass.
 
 `wda_smoke.py SIMULATOR_MARKER --output RECEIPT` tests only Settings on the owned
 simulator. It is historical bootstrap diagnostics, not Scribe acceptance.
+
+Coordinator `scroll` uses a short W3C touch on a freshly measured clear WebView
+margin. It refuses a focused editor, visible keyboard, zoom, an unmatched native
+viewport, or a page without a clear margin. Full editable values are hashed inside
+the owned WebView before and after each gesture; raw field text is never returned.
+Changed fields, unexpected focus, or an unavailable post-touch observation retain
+input uncertainty and the target guard. Dismiss the keyboard or repair a verified
+edit through normal UI in a separately recorded recovery; scrolling never does so.
+The old application-wide `mobile: scroll` path is retired because WebDriverAgent's
+half-second press can focus an editor and subsequently type through the keyboard.
+
+The ordinary Node tests cover geometry, context serialization, transport loss and
+cleanup. The separate synthetic browser check requires an already installed
+Playwright module: `SCRIBE_TEST_PLAYWRIGHT=/absolute/path/to/index.mjs node
+tools/virtual-lab/coordinator/safe-scroll.browser.mjs`. It verifies full field hashes
+and DOM margins; it does not qualify actual native touch or the live journey.
