@@ -4,10 +4,14 @@ import json
 import logging
 import math
 import re
-from typing import TextIO
+from typing import TYPE_CHECKING, TextIO
 from uuid import UUID
 
 from .speech_observation import SpeechBoundaryObservation
+
+if TYPE_CHECKING:
+    from .external_transcript_v1 import NormalizedSourceTranscriptReceiptV1
+    from .transcription import SttResult
 
 LOGGER_NAME = "cosmaneura_scribe"
 LOG_FIELD_ALLOWLIST = frozenset({"action", "entity_id", "tenant_id", "error_class", "duration_ms"})
@@ -70,7 +74,7 @@ SPEECH_BOUNDARY_FIELD_ALLOWLIST = frozenset(
 )
 
 
-def log_speech_boundary(
+def _speech_boundary_payload(
     *,
     tenant_id: UUID,
     session_id: UUID,
@@ -78,7 +82,7 @@ def log_speech_boundary(
     scope_sha256: str,
     observed_at_ms: int,
     observation: SpeechBoundaryObservation,
-) -> None:
+) -> dict[str, object]:
     """Closed provider-response metadata, not evidence of durable publication or roles."""
 
     def integer(value: object, maximum: int = 10_000_000) -> int:
@@ -163,6 +167,139 @@ def log_speech_boundary(
     }
     if frozenset(payload) != SPEECH_BOUNDARY_FIELD_ALLOWLIST:
         raise ValueError("speech_observation_metadata_invalid")
+    return payload
+
+
+def log_speech_boundary(
+    *,
+    tenant_id: UUID,
+    session_id: UUID,
+    consent_record_id: UUID,
+    scope_sha256: str,
+    observed_at_ms: int,
+    observation: SpeechBoundaryObservation,
+) -> None:
+    payload = _speech_boundary_payload(
+        tenant_id=tenant_id,
+        session_id=session_id,
+        consent_record_id=consent_record_id,
+        scope_sha256=scope_sha256,
+        observed_at_ms=observed_at_ms,
+        observation=observation,
+    )
+    _LOGGER.log(logging.INFO, json.dumps(payload, sort_keys=True, separators=(",", ":")))
+
+
+SPEECH_PUBLICATION_FIELD_ALLOWLIST = frozenset(
+    {
+        "action",
+        "version",
+        "tenant_id",
+        "session_id",
+        "consent_record_id",
+        "scope_sha256",
+        "observed_at_ms",
+        "job_id",
+        "attempt_count",
+        "source_receipt_id",
+        "source_transcript_version",
+        "source_received_at_ms",
+        "result_segment_count",
+        "result_distinct_speaker_count",
+        "calls",
+    }
+)
+
+
+def log_speech_publication(
+    *,
+    tenant_id: UUID,
+    session_id: UUID,
+    consent_record_id: UUID,
+    scope_sha256: str,
+    observed_at_ms: int,
+    job_id: object,
+    attempt_count: int,
+    receipt: NormalizedSourceTranscriptReceiptV1,
+    result: SttResult,
+) -> None:
+    """Only invoked after a newly ACCEPTED publication transaction has returned."""
+    metadata = result.observation
+    if (
+        metadata is None
+        or not 1 <= len(metadata.boundaries) <= 64
+        or len(metadata.boundaries) != len(metadata.track_channels)
+        or len(set(metadata.track_channels)) != len(metadata.track_channels)
+        or not set(metadata.track_channels) <= {"microphone", "system_audio", "mixed"}
+        or not isinstance(job_id, UUID)
+        or job_id.int == 0
+        or type(attempt_count) is not int
+        or not 1 <= attempt_count <= 1000
+        or receipt.session_id != session_id
+        or receipt.source_transcript_version != 1
+        or receipt.source_receipt_id.int == 0
+    ):
+        raise ValueError("speech_publication_metadata_invalid")
+    calls: list[dict[str, object]] = []
+    for index, (channel, boundary) in enumerate(
+        zip(metadata.track_channels, metadata.boundaries, strict=True)
+    ):
+        validated = _speech_boundary_payload(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            consent_record_id=consent_record_id,
+            scope_sha256=scope_sha256,
+            observed_at_ms=observed_at_ms,
+            observation=boundary,
+        )
+        segments = [segment for segment in result.segments if segment.channel.value == channel]
+        if (
+            boundary.track_index != index
+            or len(segments) != boundary.accepted_phrase_count
+            or len({segment.provider_speaker_id for segment in segments})
+            != boundary.accepted_distinct_speaker_count
+        ):
+            raise ValueError("speech_publication_metadata_invalid")
+        calls.append(
+            {
+                "call_id": validated["call_id"],
+                "track_index": index,
+                "channel": channel,
+                "accepted_phrase_count": boundary.accepted_phrase_count,
+                "accepted_distinct_speaker_count": boundary.accepted_distinct_speaker_count,
+            }
+        )
+    if (
+        len({call["call_id"] for call in calls}) != len(calls)
+        or sum(boundary.accepted_phrase_count for boundary in metadata.boundaries)
+        != len(result.segments)
+        or not 1 <= len(result.segments) <= 10_000_000
+    ):
+        raise ValueError("speech_publication_metadata_invalid")
+    received_at_ms = int(receipt.received_at.timestamp() * 1000)
+    if not 0 <= received_at_ms <= observed_at_ms:
+        raise ValueError("speech_publication_metadata_invalid")
+    payload = {
+        "action": "captured_speech.source_publication",
+        "version": 1,
+        "tenant_id": str(tenant_id),
+        "session_id": str(session_id),
+        "consent_record_id": str(consent_record_id),
+        "scope_sha256": scope_sha256,
+        "observed_at_ms": observed_at_ms,
+        "job_id": str(job_id),
+        "attempt_count": attempt_count,
+        "source_receipt_id": str(receipt.source_receipt_id),
+        "source_transcript_version": 1,
+        "source_received_at_ms": received_at_ms,
+        "result_segment_count": len(result.segments),
+        "result_distinct_speaker_count": len(
+            {(s.channel, s.provider_speaker_id) for s in result.segments}
+        ),
+        "calls": calls,
+    }
+    if frozenset(payload) != SPEECH_PUBLICATION_FIELD_ALLOWLIST:
+        raise ValueError("speech_publication_metadata_invalid")
     _LOGGER.log(logging.INFO, json.dumps(payload, sort_keys=True, separators=(",", ":")))
 
 

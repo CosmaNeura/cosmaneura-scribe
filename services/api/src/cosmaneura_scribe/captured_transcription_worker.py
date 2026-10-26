@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -9,6 +10,7 @@ from uuid import UUID, uuid4
 from .audio_assembly import AudioAssemblyError
 from .azure_speech_source import normalize_azure_source
 from .captured_source_runtime import (
+    CapturedSourcePublication,
     CapturedSourceRepositoryProvider,
     CapturedSourceRuntime,
     CapturedSourceUnavailable,
@@ -25,6 +27,10 @@ from .transcription_worker import (
     LeasedAudioTranscription,
     TranscriptionWorkerError,
 )
+
+SpeechPublicationObserver = Callable[
+    [UUID, UUID, UUID, CapturedSpeechCompletion, CapturedSourcePublication], None
+]
 
 
 @dataclass(frozen=True)
@@ -80,6 +86,7 @@ class CapturedTranscriptionWorker(LeasedAudioTranscription):
         lease_duration: timedelta = timedelta(minutes=15),
         heartbeat_interval: timedelta | None = None,
         max_attempts: int = 3,
+        publication_observer: SpeechPublicationObserver | None = None,
     ) -> None:
         super().__init__(
             repositories=repositories,
@@ -92,6 +99,7 @@ class CapturedTranscriptionWorker(LeasedAudioTranscription):
         self._captures = repositories
         self._runtime = CapturedSourceRuntime(repositories, enabled=enabled)
         self._enabled = enabled is True
+        self._publication_observer = publication_observer
 
     async def process(self, *, tenant_id: UUID, session_id: UUID) -> CapturedTranscriptionOutcome:
         if not self._enabled:
@@ -177,11 +185,21 @@ class CapturedTranscriptionWorker(LeasedAudioTranscription):
                 raise TranscriptionInputError("speech_source_channel_conflict")
             normalize_azure_source(result)
             failure = "captured_speech_publication_failed"
-            await self._runtime.publish_speech_result(
+            completion = CapturedSpeechCompletion(job.id, token, job.attempt_count, result)
+            publication = await self._runtime.publish_speech_result(
                 tenant_id=tenant_id,
                 session_id=session_id,
-                completion=CapturedSpeechCompletion(job.id, token, job.attempt_count, result),
+                completion=completion,
             )
+            if self._publication_observer is not None:
+                try:
+                    # The transaction has returned. A failed diagnostic cannot
+                    # turn a committed source into a failed/retryable ASR job.
+                    self._publication_observer(
+                        tenant_id, session_id, session.consent_record_id, completion, publication
+                    )
+                except Exception:
+                    pass
             return CapturedTranscriptionOutcome(session_id, job.id, False)
         except ConsentError:
             failure, terminal = "captured_speech_consent_invalid", True

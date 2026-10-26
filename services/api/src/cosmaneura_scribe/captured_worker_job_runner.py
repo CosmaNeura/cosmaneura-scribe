@@ -7,6 +7,7 @@ import os
 import sys
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import TypedDict
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -17,7 +18,7 @@ from .audio_assembly import KeyVaultSessionKeyUnwrapper, build_audio_track_assem
 from .audio_keys import build_audio_encryption_key_provider
 from .azure_translation import AzureGPT41TranslationAdapter, AzureTranslationProfile
 from .captured_source_runtime import CapturedSourceRepositoryProvider
-from .captured_transcription_worker import CapturedTranscriptionWorker
+from .captured_transcription_worker import CapturedTranscriptionWorker, SpeechPublicationObserver
 from .captured_translation_worker import CapturedTranslationWorker
 from .captured_worker_settings import CapturedWorkerSettings
 from .postgres_repository import build_postgres_provider
@@ -38,6 +39,10 @@ _ENABLED = "COSMANEURA_SCRIBE_CAPTURED_WORKER_ENABLED"
 PENDING_PICKUP_SECONDS = 65.0
 PENDING_POLL_SECONDS = 5.0
 WorkerExecution = Callable[[CapturedWorkerSettings, UUID, UUID | None], Awaitable[None]]
+
+
+class _SpeechObservationOptions(TypedDict, total=False):
+    publication_observer: SpeechPublicationObserver
 
 
 class CapturedWorkerError(RuntimeError):
@@ -143,11 +148,15 @@ async def _execute(settings: CapturedWorkerSettings, tenant: UUID, session: UUID
                 else build_speech_to_text_provider(settings)
             )
             closers.insert(0, transcriber.close)
+            observation_options: _SpeechObservationOptions = {}
+            if observer is not None:
+                observation_options["publication_observer"] = observer.publication
             worker = CapturedTranscriptionWorker(
                 repositories=repositories,
                 assembler=assembler,
                 transcriber=transcriber,
                 enabled=True,
+                **observation_options,
             )
         else:
             if (

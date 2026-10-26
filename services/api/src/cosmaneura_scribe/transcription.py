@@ -28,7 +28,12 @@ from azure.identity.aio import DefaultAzureCredential
 from .external_transcript_v1 import SourceLocale, TranscriptLanguageMode
 from .schemas import CaptureChannel
 from .settings import Settings
-from .speech_observation import SpeechBoundaryObservation, azure_sdk_version, inspect_wave_header
+from .speech_observation import (
+    SpeechBoundaryObservation,
+    SpeechResultObservation,
+    azure_sdk_version,
+    inspect_wave_header,
+)
 from .speech_private_network import PrivateSpeechEndpointGuard
 
 
@@ -86,6 +91,7 @@ class SttResult:
     language_code: str
     duration_ms: int
     segments: tuple[SttSegment, ...] = field(repr=False)
+    observation: SpeechResultObservation | None = field(default=None, repr=False, compare=False)
 
 
 class SpeechToTextProvider(Protocol):
@@ -204,6 +210,7 @@ class AzureSpeechTranscriber:
     async def transcribe(self, request: TranscriptionRequest) -> SttResult:
         segments: list[SttSegment] = []
         duration_ms = 0
+        observations: list[SpeechBoundaryObservation] = []
 
         for track_index, track in enumerate(request.tracks):
             scoped_observer = None
@@ -291,6 +298,8 @@ class AzureSpeechTranscriber:
                             {p.speaker for p in accepted if p.speaker is not None}
                         ),
                     )
+                    if len(observations) < 64:
+                        observations.append(observation)
                     for observer in observers:
                         try:
                             observer(observation)
@@ -332,11 +341,21 @@ class AzureSpeechTranscriber:
         )
         if not segments:
             raise ValueError("transcription returned no recognized speech")
+        result_observation = None
+        try:
+            if len(observations) == len(request.tracks) <= 64:
+                result_observation = SpeechResultObservation(
+                    track_channels=tuple(track.channel.value for track in request.tracks),
+                    boundaries=tuple(observations),
+                )
+        except Exception:
+            pass  # Correlation is diagnostic only, like the response sink.
         return SttResult(
             provider=self.name,
             language_code=request.language_code,
             duration_ms=duration_ms,
             segments=tuple(segments),
+            observation=result_observation,
         )
 
     async def close(self) -> None:

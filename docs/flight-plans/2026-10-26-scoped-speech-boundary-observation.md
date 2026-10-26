@@ -74,6 +74,38 @@ roles, note fidelity and normal UI save/reopen require separate evidence. It
 must never manufacture Doctor/Patient roles from fixture voices or count a
 synthetic SDK test as a live provider response.
 
+### Correlation with a newly committed source
+
+A response log can precede a failed publication. Job attempt count alone is not
+lineage: the supported terminal-job restart can reset it to one. Existing
+application/worker roles can insert audit events but are not granted audit
+history reads. No new database access is introduced to reconstruct that history.
+
+For an enabled scope, the provider now carries bounded, immutable call/track
+metadata on its exact returned `SttResult`. It is absent by default and excluded
+from equality and repr; it is never a transcript field or stored payload. Only
+a complete set of observations for the assembled tracks is carried forward.
+
+After `publish_speech_result` returns from its transaction, the normal captured
+worker may emit `captured_speech.source_publication`. The event binds the actual
+job ID/attempt and new source receipt ID/version to the exact result's call IDs,
+track channels, accepted counts and aggregate segment/speaker counts. Channels
+are a closed capture enum, not speaker roles. The source writer checks the
+normalized request fingerprint as part of acceptance; this diagnostic only
+accepts its `ACCEPTED` disposition for source version one. `REPLAYED`,
+`CONVERGED`, `CORRECTED`, completed-job recovery and failed/uncertain transaction
+returns never attest a later result to an old receipt. No receipt, fingerprint,
+storage or transaction behavior is changed.
+
+The same exact tenant/session/consent and one-hour expiry are checked again at
+completion. Missing, partial, inconsistent, expired or failed diagnostics stay
+silent without failing the committed job or triggering another ASR call. A
+lost commit reply may leave a valid source without this event; that remains
+unqualified attribution. The event is not an inventory of HTTP attempts or a
+claim about roles. Acceptance must join its exact call IDs to response logs and
+its receipt/version and counts to the actual persisted source; neither a
+matching session nor an unrelated successful response is sufficient.
+
 ## Validation and release sequence
 
 Local regressions exercise the installed SDK multipart serializer, accepted
@@ -83,6 +115,9 @@ and isolated failure paths. A fresh disposable PostgreSQL database exercises
 normal consent/admission, encrypted chunk assembly, captured-source publication
 and completed-job recovery with no observer, a working observer, and a failing
 sink. The provider response is an offline SDK fixture; no ASR call is made.
+Completion regressions additionally cover failed publication followed by the
+normal retry, lost commit replies, repeated completed recovery, idempotent
+receipt reuse with new call IDs, conflicting results, and sink/expiry failures.
 
 Before activation, independently review the final pushed source. Reconcile the
 current speech job's immutable image, full source/configuration, entrypoint,
