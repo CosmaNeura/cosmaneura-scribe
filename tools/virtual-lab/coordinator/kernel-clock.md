@@ -34,7 +34,11 @@ after receiving that complete correlated reply. Enforce the full two-second
 request deadline and abort on unexpected, extra or malformed output. Do not
 substitute a cached native or helper response. The helper accepts at most 64
 requests, exits on EOF or parent loss, and has a 15-minute lifetime. It does not
-construct an audio graph or inspect audio devices.
+construct an audio graph or inspect audio devices. Output is nonblocking and
+each response has a two-second write deadline with parent/lifetime checks, so
+an alive parent that stops draining stdout cannot hold the helper indefinitely.
+Run `kernel-clock-protocol.py <owned-compiled-helper>` for the actual pipe
+saturation and EOF regressions.
 
 Pass the raw response, both Node timestamps and the independently verified
 identity to `projectKernelClockSample`. Retain those raw inputs for later

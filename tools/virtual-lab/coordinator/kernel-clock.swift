@@ -47,6 +47,31 @@ private func resolution(_ clock: clockid_t) -> Any {
         var timebase = mach_timebase_info_data_t()
         guard mach_timebase_info(&timebase) == KERN_SUCCESS, timebase.numer > 0, timebase.denom > 0 else { throw ClockFailure.unavailable }
         let limit = 900.0 * 1e9 * Double(timebase.denom) / Double(timebase.numer)
+        let writeLimit = 2.0 * 1e9 * Double(timebase.denom) / Double(timebase.numer)
+        let flags = fcntl(STDOUT_FILENO, F_GETFL)
+        guard flags >= 0, fcntl(STDOUT_FILENO, F_SETFL, flags | O_NONBLOCK) == 0 else { throw ClockFailure.unavailable }
+        signal(SIGPIPE, SIG_IGN)
+        func writeResponse(_ data: Data) throws {
+            let writeBegan = mach_continuous_time()
+            var offset = 0
+            try data.withUnsafeBytes { bytes in
+                while offset < bytes.count {
+                    let now = mach_continuous_time()
+                    guard getppid() == parent, parent > 1, Double(now - began) < limit,
+                          Double(now - writeBegan) < writeLimit else { throw ClockFailure.unavailable }
+                    let written = Darwin.write(STDOUT_FILENO, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                    if written > 0 { offset += written; continue }
+                    if written < 0 && errno == EINTR { continue }
+                    guard written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) else { throw ClockFailure.unavailable }
+                    var output = pollfd(fd: STDOUT_FILENO, events: Int16(POLLOUT), revents: 0)
+                    let remaining = min(writeLimit - Double(now - writeBegan), limit - Double(now - began))
+                    let waitMs = max(0, min(50, Int(remaining * Double(timebase.numer) / Double(timebase.denom) / 1e6)))
+                    let ready = Darwin.poll(&output, 1, Int32(waitMs))
+                    guard ready >= 0 || errno == EINTR else { throw ClockFailure.unavailable }
+                    if output.revents & Int16(POLLERR | POLLHUP | POLLNVAL) != 0 { throw ClockFailure.unavailable }
+                }
+            }
+        }
         var pending = Data(), count = 0
         while Double(mach_continuous_time() - began) < limit, getppid() == parent, parent > 1 {
             var descriptor = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
@@ -86,7 +111,7 @@ private func resolution(_ clock: clockid_t) -> Any {
                     "audioAfterRoundTripTicks": String(AVAudioTime.hostTime(forSeconds: audioAfter)),
                     "apiResolutionNs": ["uptimeRaw": resolution(CLOCK_UPTIME_RAW), "monotonicRaw": resolution(CLOCK_MONOTONIC_RAW)]]
                 let data = try JSONSerialization.data(withJSONObject: response, options: [.sortedKeys])
-                FileHandle.standardOutput.write(data + Data([10]))
+                try writeResponse(data + Data([10]))
             }
         }
     }
