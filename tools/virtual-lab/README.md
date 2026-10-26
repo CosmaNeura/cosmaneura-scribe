@@ -36,3 +36,7 @@ administrator/restart; Mac UI tests need a dedicated unlocked guest/host.
 Stop owned services with `bash tools/virtual-lab/lab.sh down`. PostgreSQL data is
 ephemeral. Preserve reports and the dependency lock before removing a lab directory.
 No paid cloud-device service or production deployment is part of this setup.
+
+`coordinator/record-recovery.mjs` is an explicit recovery entry point for a
+reviewed first-Record failure before input. It is never selected by ordinary
+run/resume. See the [recovery contract](../../docs/flight-plans/2026-10-26-first-record-recovery.md).
