@@ -38,6 +38,14 @@ class SpeechBoundaryObservation:
     accepted_distinct_non_null_speaker_count: int | None = None
 
 
+@dataclass(frozen=True, repr=False)
+class SpeechResultObservation:
+    """Ephemeral correlation for this exact returned result, never transcript data."""
+
+    track_channels: tuple[str, ...]
+    boundaries: tuple[SpeechBoundaryObservation, ...]
+
+
 def inspect_wave_header(stream: BinaryIO) -> WaveHeaderObservation | None:
     """Inspect only the first canonical 44 bytes and restore the exact position."""
     if not stream.seekable():

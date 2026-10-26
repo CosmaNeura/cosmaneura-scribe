@@ -414,6 +414,7 @@ async def test_normal_runner_installs_only_valid_scope_with_validated_tenant(
     raw = scope(tenant, session, consent) if raw_scope == "valid" else raw_scope
     settings = settings.model_copy(update={"captured_speech_observation_scope": raw})
     calls = []
+    worker_calls = []
 
     async def close():
         pass
@@ -428,7 +429,12 @@ async def test_normal_runner_installs_only_valid_scope_with_validated_tenant(
         return resource
 
     monkeypatch.setattr(runner, "build_speech_to_text_provider", build)
-    monkeypatch.setattr(runner, "CapturedTranscriptionWorker", lambda **kwargs: object())
+
+    def build_worker(**kwargs):
+        worker_calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(runner, "CapturedTranscriptionWorker", build_worker)
 
     async def dispatch(*args):
         pass
@@ -445,6 +451,9 @@ async def test_normal_runner_installs_only_valid_scope_with_validated_tenant(
     assert len(calls) == 1
     if raw_scope == "valid":
         assert (
+            worker_calls[0]["publication_observer"] == calls[0]["observer_for_request"].publication
+        )
+        assert (
             calls[0]["observer_for_request"](
                 SimpleNamespace(session_id=session, consent_record_id=consent)
             )
@@ -452,6 +461,7 @@ async def test_normal_runner_installs_only_valid_scope_with_validated_tenant(
         )
     else:
         assert calls == [{}]
+        assert "publication_observer" not in worker_calls[0]
 
 
 @pytest.mark.postgres

@@ -5,15 +5,28 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
-from .safe_logging import log_speech_boundary
+from .normalized_source_persistence import NormalizedSourceAcceptanceDisposition
+from .safe_logging import log_speech_boundary, log_speech_publication
 from .speech_observation import SpeechBoundaryObservation
 
 if TYPE_CHECKING:
+    from .captured_source_runtime import CapturedSourcePublication, CapturedSpeechCompletion
+    from .captured_transcription_worker import SpeechPublicationObserver
     from .transcription import SpeechObserver, SpeechObserverFactory, TranscriptionRequest
+
+
+@dataclass(frozen=True, repr=False)
+class ScopedSpeechObserver:
+    provider: SpeechObserverFactory
+    publication: SpeechPublicationObserver
+
+    def __call__(self, request: TranscriptionRequest) -> SpeechObserver | None:
+        return self.provider(request)
 
 
 def capture_speech_observer(
@@ -21,7 +34,7 @@ def capture_speech_observer(
     *,
     tenant_id: UUID,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
-) -> SpeechObserverFactory | None:
+) -> ScopedSpeechObserver | None:
     """Invalid/missing scopes disable only observation, including during startup."""
     try:
         if raw is None or len(raw.encode()) > 1024:
@@ -96,6 +109,40 @@ def capture_speech_observer(
 
             return observe
 
-        return for_request
+        def published(
+            actual_tenant: UUID,
+            actual_session: UUID,
+            actual_consent: UUID,
+            completion: CapturedSpeechCompletion,
+            publication: CapturedSourcePublication,
+        ) -> None:
+            try:
+                now = clock()
+                if (
+                    (actual_tenant, actual_session, actual_consent) != identifiers
+                    or not issued <= now < expires
+                    or publication.source.disposition
+                    != NormalizedSourceAcceptanceDisposition.ACCEPTED
+                    or publication.source.receipt.session_id != actual_session
+                    or publication.source.receipt.source_transcript_version != 1
+                ):
+                    return
+                # Only a new exact-result acceptance may attest these calls.
+                # Replayed/converged receipts and completed recovery are silent.
+                log_speech_publication(
+                    tenant_id=actual_tenant,
+                    session_id=actual_session,
+                    consent_record_id=actual_consent,
+                    scope_sha256=digest,
+                    observed_at_ms=int(now.timestamp() * 1000),
+                    job_id=completion.job_id,
+                    attempt_count=completion.attempt_count,
+                    receipt=publication.source.receipt,
+                    result=completion.result,
+                )
+            except Exception:
+                pass
+
+        return ScopedSpeechObserver(for_request, published)
     except Exception:
         return None
