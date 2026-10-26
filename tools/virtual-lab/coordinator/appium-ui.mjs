@@ -24,6 +24,7 @@ import { createSessionAttempt, recoverSessionCreations, sessionReturned, session
   sessionCapsMatch, SESSION_ATTEMPT_CAPABILITY, SESSION_CREATION_TIMEOUT_MS } from './session-attempt.mjs';
 
 import { SCROLL_DOCUMENT_SCRIPT, validateScrollSnapshot, scrollTouchActions, unchangedScrollFields } from './safe-scroll.mjs';
+import { readRetainedAdmission } from './retained-admission.mjs';
 
 const exec = promisify(execFile);
 const elementKey = 'element-6066-11e4-a52e-4f735466cecf';
@@ -457,11 +458,7 @@ export class AppiumUI {
     }
     this.savedNote = observations.save?.savedNote ?? null;
     if (this.admission && !state.completed.includes('finish')) {
-      const current = await this.readAdmission(signal);
-      if (current) {
-        this.checkAdmission(current);
-        if (current.sessionId !== this.admission.sessionId || current.consentRecordId !== this.admission.consentRecordId) throw Error('restored_consent_changed');
-      } else await this.readRecording(signal);
+      await readRetainedAdmission(this, signal);
     }
     if (state.completed.includes('prepare') && !state.completed.includes('play_source') && this.sources) {
       if (state.completed.includes('record') || state.pending === 'play_source') throw Error('source_process_lost_requires_review');
