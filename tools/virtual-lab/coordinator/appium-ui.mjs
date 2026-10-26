@@ -115,10 +115,13 @@ export class AppiumUI {
     this.uiTail = queued.catch(() => {});
     return this.track(() => queued);
   }
-  rawRequest(path, method = 'GET', body, signal, { observerInstallation = false } = {}) {
+  rawRequest(path, method = 'GET', body, signal, { observerInstallation = false, readOnlyObservation = false } = {}) {
     const active = AbortSignal.any([this.lifetime.signal, ...(signal ? [signal] : []), AbortSignal.timeout(30000)]);
     return this.track(async () => {
     active.throwIfAborted();
+    const readOnly = method === 'GET' || method === 'POST' && (['/element', '/elements', '/context'].includes(path)
+      || readOnlyObservation && !observerInstallation && ['/execute/sync', '/execute/async'].includes(path));
+    if (this.inputSafetyUncertain && !readOnly) throw Error('native_input_recovery_required');
     // A lost reply cannot establish whether Appium/WDA executed the mutation.
     // Closing the session later does not undo or prove settlement of that work.
     const mutation = method === 'POST' && (!['/element', '/elements', '/context', '/execute/sync', '/execute/async'].includes(path)
@@ -196,13 +199,13 @@ export class AppiumUI {
   async rawWebview(script, args, signal, observerInstallation = false, asynchronous = false) {
       const previous = await this.rawRequest('/context', 'GET', undefined, signal);
       if (previous !== 'NATIVE_APP') throw Error('native_context_unconfirmed');
-      const context = await discoverOwnedIOSWebview(active => this.rawRequest('/execute/sync', 'POST', IOS_CONTEXT_DISCOVERY, active), this.config.app?.bundleId, signal);
+      const context = await discoverOwnedIOSWebview(active => this.rawRequest('/execute/sync', 'POST', IOS_CONTEXT_DISCOVERY, active, { readOnlyObservation: true }), this.config.app?.bundleId, signal);
       this.contextUncertain = true;
       try {
         await this.rawRequest('/context', 'POST', { name: context }, signal);
-        if (await this.rawRequest('/execute/sync', 'POST', { script: IOS_CONTEXT_ATTESTATION, args: [] }, signal) !== true)
+        if (await this.rawRequest('/execute/sync', 'POST', { script: IOS_CONTEXT_ATTESTATION, args: [] }, signal, { readOnlyObservation: true }) !== true)
           throw Error('owned_webview_identity_changed');
-        return await this.rawRequest(asynchronous ? '/execute/async' : '/execute/sync', 'POST', { script, args }, signal, { observerInstallation });
+        return await this.rawRequest(asynchronous ? '/execute/async' : '/execute/sync', 'POST', { script, args }, signal, { observerInstallation, readOnlyObservation: !observerInstallation });
       }
       finally {
         try { await this.rawRequest('/context', 'POST', { name: previous }, signal); this.contextUncertain = false; }
@@ -644,6 +647,7 @@ export class AppiumUI {
     }
     if (['prepare', 'consent', 'record', 'play_source', 'finish', 'review', 'save'].includes(action)) await this.assertVisit(signal);
     if (action === 'play_source') {
+      if (this.inputSafetyUncertain) throw Error('native_input_recovery_required');
       if (!this.sources) throw Error('sources_not_configured');
       if (!this.sources.participants.length) throw Error('prepared_sources_missing');
       let result, sourceFailure;

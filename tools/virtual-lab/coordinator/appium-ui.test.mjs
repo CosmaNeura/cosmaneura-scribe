@@ -760,6 +760,29 @@ test('input uncertainty keeps observers and target cleanup unsettled even after 
   await assert.rejects(ui.safeScroll('down'), /native_input_recovery_required/);
   const cleanup = await ui.cleanup(); assert.equal(cleanup.inputSafetyUncertain, true); assert.equal(cleanup.ownedResourcesSettled, false);
 });
+test('a caught scroll failure cannot dispatch input in a later steps or public request call', async () => {
+  let unsafe = 0, readQueries = 0;
+  const server = createServer(async (request, response) => {
+    if (request.method === 'GET' && request.url.endsWith('/context')) return response.end('{"value":"NATIVE_APP"}');
+    if (request.method === 'POST' && request.url.endsWith('/elements')) { readQueries++; return response.end('{"value":[]}'); }
+    unsafe++; response.end('{"value":null}');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const ui = scrollingDriver(); ui.base = `http://127.0.0.1:${server.address().port}`; ui.session = 'owned';
+    const realRawRequest = ui.rawRequest; let reads = 0;
+    scrollHarness(ui); ui.rawWebview = async () => ({ ...scrollSnapshot(), fieldSHA256: (++reads === 1 ? 'a' : 'b').repeat(64) });
+    await assert.rejects(ui.steps({ actions: [{ action: 'scroll', direction: 'down', count: 1 }] }), /document_changed/);
+    ui.rawRequest = realRawRequest; ui.find = async () => 'existing';
+    for (const action of ['click', 'type', 'clear']) await assert.rejects(ui.steps({ actions: [{ action, locator: {}, text: 'blocked' }] }), /native_input_recovery_required/);
+    for (const [path, body] of [['/element/existing/click', {}], ['/element/existing/value', { text: 'blocked' }],
+      ['/element/existing/clear', {}], ['/actions', { actions: [] }], ['/execute/sync', { script: 'mobile: tap', args: [] }],
+      ['/execute/async', { script: 'document.querySelector("button").click()', args: [] }]])
+      await assert.rejects(ui.request(path, 'POST', body), /native_input_recovery_required/);
+    await assert.rejects(ui.rawRequest('/actions', 'POST', { actions: [] }), /native_input_recovery_required/);
+    await ui.request('/elements', 'POST', {}); assert.equal(readQueries, 1); assert.equal(unsafe, 0);
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});
 test('real HTTP scroll boundary uses attested async hash reads and returns to native context before touch', async () => {
   let context = 'NATIVE_APP', reads = 0, touches = 0;
   const server = createServer(async (request, response) => {
@@ -773,6 +796,7 @@ test('real HTTP scroll boundary uses attested async hash reads and returns to na
       assert.match(body.script, /arguments\[arguments.length - 1\]/); assert.deepEqual(body.args, []); reads++; value = scrollSnapshot();
     } else if (request.url.endsWith('/execute/sync')) {
       if (body.script === IOS_CONTEXT_DISCOVERY.script) { assert.equal(context, 'NATIVE_APP'); value = appContexts(); }
+      else if (body.script === 'return { metadataOnly: true };') { assert.equal(context, 'WEBVIEW_123.1'); value = { metadataOnly: true }; }
       else { assert.equal(body.script, IOS_CONTEXT_ATTESTATION); assert.equal(context, 'WEBVIEW_123.1'); value = true; }
     } else if (request.url.endsWith('/actions')) { assert.equal(context, 'NATIVE_APP'); assert.equal(body.actions[0].parameters.pointerType, 'touch'); touches++; value = null; }
     else throw Error('unexpected endpoint');
@@ -783,6 +807,8 @@ test('real HTTP scroll boundary uses attested async hash reads and returns to na
     const ui = scrollingDriver(); ui.base = `http://127.0.0.1:${server.address().port}`; ui.session = 'owned';
     await ui.safeScroll('down', AbortSignal.timeout(3000)); assert.equal(reads, 2); assert.equal(touches, 1);
     assert.equal(context, 'NATIVE_APP'); assert.equal(ui.uncertainMutations.size, 0); assert.equal(ui.inputSafetyUncertain, false);
+    ui.inputSafetyUncertain = true; const projected = await ui.webview('return { metadataOnly: true };', [], AbortSignal.timeout(3000));
+    assert.deepEqual(projected, { metadataOnly: true }); assert.equal(touches, 1);
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 });
 test('native context cannot interleave with a complete scroll observation/touch/invariance transaction', async () => {
