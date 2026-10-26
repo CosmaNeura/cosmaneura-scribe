@@ -71,6 +71,8 @@ private, canonical and at most 32 KiB. Nonblocking/no-follow open plus stable
 inode/size/mtime checks reject FIFOs, symlinks and concurrent replacement. A
 missing baseline is explicit; a missing post-action journal never qualifies.
 This is local process/file evidence, not a cryptographic product attestation.
+Darwin process inspection puts the executable path in the final `ps` column:
+otherwise `comm` is truncated even with `-ww`. UID and start time remain exact.
 
 The normal recorder reply must change from ready (Record) or paused (Resume) to
 Recording with the same run/workspace/appointment/session/recorder/auth revision,

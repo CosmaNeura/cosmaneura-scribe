@@ -67,16 +67,27 @@ async function currentHost(clockIdentity, signal) {
       || sha256(matches[0][1].toLowerCase()) !== clockIdentity.hardwareSHA256) throw fail('clock_host_changed');
 }
 
-async function currentProcess(expected, installed, signal) {
+function requireExpectedProcess(expected, installed) {
   if (!Number.isSafeInteger(expected?.pid) || expected.pid <= 1 || typeof expected.processStart !== 'string'
       || expected.executablePath !== installed.executablePath) throw fail('process_unconfirmed');
-  const { stdout } = await exec('/bin/ps', ['-p', String(expected.pid), '-o', 'lstart=', '-o', 'comm=', '-o', 'uid='],
-    { signal, timeout: 2000, maxBuffer: 4096 });
-  const match = stdout.trim().match(/^(.{24})\s+(.+?)\s+(\d+)$/);
-  if (!match || match[1] !== expected.processStart || match[2] !== expected.executablePath
-      || Number(match[3]) !== process.getuid()) throw fail('process_changed');
-  return { pid: expected.pid, processStart: match[1], executablePath: match[2], uid: Number(match[3]),
+}
+
+/** Darwin truncates comm when another column follows it, even with -ww.
+ * This pure projection requires the full final-column path and exact owner. */
+export function projectNativeProcessRow(stdout, expected, installed, uid = process.getuid()) {
+  requireExpectedProcess(expected, installed);
+  const match = typeof stdout === 'string' && stdout.trim().match(/^(\d+)\s+(.{24})\s+(.+)$/);
+  if (!match || match[2] !== expected.processStart || match[3] !== expected.executablePath
+      || Number(match[1]) !== uid) throw fail('process_changed');
+  return { pid: expected.pid, processStart: match[2], executablePath: match[3], uid: Number(match[1]),
     executableSHA256: installed.executableSHA256 };
+}
+
+async function currentProcess(expected, installed, signal) {
+  requireExpectedProcess(expected, installed);
+  const { stdout } = await exec('/bin/ps', ['-p', String(expected.pid), '-o', 'uid=', '-o', 'lstart=', '-o', 'comm='],
+    { signal, timeout: 2000, maxBuffer: 4096 });
+  return projectNativeProcessRow(stdout, expected, installed);
 }
 
 /** Bind a fixed journal to the actual installed owned simulator process on the
