@@ -49,6 +49,12 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   const message = root.querySelector<HTMLElement>("[data-session-message]")!;
   const recovery = root.querySelector<HTMLElement>("[data-session-recovery]")!;
   const workflow = root.querySelector<HTMLElement>("[data-provider-workflow]")!;
+  const header = root.querySelector<HTMLElement>(".provider-session-header")!;
+  const positionAccount = (): void => {
+    root.style.setProperty("--provider-session-header-bottom", `${Math.max(0, header.getBoundingClientRect().bottom)}px`);
+  };
+  const headerObserver = new ResizeObserver(positionAccount);
+  headerObserver.observe(header);
   const flushRecordingOpen = (): void => {
     if (!recordingOpenPending || disposed || accessClosed || stopUnconfirmed
       || state?.phase !== "ready" || !scope?.unmount || scope.abort.signal.aborted) return;
@@ -71,7 +77,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     };
     [title.textContent, message.textContent] = shown[phase];
     if (notice) message.textContent = notice;
-    actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><div class="provider-account-panel"><p data-provider-name></p>${button("sign-out", "Sign out")}<a href="mailto:dev@cosmaneura.com">Get help</a></div></details>`
+    actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><div class="provider-account-panel" role="group" aria-label="Account options">${button("sign-out", "Sign out")}<p data-provider-name></p><a href="mailto:dev@cosmaneura.com">Get help</a></div></details>`
       : phase === "signingIn" ? button("sign-out", "Sign out") : "";
     const providerName = actions.querySelector<HTMLElement>("[data-provider-name]"); if (providerName) providerName.textContent = state?.providerDisplayName ?? "Your account";
     recovery.innerHTML = "";
@@ -249,9 +255,33 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     const action = target.closest<HTMLButtonElement>("button[data-session-action]")?.dataset.sessionAction;
     if (action) void perform(action);
   };
+  const dismissAccount = (event: Event): void => {
+    const menu = actions.querySelector<HTMLDetailsElement>(".provider-account-menu[open]");
+    if (menu && event.target instanceof Node && !menu.contains(event.target)) menu.open = false;
+  };
+  const accountToggled = (event: Event): void => {
+    if (!(event.target instanceof HTMLDetailsElement) || !event.target.matches(".provider-account-menu")) return;
+    positionAccount();
+    if (event.target.open) event.target.querySelector(".provider-account-panel")!.scrollTop = 0;
+  };
+  const accountScrolled = (): void => {
+    if (actions.querySelector(".provider-account-menu[open]")) positionAccount();
+  };
+  const accountKey = (event: KeyboardEvent): void => {
+    const menu = actions.querySelector<HTMLDetailsElement>(".provider-account-menu[open]");
+    if (event.key !== "Escape" || !menu) return;
+    event.preventDefault();
+    menu.open = false;
+    menu.querySelector("summary")?.focus();
+  };
   const resume = (): void => { if (document.visibilityState === "visible") void read(); };
   const sessionState = (): ProviderSessionState | null => state;
   root.addEventListener("click", clicked);
+  root.addEventListener("toggle", accountToggled, true);
+  document.addEventListener("scroll", accountScrolled, true);
+  document.addEventListener("pointerdown", dismissAccount);
+  document.addEventListener("focusin", dismissAccount);
+  document.addEventListener("keydown", accountKey);
   document.addEventListener("visibilitychange", resume);
   const timer = setInterval(() => { void read(); }, 5000); // Native state only, never a token.
   render();
@@ -278,8 +308,13 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   })();
   return (): Promise<void> => {
     if (disposal) return disposal;
-    disposed = true; invalidate(); clearInterval(timer);
+    disposed = true; invalidate(); clearInterval(timer); headerObserver.disconnect();
     root.removeEventListener("click", clicked);
+    root.removeEventListener("toggle", accountToggled, true);
+    document.removeEventListener("scroll", accountScrolled, true);
+    document.removeEventListener("pointerdown", dismissAccount);
+    document.removeEventListener("focusin", dismissAccount);
+    document.removeEventListener("keydown", accountKey);
     document.removeEventListener("visibilitychange", resume);
     disposal = (async () => {
       try { await starting; await close(); await listener?.remove(); await recordingListener?.remove(); root.replaceChildren(); }
