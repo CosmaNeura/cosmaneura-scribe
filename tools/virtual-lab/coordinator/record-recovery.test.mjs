@@ -5,6 +5,7 @@ import { tmpdir, hostname } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { AppiumUI } from './appium-ui.mjs';
 import { Journal, ACTIONS, atomicJSON, sha256 } from './journal.mjs';
 import { journalIdentity } from './tool-identity.mjs';
@@ -13,6 +14,7 @@ import { validateRecordRecoveryReview, validateUntouchedRecorder, recoverFirstRe
 const uuid = n => `00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
 const runtimeRoot = fileURLToPath(new URL('../', import.meta.url));
 const encode = value => Buffer.from(JSON.stringify(value));
+const nativePrepareInitialUI = AppiumUI.prototype.prepareInitialUI;
 function values() {
   const now = Date.now(), runId = 'synthetic-first-record', targetId = randomUUID();
   const visit = { source: 'normal-native-mount-response', runId: uuid(1), workspaceId: uuid(2),
@@ -88,7 +90,7 @@ async function integration(fn) {
   const scenario = { schema:1, syntheticOnly:true, mode:'fixed', executionKind:'live', runId:f.review.runId,
     targetId:f.review.targetId, adapterSHA256:'0'.repeat(64), sourceSHA:'a'.repeat(40),
     build:{bundleId:'synthetic.app',number:'1',sha256:'d'.repeat(64)}, fixture:{sha256:'e'.repeat(64)},
-    admissionBinding:{runId:f.visit.runId}, personas:[{id:'a',profile:output+'/a'},{id:'b',profile:output+'/b'}], timeoutMs:1000 };
+    admissionBinding:{runId:f.visit.runId}, personas:[{id:'a',profile:output+'/a'},{id:'b',profile:output+'/b'}], timeoutMs:5000 };
   const identity = await journalIdentity(scenario), journal = await Journal.load(output+'/run.json',identity,false);
   const observations = {};
   const observe = action => ({ origin:'product-ui', executionKind:'live', action, targetId:scenario.targetId,
@@ -117,7 +119,8 @@ async function integration(fn) {
   const originals={}, calls=[]; let currentPhase='ready';
   const methods={
     async lockIdentity(){return scenario.targetId;}, async doctor(){return{ready:true,targetId:scenario.targetId,executionKind:'live'};},
-    async connect(){this.session='synthetic-session';},
+    async connect(){this.session='synthetic-session';this.config={target:{role:'owned-ios-simulator'},app:{bundleId:'synthetic.app'}};},
+    async prepareInitialUI(){return null;},
     async recoveryInspect(){this.session='synthetic-inspection';return{...structuredClone(f.baseline),source:'current-native-recovery-observation',
       recoveryStage:'capture',observedAtEpochMs:Date.now(),currentNote:null,unresolvedOwnedResources:[]};},
     async restore(){this.admission=f.admission;this.binding=f.visit;this.config={app:{bundleId:'synthetic.app'},journey:Object.fromEntries(ACTIONS.map(a=>[a,{action:a}]))};},
@@ -137,7 +140,7 @@ async function integration(fn) {
     previousOwnerPid:2147483647,previousOwnerAbsent:true,controlSessionId:session,foreignControlSessions:[],activeInputClients:[],unresolvedOwnedSourceProcesses:[]});
   const args={runtimeRoot,output,configPath:output+'/unused-config',scenario,labRoot:output,reviewPath:output+'/review.json',
     evidencePaths:paths,signal:new AbortController().signal,inspectTarget:target,beforeRecord:async()=>{}};
-  try { await fn({f,args,output,calls,lease,target,originalJournal:JSON.parse(f.evidence.journal)}); }
+  try { await fn({f,args,output,calls,lease,target,methods,originalJournal:JSON.parse(f.evidence.journal)}); }
   finally {
     for(const [name,method] of Object.entries(originals))AppiumUI.prototype[name]=method;
     await rm(lease,{force:true});await rm(lease+'.acquiring',{recursive:true,force:true});await rm(output,{recursive:true,force:true});
@@ -154,14 +157,14 @@ test('real engine/guard recovery consumes a lease, preserves original FAIL event
 }));
 test('existing durable first-dispatch intent prevents any input and retains lease',()=>integration(async f=>{
   await writeFile(f.output+'/first-record-recovery.intent.json','retained');
-  const result=await recoverFirstRecord(f.args); assert.equal(result.status,'RESUME_FAILED',JSON.stringify(result));assert.deepEqual(f.calls,[]);
-  assert.equal(await readFile(f.output+'/first-record-recovery.intent.json','utf8'),'retained');assert.equal(result.targetLeaseRetained,true);
+  await assert.rejects(recoverFirstRecord(f.args),/first_record_intent_already_present/);assert.deepEqual(f.calls,[]);
+  assert.equal(await readFile(f.output+'/first-record-recovery.intent.json','utf8'),'retained');assert.equal(JSON.parse(await readFile(f.lease)).uncertain,true);
 }));
 test('lost Record reply remains quarantined and is never automatically repeated',()=>integration(async f=>{
   AppiumUI.prototype.steps=async plan=>{f.calls.push(plan.action);throw Error('synthetic_lost_reply');};
   const result=await recoverFirstRecord(f.args);assert.equal(result.status,'RESUME_FAILED',JSON.stringify(result));assert.deepEqual(f.calls,['record']);
   assert.equal(result.targetLeaseRetained,true);assert.equal(JSON.parse(await readFile(f.output+'/run.json')).pending,'record');
-  await assert.rejects(recoverFirstRecord(f.args),/journal_changed/);assert.deepEqual(f.calls,['record']);
+  await assert.rejects(recoverFirstRecord(f.args),/first_record_intent_already_present|journal_changed/);assert.deepEqual(f.calls,['record']);
 }));
 test('another dead owner or changed lease cannot be adopted using the older review',()=>integration(async f=>{
   const owner=JSON.parse(await readFile(f.lease));owner.token=randomUUID();await atomicJSON(f.lease,owner);
@@ -217,4 +220,78 @@ for(const [name,mutate] of Object.entries({
 }))test('current '+name+' change refuses before any dispatch',()=>integration(async f=>{
   f.args.inspectTarget=async options=>{const t=await f.target(options);mutate(t);return t;};
   await assert.rejects(recoverFirstRecord(f.args),/target_changed/);assert.deepEqual(f.calls,[]);
+}));
+
+
+test('new continuation warms only its own slow inspector, then rediscovery precedes every input proof',()=>integration(async f=>{
+  const originals={rawRequest:AppiumUI.prototype.rawRequest};
+  const reads=new Map(), ordering=[];let context='NATIVE_APP';
+  AppiumUI.prototype.prepareInitialUI=nativePrepareInitialUI;
+  AppiumUI.prototype.rawRequest=async function(path,method,body,signal){
+    signal?.throwIfAborted();
+    if(path==='/context'){if(method==='POST'){context=body.name;return null;}return context;}
+    if(body?.script==='mobile: getContexts'){
+      const count=(reads.get(this.session)??0)+1;reads.set(this.session,count);
+      ordering.push(this.session+':discovery'+count);
+      if(this.session==='synthetic-session'&&count===1)await delay(1700,undefined,{signal});
+      return[{id:'NATIVE_APP'},{id:'WEBVIEW_1.1',bundleId:'synthetic.app',url:'capacitor://localhost'}];
+    }
+    if(body?.script.includes('typeof window.Capacitor'))return true;
+    return null;
+  };
+  AppiumUI.prototype.recoveryInspect=async function(options){
+    const proof=await f.methods.recoveryInspect.call(this,options);this.config={app:{bundleId:'synthetic.app'}};
+    await this.webview('return null;',[],options.signal);return proof;
+  };
+  AppiumUI.prototype.restore=async function(state,options){
+    ordering.push('restore');await f.methods.restore.call(this,state,options);
+    await this.webview('return null;',[],options.signal);
+  };
+  AppiumUI.prototype.readAdmission=async function(signal){ordering.push('admission');return this.webview('return null;',[],signal);};
+  AppiumUI.prototype.steps=async function(plan,signal){ordering.push('input:'+plan.action);return f.methods.steps.call(this,plan,signal);};
+  try{
+    const result=await recoverFirstRecord(f.args);assert.equal(result.status,'RESUMED',JSON.stringify(result));
+    assert.equal(reads.get('synthetic-inspection'),1);assert(reads.get('synthetic-session')>=4);
+    assert(ordering.indexOf('synthetic-session:discovery1')<ordering.indexOf('restore'));
+    assert(ordering.indexOf('synthetic-session:discovery4')<ordering.indexOf('input:record'));
+    const receipt=JSON.parse(await readFile(f.output+'/'+result.firstRecordRecovery.setupEvidence.evidenceFile));
+    assert.equal(receipt.readCount,1);assert(receipt.maximumReadDurationMs>=1700);assert.equal(receipt.status,'READY');
+    assert.equal(receipt.qualification,'NOT_ESTABLISHED');assert.equal(receipt.contextRestored,true);
+    const journal=JSON.parse(await readFile(f.output+'/run.json'));
+    assert.equal(journal.events.filter(e=>e.kind==='initial_ui_readiness').length,0);
+    assert.deepEqual(f.calls,ACTIONS.slice(5));
+  }finally{AppiumUI.prototype.rawRequest=originals.rawRequest;}
+}));
+
+for(const cause of ['ios_webview_startup_timeout','owned_webview_ambiguous','owned_webview_identity_changed','native_context_restore_failed'])
+ test('continuation '+cause+' prevents restore and input and retains the lease',()=>integration(async f=>{
+  let restores=0;AppiumUI.prototype.prepareInitialUI=async function(){throw Error(cause);};
+  AppiumUI.prototype.restore=async()=>{restores++;};
+  const result=await recoverFirstRecord(f.args);assert.equal(result.status,'RESUME_FAILED');assert.equal(result.failureCode,cause);
+  assert.equal(result.firstRecordRecovery.continuationStage,'inspector_setup');assert.equal(restores,0);
+  assert.equal(result.targetLeaseRetained,true);assert.deepEqual(f.calls,[]);
+  await assert.rejects(readFile(f.output+'/first-record-recovery.intent.json'),{code:'ENOENT'});
+ }));
+test('changed review after startup prevents ordinary restore',()=>integration(async f=>{
+  let restores=0;AppiumUI.prototype.prepareInitialUI=async()=>{
+    f.f.review.expiresAtEpochMs=Date.now()-1;await atomicJSON(f.output+'/review.json',f.f.review);
+  };
+  AppiumUI.prototype.restore=async()=>{restores++;};
+  const result=await recoverFirstRecord(f.args);assert.equal(result.status,'RESUME_FAILED');assert.equal(restores,0);
+  assert.equal(result.targetLeaseRetained,true);assert.deepEqual(f.calls,[]);
+}));
+
+test('caller abort during continuation setup prevents restore and first-dispatch intent',()=>integration(async f=>{
+  const abort=new AbortController();f.args.signal=abort.signal;let restores=0;
+  AppiumUI.prototype.prepareInitialUI=async()=>{abort.abort(Error('synthetic_parent_loss'));};
+  AppiumUI.prototype.restore=async()=>{restores++;};
+  const result=await recoverFirstRecord(f.args);assert.equal(result.status,'RESUME_FAILED');assert.equal(restores,0);
+  assert.equal(result.targetLeaseRetained,true);assert.deepEqual(f.calls,[]);
+  await assert.rejects(readFile(f.output+'/first-record-recovery.intent.json'),{code:'ENOENT'});
+}));
+test('an intent appearing after the outside check is refused under the recovery guard',()=>integration(async f=>{
+  AppiumUI.prototype.doctor=async()=>{await writeFile(f.output+'/first-record-recovery.intent.json','retained race');return{ready:true,targetId:f.args.scenario.targetId,executionKind:'live'};};
+  const result=await recoverFirstRecord(f.args);assert.equal(result.status,'BLOCKED');assert.equal(result.failureCode,'first_record_intent_already_present');
+  assert.equal(result.targetLeaseRetained,true);assert.deepEqual(f.calls,[]);
+  assert.equal(await readFile(f.output+'/first-record-recovery.intent.json','utf8'),'retained race');
 }));
