@@ -2,7 +2,10 @@
 
 import argparse
 import json
+import plistlib
 import subprocess
+import time
+import uuid
 from pathlib import Path
 from typing import TypedDict
 
@@ -16,6 +19,14 @@ class CheckResult(TypedDict):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--lab-network",
+        action="store_true",
+        help=(
+            "Compile the explicit lab proxy flavor and exercise it only with "
+            "offline URLProtocol fixtures"
+        ),
+    )
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -34,6 +45,8 @@ def main() -> None:
         "-module-cache-path",
         str(output / "module-cache"),
     ]
+    if args.lab_network:
+        common += ["-D", "SCRIBE_VIRTUAL_LAB_NETWORK"]
     commands = [
         [
             "openssl",
@@ -87,7 +100,30 @@ def main() -> None:
         ]
         + [str(path) for path in sorted(recording.glob("*.swift"))]
     )
-    for name in ("transport", "provider", "desktop-initial-window"):
+    names = (
+        ("transport",) if args.lab_network else ("transport", "provider", "desktop-initial-window")
+    )
+    lab_resources: dict[str, Path] = {}
+    for name in names:
+        executable = output / name
+        if args.lab_network:
+            # Executed directly as a CLI fixture, never opened, installed or
+            # launched through an application/UI service. Every request is
+            # intercepted by URLProtocol before DNS/TLS or proxy connection.
+            contents = output / "OfflineNetworkFixture.app" / "Contents"
+            (contents / "MacOS").mkdir(parents=True)
+            (contents / "Resources").mkdir()
+            executable = contents / "MacOS" / name
+            (contents / "Info.plist").write_bytes(
+                plistlib.dumps(
+                    {
+                        "CFBundleIdentifier": "com.cosmaneura.scribe.lab.offline-network-test",
+                        "CFBundleExecutable": name,
+                        "CFBundlePackageType": "APPL",
+                    }
+                )
+            )
+            lab_resources[str(executable)] = contents / "Resources/ScribeVirtualLabNetwork.json"
         # Desktop owns its distinct source-start implementation; the phone
         # bridge retains microphone-finalization authority and must not be copied.
         owner_sources = standalone if name == "desktop-initial-window" else bridge
@@ -106,17 +142,22 @@ def main() -> None:
                 "-Xlinker",
                 str(output),
                 "-o",
-                str(output / name),
+                str(executable),
                 str(bridge / "NativeProviderConnection.swift"),
                 str(bridge / "ProviderNativeTransport.swift"),
-                *[str(owner_sources / filename) for filename in (
-                    "NativeProviderRecordingService.swift", "NativeSourceStartOwner.swift",
-                    "NativeSourceProofJournal.swift", "NativeSourceRecovery.swift",
-                    "NativeCaptureProcessFence.swift",
-                )],
+                *[
+                    str(owner_sources / filename)
+                    for filename in (
+                        "NativeProviderRecordingService.swift",
+                        "NativeSourceStartOwner.swift",
+                        "NativeSourceProofJournal.swift",
+                        "NativeSourceRecovery.swift",
+                        "NativeCaptureProcessFence.swift",
+                    )
+                ],
                 str(standalone / f"check-native-{name}.swift"),
             ],
-            [str(output / name)] + ([str(output / "fixture.der")] if name == "provider" else []),
+            [str(executable)] + ([str(output / "fixture.der")] if name == "provider" else []),
         ]
     commands += [
         common
@@ -131,6 +172,21 @@ def main() -> None:
     ]
     results: list[CheckResult] = []
     for index, command in enumerate(commands):
+        if resource := lab_resources.get(command[0]):
+            issued = int(time.time())
+            resource.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "runId": str(uuid.uuid4()),
+                        "proxyPort": 18443,
+                        "issuedAtUnixSeconds": issued,
+                        "expiresAtUnixSeconds": issued + 15,
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
         result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=60)
         log = output / f"{index}.log"
         log.write_text(result.stdout + result.stderr)

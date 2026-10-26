@@ -2,6 +2,9 @@ import CosmasNativeAuth
 import CryptoKit
 import Foundation
 import Security
+#if SCRIBE_VIRTUAL_LAB_NETWORK
+import Network
+#endif
 
 /// Six fixed POST routes. Private pinned TLS and the proposed staging system-TLS
 /// profile are explicit alternatives. Neither changes system trust or Keychain.
@@ -17,6 +20,9 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
   private let sessionFactory: (URLSessionConfiguration, URLSessionDelegate) -> URLSession
   private let sessionLock = NSLock()
   private var sessions: [TimeoutProfile: URLSession] = [:]
+#if SCRIBE_VIRTUAL_LAB_NETWORK
+  private let labNetwork: ProviderLabNetworkConfiguration
+#endif
   static let stagingHost =
     "cosmaneura-staging-scribe-native.politesmoke-7989878f.northcentralus.azurecontainerapps.io"
 
@@ -26,6 +32,14 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
       URLSession(configuration: $0, delegate: $1, delegateQueue: nil)
     }
   ) throws {
+#if SCRIBE_VIRTUAL_LAB_NETWORK
+    // This build flavor is confined to the existing staging provider origin.
+    // No renderer setting, URL override, environment proxy or trust change.
+    guard settings["profile"] as? String == "core-staging-https-v1" else {
+      throw ProviderNativeError.unavailable
+    }
+    self.labNetwork = try ProviderLabNetworkConfiguration.load()
+#endif
     guard
       workspaceOrigin == .appleWebView
         || Bundle.main.bundleIdentifier == NativeClerkConfiguration.desktopBundleIdentifier
@@ -83,7 +97,7 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
 
   // Reuse Apple's connection pool without sharing cookies, credentials or
   // response caches. Separate timeout profiles preserve each route's budget.
-  private func session(for action: ProviderNativeAction) -> URLSession {
+  private func session(for action: ProviderNativeAction) throws -> URLSession {
     let profile: TimeoutProfile =
       action == .admission ? .admission : (action == .note || action == .noteOpening) ? .note : .standard
     sessionLock.lock()
@@ -101,6 +115,9 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
       profile == .admission ? 200 : profile == .note ? 110 : 20
     configuration.timeoutIntervalForResource =
       profile == .admission ? 210 : profile == .note ? 120 : 30
+#if SCRIBE_VIRTUAL_LAB_NETWORK
+    try labNetwork.apply(to: configuration)
+#endif
     let created = sessionFactory(configuration, SessionDelegate(owner: self))
     sessions[profile] = created
     return created
@@ -158,7 +175,12 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
     else {
       throw ProviderNativeError.unavailable
     }
-    let session = session(for: operation.action)
+#if SCRIBE_VIRTUAL_LAB_NETWORK
+    // Expiry refuses new requests; it does not cancel an already issued task or
+    // grant/renew any native recording authority.
+    try labNetwork.requireCurrent()
+#endif
+    let session = try session(for: operation.action)
     var request = URLRequest(
       url: endpoint.appendingPathComponent("provider/v1/" + operation.action.rawValue))
     request.httpMethod = "POST"
@@ -253,3 +275,69 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
     completionHandler(nil)
   }
 }
+
+#if SCRIBE_VIRTUAL_LAB_NETWORK
+/// Present only in an explicitly instrumented lab build. The resource is part
+/// of that build's signed bundle inventory, never a renderer/process setting.
+struct ProviderLabNetworkConfiguration {
+  let runId: String
+  let issuedAt: Int
+  let expiresAt: Int
+  let proxyPort: UInt16
+  private let deadline: ContinuousClock.Instant
+
+  init(data: Data, now: Date = Date(), continuousNow: ContinuousClock.Instant = ContinuousClock().now) throws {
+    guard data.count <= 1024,
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      Set(object.keys) == ["version", "runId", "issuedAtUnixSeconds", "expiresAtUnixSeconds", "proxyPort"],
+      let version = Self.integer(object["version"]), version == 1,
+      let runId = object["runId"] as? String, let parsedRun = UUID(uuidString: runId),
+      runId == parsedRun.uuidString.lowercased(),
+      let issued = Self.integer(object["issuedAtUnixSeconds"]),
+      let expires = Self.integer(object["expiresAtUnixSeconds"]),
+      let port = Self.integer(object["proxyPort"]), (1024...65535).contains(port),
+      issued > 0, issued <= 4_102_444_800, expires > issued, expires - issued <= 3600
+    else { throw ProviderNativeError.unavailable }
+    let seconds = now.timeIntervalSince1970
+    guard seconds.isFinite, seconds >= Double(issued), seconds < Double(expires) else {
+      throw ProviderNativeError.unavailable
+    }
+    self.runId = runId; self.issuedAt = issued; self.expiresAt = expires; self.proxyPort = UInt16(port)
+    self.deadline = continuousNow.advanced(by: .seconds(Double(expires) - seconds))
+  }
+
+  private static func integer(_ value: Any?) -> Int? {
+    guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+      number.doubleValue.isFinite, number.doubleValue.rounded() == number.doubleValue,
+      number.doubleValue >= 0, number.doubleValue <= 4_102_448_400 else { return nil }
+    return number.intValue
+  }
+
+  static func load(bundle: Bundle = .main) throws -> Self {
+    guard let url = bundle.url(forResource: "ScribeVirtualLabNetwork", withExtension: "json"),
+      url.isFileURL, let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+      size <= 1024, let data = try? Data(contentsOf: url) else { throw ProviderNativeError.unavailable }
+    return try Self(data: data)
+  }
+
+  func requireCurrent(now: Date = Date(), continuousNow: ContinuousClock.Instant = ContinuousClock().now) throws {
+    let seconds = now.timeIntervalSince1970
+    guard seconds.isFinite, seconds >= Double(issuedAt), seconds < Double(expiresAt),
+      continuousNow < deadline else {
+      throw ProviderNativeError.unavailable
+    }
+  }
+
+  func apply(to configuration: URLSessionConfiguration) throws {
+    try requireCurrent()
+    if #available(macOS 14.0, iOS 17.0, *) {
+      guard let port = NWEndpoint.Port(rawValue: proxyPort) else { throw ProviderNativeError.unavailable }
+      var proxy = ProxyConfiguration(httpCONNECTProxy: .hostPort(host: "127.0.0.1", port: port))
+      proxy.allowFailover = false
+      // Apply to every connection in this session. The unchanged transport
+      // accepts only its fixed staging origin; no suffix matcher widens it.
+      configuration.proxyConfigurations = [proxy]
+    } else { throw ProviderNativeError.unavailable }
+  }
+}
+#endif
