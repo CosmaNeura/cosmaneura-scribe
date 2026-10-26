@@ -3,6 +3,9 @@ import test from 'node:test';
 import vm from 'node:vm';
 import { randomUUID, createHash, webcrypto } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { stripTypeScriptTypes } from 'node:module';
 import { installDesktopMainObserver, missingDesktopObserver, validateInspectorEndpoint } from './desktop-observer.mjs';
 import { projectNoteObservation } from '../native/note-observation.mjs';
@@ -13,7 +16,7 @@ const appointment='appointment_01m5q661ryetaa28yxe7vbqrex',otherAppointment='app
 const bindingRef='scribe_capture_binding_01m5q661ryetaa28yxe7vbqrex',operationRef='scribe_admission_01m5q661ryetaa28yxe7vbqrex';
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const deferred=()=>{let resolve;const promise=new Promise(yes=>{resolve=yes;});return{promise,resolve};};
-async function setup() {
+async function setup({ profile = null } = {}) {
   let sessionListener,recorderListener,subscriptionRequests=0;
   const performance={now:()=>Date.now()-1000,timeOrigin:1000};
   const renderer=vm.createContext({performance,TextEncoder,crypto:webcrypto,window:{scribeProvider:{subscribe:fn=>{sessionListener=fn;return()=>{sessionListener=null;};},request:()=>{subscriptionRequests++;}},
@@ -23,8 +26,9 @@ async function setup() {
   const handlers=new Map([[workspaceChannel,original]]);
   const target={id:41,getURL:()=> 'app://cosmas/index.html',isDestroyed:()=>false,executeJavaScript:async script=>vm.runInContext(script,renderer)};
   const owner={runId:randomUUID(),observerSHA256:createHash('sha256').update(installDesktopMainObserver.toString()).digest('hex'),pid:123,executablePath:'/owned/App/Contents/MacOS/Scribe',appPath:'/owned/App/Contents/Resources/app',webContentsId:41};
-  const electron={app:{getAppPath:()=>owner.appPath},webContents:{getAllWebContents:()=>[target]},ipcMain:{_invokeHandlers:handlers}};
-  const context=vm.createContext({Map,performance,Date,process:{pid:owner.pid,execPath:owner.executablePath,versions:{electron:'44.4.3'}},require:()=>electron});
+  const electron={app:{getAppPath:()=>owner.appPath,getPath:()=>profile},webContents:{getAllWebContents:()=>[target]},ipcMain:{_invokeHandlers:handlers}};
+  const context=vm.createContext({Map,performance,Date,Buffer,process:{pid:owner.pid,execPath:owner.executablePath,versions:{electron:'44.4.3'},getuid:()=>process.getuid(),hrtime:process.hrtime},
+    require:name=>name==='node:fs'?fs:name==='node:path'?path:name==='node:crypto'?{createHash}:name==='node:os'?os:electron});
   await vm.runInContext(`(${installDesktopMainObserver.toString()})`,context)(owner, projectNoteObservation, snapshotSaveFields, SAVE_UI_SCRIPT);
   const api=context.__scribeLabDesktopMainObserver,revision=randomUUID(),connectionId=randomUUID(),workspaceId=randomUUID(),encounterId=randomUUID(),sessionId=randomUUID(),consentRecordId=randomUUID();
   async function call(method,result,options={}) {
@@ -455,4 +459,22 @@ test('idempotent desktop deactivation preserves the first correlated physical-cl
   assert(repeated.captureMutationSequence > first.captureMutationSequence);
   assert.equal(repeated.captureMutationSequence, repeated.currentCaptureMutationSequence);
   await h.api.uninstall();
+});
+
+test('performance reads only fixed current-process metadata and issues no product request',async()=>{
+  const profile=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'scribe-desktop-timing-test-')));
+  const file=path.join(profile,'runtime-diagnostics-v1.jsonl');
+  const rows=[{utc:new Date().toISOString(),pid:123,event:'host_open',monotonic_ns:'1',capture_attempt:0},
+    {utc:new Date().toISOString(),pid:999,event:'host_open',monotonic_ns:'2',capture_attempt:0,private:'not retained'},
+    {pid:123,event:'not_an_allowed_timing',private:'not retained'}];
+  fs.writeFileSync(file,rows.map(v=>JSON.stringify(v)).join('\n')+'\n',{mode:0o600});
+  const h=await setup({profile});
+  try{
+    const r=await h.api.readPerformance();assert.equal(r.pid,123);assert.equal(r.profile,profile);
+    assert.equal(r.diagnostics.events.length,1);assert.equal(r.diagnostics.events[0].event,'host_open');
+    assert.equal(JSON.stringify(r).includes('not retained'),false);assert.equal(h.subscriptionRequests(),0);assert.equal(h.calls.length,0);
+    fs.appendFileSync(file,'{"pid":123');await assert.rejects(h.api.readPerformance(),/partial_line/);
+    fs.writeFileSync(file,JSON.stringify({...rows[0],duration_ms:'wrong'})+'\n');await assert.rejects(h.api.readPerformance(),/event_invalid/);
+    fs.chmodSync(file,0o644);await assert.rejects(h.api.readPerformance(),/file_invalid/);
+  }finally{await h.api.uninstall();fs.rmSync(profile,{recursive:true});}
 });
