@@ -8,6 +8,8 @@ it("keeps template order, exposes one dashboard action, and escapes patient and 
   expect(view.indexOf("<label>Plan")).toBeLessThan(view.indexOf("<label>Subjective"));
   expect(view).toContain("&lt;patient&gt;"); expect(view).toContain("&lt;script&gt;bad&lt;/script&gt;");
   expect(view).toContain('data-workspace-action="finish-note">Save and review');
+  expect(view.match(/data-workspace-action="finish-note"/gu)).toHaveLength(1);
+  expect(view.indexOf('data-workspace-action="finish-note"')).toBeLessThan(view.indexOf("<textarea"));
   expect(view).not.toContain('data-workspace-action="save"');
   expect(view).toContain('class="provider-note-evidence" hidden');
   expect(view).toContain('data-note-back data-workspace-action="note-view">Back to note');
