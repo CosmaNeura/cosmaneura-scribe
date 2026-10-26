@@ -74,3 +74,38 @@ Recovery is to stop the owned read-only helper and retain partial measurements
 as unqualified. No app, device, clock, power, security or backend state needs to
 be restored. Do not broaden this into a network-delay injector or use the
 standalone Toxiproxy echo as native application latency evidence.
+
+## Optional collector
+
+`createKernelClockCollector` verifies an owned target marker, exact helper bytes,
+current hardware/boot identity and the newly spawned child's executable/start.
+Its target configuration must include the independently pinned `hardwareSHA256`.
+The helper is confined to the target root. The collector starts no native app,
+audio graph, browser, or product request and does not acquire a UI lease.
+
+Call `sample({signal, deadlineNs})` with a current absolute Node `hrtime` deadline
+no more than two seconds away. The collector records immediately before pipe
+dispatch and after the complete reply, checks the deadline again on receipt,
+and retains raw, correlated inputs. It accepts one outstanding request, at most
+64 samples, and at most 8 KiB per reply. Malformed, extra, replayed or late
+responses poison later samples. No request is retried. Lifetime cancellation
+closes the owned helper; callers also await `close()` in their `finally` block.
+EOF, TERM and KILL cleanup each have a one-second wait and signal only the owned
+child. An unconfirmed close remains an error. Partial samples remain evidence,
+not a qualified result.
+
+Retain `launchReceipt` and `snapshot()` in a private run artifact, along with the
+normal native app identity and owned-process journal export. A snapshot itself
+is `NOT_ESTABLISHED`; `window(before, after)` separately validates two fresh
+samples belonging to that collector. Native journal event parsing includes the
+current fixed packet-persistence and terminal reason enums; unknown events are
+still rejected. Parsing never establishes native process/session attribution.
+
+The exported prospective budget table is cold launch 10 s, warm launch and
+workspace 4 s, consent-to-ready preparation 7 s, and Record/Resume to confirmed
+input 4 s. These owner-reviewed engineering values must be frozen with the
+actual client, backend cohort, action boundaries, and UI readiness assertions
+before a run. They do not replace the engine's existing informational budget
+log or qualify earlier runs. Record operator/tool waiting separately, and
+report improvement only against a comparable measured baseline. This collector
+does not dispatch or time actions on its own.
