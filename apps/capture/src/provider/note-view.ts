@@ -43,7 +43,7 @@ export function noteView(draft: CoreDraft, patient: string, conversation: string
     <div class="provider-save-bar provider-note-actions"><button class="provider-primary" data-workspace-action="finish-note">Save and review</button><p class="provider-draft-status"><span data-note-save-state role="status" aria-atomic="true">Draft saved</span></p></div>
     <div class="provider-note-heading"><h1>${escapeText(patient)}</h1>
     <button class="provider-text-link" data-workspace-action="transcript-view" aria-expanded="false">Show the conversation</button></div>
-    <p class="provider-note-review-help">Check it against the conversation first. You’ll review and sign it in the CosmaNeura dashboard.</p>
+    <p class="provider-note-review-help">Check it against the conversation first. Then review it in the CosmaNeura dashboard.</p>
     ${draft.reviewed_source.capture_continuity ? '<p class="provider-warning" role="status">Some speech may be missing. Check this note against the conversation.</p>' : ''}
     <scribe-private-note mode="note"></scribe-private-note><div class="provider-note-grid"><div class="provider-note-editor" tabindex="0" role="region" aria-label="Draft note">${draft.field_order?.map(field).join("") ?? ''}
       <details class="provider-note-guidance"><summary>Details</summary><p>${escapeText(draft.note_type)} · Saving keeps your edits. Clinical review is still required.</p></details>

@@ -15,7 +15,7 @@ it("keeps template order, exposes one dashboard action, and escapes patient and 
   expect(view).toContain('data-note-back data-workspace-action="note-view">Back to note');
   expect(view).toContain('class="provider-note-mobile-context">&lt;patient&gt;</p>');
   expect(view).toContain('data-note-save-state role="status" aria-atomic="true">Draft saved');
-  expect(view).toContain("You’ll review and sign it in the CosmaNeura dashboard.");
+  expect(view).toContain("Then review it in the CosmaNeura dashboard.");
 });
 
 it("distinguishes draft saving and failed or uncertain saves from acknowledged storage", () => {
