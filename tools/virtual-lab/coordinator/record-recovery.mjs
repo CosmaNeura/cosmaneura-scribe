@@ -146,6 +146,21 @@ export async function recoverFirstRecord({ runtimeRoot, output, configPath, scen
     }
   }
   class Continuation extends AppiumUI {
+    async perform(action, currentScenario, active) {
+      if (action === 'reopen') {
+        // A normal Save may hand off to the dashboard. Activate only the same
+        // retained application; a missing app never authorizes a new launch.
+        checkTarget(await inspectTarget({ signal: active, session: this.session }), review, checked.previousOwnerPid, this.session);
+        const options = { bundleId: this.config.app.bundleId };
+        const state = await this.request('/execute/sync', 'POST', { script: 'mobile: queryAppState', args: [options] }, active);
+        need([2, 3, 4].includes(state), 'saved_native_app_not_running');
+        if (state !== 4) await this.request('/execute/sync', 'POST', { script: 'mobile: activateApp', args: [options] }, active);
+        need(await this.request('/execute/sync', 'POST', { script: 'mobile: queryAppState', args: [options] }, active) === 4,
+          'saved_native_app_not_foreground');
+        checkTarget(await inspectTarget({ signal: active, session: this.session }), review, checked.previousOwnerPid, this.session);
+      }
+      return super.perform(action, currentScenario, active);
+    }
     async restore(state, options) {
       need(state.pending === 'record' && JSON.stringify(state.completed) === JSON.stringify(prior)
         && JSON.stringify(state.events.slice(0, checked.journal.events.length)) === JSON.stringify(checked.journal.events),

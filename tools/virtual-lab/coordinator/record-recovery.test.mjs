@@ -120,7 +120,8 @@ async function integration(fn) {
     async connect(){this.session='synthetic-session';},
     async recoveryInspect(){this.session='synthetic-inspection';return{...structuredClone(f.baseline),source:'current-native-recovery-observation',
       recoveryStage:'capture',observedAtEpochMs:Date.now(),currentNote:null,unresolvedOwnedResources:[]};},
-    async restore(){this.admission=f.admission;this.binding=f.visit;this.config={journey:Object.fromEntries(ACTIONS.map(a=>[a,{action:a}]))};},
+    async restore(){this.admission=f.admission;this.binding=f.visit;this.config={app:{bundleId:'synthetic.app'},journey:Object.fromEntries(ACTIONS.map(a=>[a,{action:a}]))};},
+    async request(){return 4;},
     async readAuth(){return{source:'normal-native-auth-response',phase:'ready',identitySHA256:f.review.accountIdentitySHA256,
       revision:f.visit.revision,observedAtMonotonicMs:1,browserTimeOriginMs:Date.now()-1};},
     async assertVisit(){return f.visit;}, async readAdmission(){return null;},
@@ -185,6 +186,19 @@ test('a second input-boundary invocation cannot dispatch again',()=>integration(
   AppiumUI.prototype.perform=async function(action,s,signal){await this.steps(this.config.journey[action],signal);await this.steps(this.config.journey[action],signal);};
   const result=await recoverFirstRecord(f.args);assert.equal(result.status,'RESUME_FAILED');assert.deepEqual(f.calls,['record']);
   assert.equal(result.targetLeaseRetained,true);
+}));
+test('Save handoff activates only the same existing app before normal reopen',()=>integration(async f=>{
+  let state=3;const commands=[];
+  AppiumUI.prototype.request=async(_path,_method,body)=>{commands.push(body);if(body.script==='mobile: activateApp')state=4;return state;};
+  const result=await recoverFirstRecord(f.args);assert.equal(result.status,'RESUMED');
+  assert.deepEqual(commands.map(c=>c.script),['mobile: queryAppState','mobile: activateApp','mobile: queryAppState']);
+  assert(commands.every(c=>c.args[0].bundleId==='synthetic.app'));
+}));
+test('missing app after Save does not authorize a launch or another Record',()=>integration(async f=>{
+  const commands=[];AppiumUI.prototype.request=async(_path,_method,body)=>{commands.push(body.script);return 0;};
+  const result=await recoverFirstRecord(f.args);assert.equal(result.status,'RESUME_FAILED');
+  assert.deepEqual(commands,['mobile: queryAppState']);assert.equal(f.calls.filter(x=>x==='record').length,1);
+  assert(!f.calls.includes('reopen'));
 }));
 for(const [name,mutate] of Object.entries({
   pid:t=>t.process={...t.process,pid:124},start:t=>t.process={...t.process,start:'new'},
