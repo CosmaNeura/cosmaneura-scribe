@@ -83,14 +83,17 @@ export class Journal {
     if (state) {
       if (state.schema !== 1 || !Array.isArray(state.events) || !Array.isArray(state.completed)) throw Error('journal_integrity_failed');
       let previous = null;
-      const completed = []; let pending = null;
+      const completed = []; let pending = null, initialUIReadiness = false;
       for (const [index, event] of state.events.entries()) {
-        if (!event || typeof event !== 'object' || !['preflight', 'action_started', 'action_observed', 'failure', 'cleanup_uncertain', 'capture_quarantined'].includes(event.kind)) throw Error('journal_integrity_failed');
+        if (!event || typeof event !== 'object' || !['preflight', 'initial_ui_readiness', 'action_started', 'action_observed', 'failure', 'cleanup_uncertain', 'capture_quarantined'].includes(event.kind)) throw Error('journal_integrity_failed');
         const { sha256: digest, ...body } = event;
         if (event.sequence !== index || event.previous !== previous || sha256(JSON.stringify(body)) !== digest) throw Error('journal_integrity_failed');
         previous = digest;
         if (['action_started', 'action_observed'].includes(event.kind) && !ACTIONS.includes(event.action)) throw Error('journal_integrity_failed');
-        if (event.kind === 'action_started') {
+        if (event.kind === 'initial_ui_readiness') {
+          if (initialUIReadiness || pending !== null || completed.length) throw Error('journal_integrity_failed');
+          initialUIReadiness = true;
+        } else if (event.kind === 'action_started') {
           if (pending !== null || event.action !== ACTIONS[completed.length]) throw Error('journal_integrity_failed');
           pending = event.action;
         } else if (event.kind === 'action_observed') {

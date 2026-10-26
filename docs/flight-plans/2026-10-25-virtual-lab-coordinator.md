@@ -48,6 +48,26 @@ No app authentication, consent, recording, source or storage logic changes.
 Keep the original failed run and frozen tooling; an original-run recovery
 requires separately reviewed reconciliation before a fresh run uses new tools.
 
+The initial-inspector bootstrap follow-up is Tier 2 test tooling. An actual
+fresh installed-client run failed before any sign-in input at the 1500ms context
+discovery ceiling. Its later guarded diagnostic found the exact owned page in
+119ms and completed a strict page read in 72ms; these warm observations do not
+identify the original cold failure's cause. Installed XCUITest source shows that
+the first detailed-context call can also initialize the remote inspector.
+A separate, bounded 30-second setup phase therefore precedes the first action
+of a fresh journal. It records its actual transport/setup brackets and requires
+unchanged ownership/bridge attestation without installing observers or invoking
+product methods. Existing 1500ms proof discovery, input deadlines, 10-second cold
+goal, resumed journals and product/client inputs remain unchanged.
+
+Recovery preserves original failed runs and their frozen tooling. New tooling
+changes the implementation digest and needs a new reviewed run after separately
+proven old-run settlement; it cannot make the old journal pass. Revert this
+tooling for future runs if needed. Local timing/identity/refusal regressions
+demonstrate the setup contract only; actual cold native execution and full
+clinical acceptance remain separate. No app restart, deployment, consent,
+source emission or host setting change is part of this source increment.
+
 The Zoom profile increment is Tier 2 because it can follow normal account OAuth
 and authorize an exact appointment/meeting through the hosted UI. It uses only
 the two synthetic providers and their existing normal Clerk session stores.

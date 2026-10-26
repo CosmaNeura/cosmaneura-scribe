@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { readFile, realpath, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 import { SourceGroup } from './sources.mjs';
 import { atomicJSON, sha256 } from './journal.mjs';
 import { inspectHALScope, startHALWatch } from './hal-watch.mjs';
@@ -17,7 +18,7 @@ import { createDesktopObserver } from './desktop-observer.mjs';
 import { projectNoteObservation } from '../native/note-observation.mjs';
 import { verifyDashboard } from './dashboard.mjs';
 import { buildNativeTimingMeasurement, projectNativeTimingHistory } from './native-timing.mjs';
-import { discoverOwnedIOSWebview, IOS_CONTEXT_DISCOVERY, IOS_CONTEXT_ATTESTATION } from './ios-webview.mjs';
+import { discoverOwnedIOSWebview, selectOwnedIOSWebview, IOS_CONTEXT_DISCOVERY, IOS_CONTEXT_ATTESTATION } from './ios-webview.mjs';
 import { inspectParticipantResources } from '../zoom/resource-owner.mjs';
 import { createSessionAttempt, recoverSessionCreations, sessionReturned, sessionClosed, sessionNotDispatched,
   sessionCapsMatch, SESSION_ATTEMPT_CAPABILITY, SESSION_CREATION_TIMEOUT_MS } from './session-attempt.mjs';
@@ -43,6 +44,7 @@ export const IOS_OBSERVER_HASHES = Object.freeze({
   visit: sha256(installVisitScopeObserver.toString()),
   admission: sha256(installAdmissionObserver.toString() + projectNoteObservation.toString()),
 });
+export const IOS_STARTUP_READINESS_MS = 30000;
 /** Standard WebDriver actions on an independently guarded owned native target. */
 export class AppiumUI {
   constructor(configPath) {
@@ -193,6 +195,81 @@ export class AppiumUI {
         readOnly, allowMissing: readOnly && allowMissing });
     } catch (error) { if (error.ownedResourcesSettled === false) this.observerCleanupUncertain = true; throw error; }
     finally { signal.removeEventListener('abort', abortObserver); }
+  }
+  /** Initial inspector setup only. The engine calls this before the first action
+   * of a fresh run, never on resume. No observer or product method is invoked.
+   * Normal reads still rediscover/attest inside their unchanged proof deadline. */
+  prepareInitialUI(scenario, { signal, output }) {
+    if (this.config.target.role !== 'owned-ios-simulator') return null;
+    if (!this.session || !output || this.binding || this.admission || this.iosStartupAttempted)
+      throw Error('ios_startup_scope_invalid');
+    this.iosStartupAttempted = true;
+    const active = AbortSignal.any([this.lifetime.signal, ...(signal ? [signal] : []), AbortSignal.timeout(IOS_STARTUP_READINESS_MS)]);
+    const receipt = { source: 'owned-ios-inspector-startup', executionKind: scenario.executionKind,
+      runId: scenario.runId, targetId: scenario.targetId, status: 'FAILED', qualification: 'NOT_ESTABLISHED',
+      clock: 'node-performance-now-ms', startedAtEpochMs: Date.now(), startedAtMonotonicMs: performance.now(),
+      deadlineMs: IOS_STARTUP_READINESS_MS, readCount: 0, nativeOnlyReplies: 0,
+      readDurationMs: 0, maximumReadDurationMs: 0, contextRestored: false };
+    return this.withUIContext(async () => {
+      let context, switched = false;
+      try {
+        active.throwIfAborted();
+        const previous = await this.rawRequest('/context', 'GET', undefined, active);
+        active.throwIfAborted();
+        if (previous !== 'NATIVE_APP') throw Error('native_context_unconfirmed');
+        receipt.contextRestored = true;
+        for (;;) {
+          active.throwIfAborted();
+          const started = performance.now(); let rows;
+          receipt.readCount++;
+          try { rows = await this.rawRequest('/execute/sync', 'POST', IOS_CONTEXT_DISCOVERY, active, { readOnlyObservation: true }); }
+          finally {
+            const elapsed = performance.now() - started;
+            receipt.readDurationMs += elapsed;
+            receipt.maximumReadDurationMs = Math.max(receipt.maximumReadDurationMs, elapsed);
+          }
+          active.throwIfAborted();
+          const nativeOnly = Array.isArray(rows) && rows.length === 1 && rows[0]
+            && typeof rows[0] === 'object' && !Array.isArray(rows[0])
+            && Object.keys(rows[0]).length === 1 && rows[0].id === 'NATIVE_APP';
+          if (!nativeOnly) { context = selectOwnedIOSWebview(rows, this.config.app.bundleId); break; }
+          receipt.nativeOnlyReplies++;
+          await delay(100, undefined, { signal: active });
+        }
+        switched = true; this.contextUncertain = true; receipt.contextRestored = false;
+        await this.rawRequest('/context', 'POST', { name: context }, active);
+        active.throwIfAborted();
+        if (await this.rawRequest('/execute/sync', 'POST', { script: IOS_CONTEXT_ATTESTATION, args: [] }, active, { readOnlyObservation: true }) !== true)
+          throw Error('owned_webview_identity_changed');
+        active.throwIfAborted();
+        receipt.selectedContextSHA256 = sha256(context);
+        receipt.status = 'READY';
+      } catch (error) {
+        receipt.failure = signal?.aborted || this.lifetime.signal.aborted ? 'caller_aborted'
+          : active.aborted ? 'ios_webview_startup_timeout'
+          : ['owned_webview_ambiguous', 'native_context_unconfirmed', 'owned_webview_identity_changed'].includes(error.message)
+            ? error.message : 'ios_webview_startup_failed';
+        throw receipt.failure === 'ios_webview_startup_timeout' ? Error(receipt.failure) : error;
+      } finally {
+        try {
+          if (switched) {
+            await this.rawRequest('/context', 'POST', { name: 'NATIVE_APP' }, active);
+            active.throwIfAborted();
+            this.contextUncertain = false; receipt.contextRestored = true;
+          }
+        } catch (error) {
+          this.contextUncertain = true; receipt.failure = 'native_context_restore_failed'; throw error;
+        } finally {
+          if (receipt.failure) receipt.status = 'FAILED';
+          receipt.completedAtEpochMs = Date.now(); receipt.completedAtMonotonicMs = performance.now();
+          receipt.elapsedMs = receipt.completedAtMonotonicMs - receipt.startedAtMonotonicMs;
+          const evidenceFile = `ios-webview-startup.${randomUUID()}.json`;
+          await atomicJSON(resolve(output, evidenceFile), receipt);
+          this.iosStartupEvidence = { evidenceFile, evidenceSHA256: sha256(JSON.stringify(receipt)) };
+        }
+      }
+      return this.iosStartupEvidence;
+    });
   }
   webview(script, args = [], signal, observerInstallation = false) {
     return this.withUIContext(() => this.rawWebview(script, args, signal, observerInstallation));
