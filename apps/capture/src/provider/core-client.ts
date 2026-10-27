@@ -84,9 +84,9 @@ export class CoreCaptureClient {
     return receipt;
   }
 
-  async note(sessionId: string, action: "templates" | "read" | "prepare" | "save" | "resolve" | "save_status",
+  async note(sessionId: string, action: "templates" | "template_preference" | "read" | "prepare" | "save" | "resolve" | "save_status",
     schema?: string, edit?: unknown, key: string = crypto.randomUUID()): Promise<unknown> {
-    requireValue(isUuid(sessionId) && (action === "templates" || reference(schema, "doctor_note_schema")));
+    requireValue(isUuid(sessionId) && (["templates", "template_preference"].includes(action) || reference(schema, "doctor_note_schema")));
     const value = await this.send("capture-notes", { expected_session_id: sessionId, action,
       ...(schema ? { schema_ref: schema } : {}), ...(edit ? { edit } : {}) }, key);
     requireValue(value.action === action && record(value.receipt) && value.receipt.session_id === sessionId);

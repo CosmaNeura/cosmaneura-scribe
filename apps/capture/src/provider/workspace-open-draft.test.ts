@@ -165,10 +165,11 @@ it("removes an unauthorized pending row and rejects removed or forged shortcut r
   expect(f.host.openEncounter).not.toHaveBeenCalled(); expect(mounted).not.toHaveBeenCalled();
 });
 it.each([0, 2])("preserves explicit normal note flow for %s templates and never generates", async count => {
-  const f = mount({ request: async (_path, body) => Response.json({ ...body, contract_version: "1", checked_at: new Date().toISOString(), action: "templates",
-    receipt: { session_id: id(2), templates: Array.from({ length: count }, (_, i) => ({ schema_ref: "doctor_note_schema_" + suffix.slice(0, -1) + i, note_type: "Synthetic SOAP", field_names: ["Plan"] })) } }) });
+  const f = mount({ request: async (_path, body) => body.action === "template_preference" ? new Response(null, { status: 422 })
+    : Response.json({ ...body, contract_version: "1", checked_at: new Date().toISOString(), action: "templates",
+      receipt: { session_id: id(2), templates: Array.from({ length: count }, (_, i) => ({ schema_ref: "doctor_note_schema_" + suffix.slice(0, -1) + i, note_type: "Synthetic SOAP", field_names: ["Plan"] })) } }) });
   await f.click("open-draft"); await lastOptions().continueToNote!(ready());
   expect(f.content.innerHTML).toContain(count === 0 ? "No templates are available" : "Choose your note template");
-  expect(f.request).toHaveBeenCalledOnce(); expect(f.request.mock.calls[0]![1].action).toBe("templates");
+  expect(f.request).toHaveBeenCalledTimes(count === 0 ? 1 : 2); expect(f.request.mock.calls[0]![1].action).toBe("templates");
   expect(f.recorder).not.toHaveBeenCalled();
 });

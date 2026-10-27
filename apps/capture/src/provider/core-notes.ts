@@ -1,5 +1,6 @@
 import { parseCaptureContinuity, type CaptureContinuity, type CreatorReviewView } from "../../../review-ui/src/creator-review-api";
 import { isUuid } from "../../../review-ui/src/contracts";
+import { BffResponseError } from "../bff/http-client";
 import { type CoreCaptureClient, record, reference, requireValue } from "./core-client";
 
 export interface ReviewedSource {
@@ -52,6 +53,21 @@ export function parseNoteTemplates(value: unknown, session: string): CoreNoteTem
     ids.add(item.schema_ref);
   }
   return value.templates as CoreNoteTemplate[];
+}
+
+/** This optional display preference never chooses a schema outside the current catalogue. */
+export async function preferredNoteTemplate(client: CoreCaptureClient, session: string, templates: CoreNoteTemplate[]): Promise<string | null> {
+  let value: unknown;
+  try { value = await client.note(session, "template_preference"); }
+  catch (error) {
+    // Older Core receivers keep their original, explicit template picker.
+    if (error instanceof BffResponseError && [404, 422].includes(error.status)) return null;
+    throw error;
+  }
+  requireValue(closed(value, "session_id,default_schema_ref") && value.session_id === session
+    && (value.default_schema_ref === null || (reference(value.default_schema_ref, "doctor_note_schema")
+      && templates.some(template => template.schema_ref === value.default_schema_ref))));
+  return value.default_schema_ref;
 }
 
 /** Same canonical Core note receipt/hash; configured sources retain review lineage. */

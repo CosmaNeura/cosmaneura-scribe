@@ -14,7 +14,7 @@ import { bindTranscriptPlayback } from "../../../review-ui/src/passage-playback"
 import { CoreCaptureBff, CoreCaptureClient, requireValue, reference,
   type LanguageMode } from "./core-client";
 import { canonical, noteTemplates, parseDraft, pendingSave, resolveNote, checkNoteSave, reviewedSource, sameSource, saveNote,
-  type CoreDraft, type CoreNoteTemplate, type PendingNoteSave, type ReviewedSource } from "./core-notes";
+  preferredNoteTemplate, type CoreDraft, type CoreNoteTemplate, type PendingNoteSave, type ReviewedSource } from "./core-notes";
 import { activeNotePreparation, appendNotePreparationSuccessor, assertProgress, MAX_NOTE_PREPARATION_SUCCESSORS, newerNoteSource, type JournalSnapshot, type ProviderProgress } from "./workspace-journal";
 import type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources, ProviderEncounter } from "./workspace-contracts";
 export type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources, ProviderEncounter } from "./workspace-contracts";
@@ -979,8 +979,10 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       show('<h1>Your visit note</h1><p>No templates are available. Add one in the CosmaNeura dashboard.</p><button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">Open the dashboard</button>');
       return;
     }
-    show(`<h1>Your visit note</h1><p>The English transcript is ready. Choose your note template.</p>
-      <label>Template<select name="schema"><option value="">Choose a template</option>${templates.map(t => `<option value="${escape(t.schema_ref)}">${escape(t.note_type)}</option>`).join("")}</select></label>
+    const preferred = await preferredNoteTemplate(currentClient, session(), templates);
+    if (!authorized(n)) return;
+    show(`<h1>Your visit note</h1><p>${preferred ? "Your default template is selected. You can choose another before opening the note." : "The English transcript is ready. Choose your note template."}</p>
+      <label>Template<select name="schema"><option value="">Choose a template</option>${templates.map(t => `<option value="${escape(t.schema_ref)}"${t.schema_ref === preferred ? " selected" : ""}>${escape(t.note_type)}</option>`).join("")}</select></label>
       <button data-workspace-action="read">Open note</button>
       <button data-workspace-action="core">Open the dashboard</button>`);
   }
