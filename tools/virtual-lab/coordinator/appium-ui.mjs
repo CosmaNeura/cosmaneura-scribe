@@ -69,6 +69,7 @@ export class AppiumUI {
     if (JSON.stringify(this.config.admissionBinding) !== JSON.stringify(scenario.admissionBinding)) throw Error('admission_binding_mismatch');
     if (!/^[a-f0-9]{64}$/.test(this.config.accountIdentitySHA256 ?? '')) throw Error('native_account_identity_required');
     if (this.config.sources && ![undefined, 'live'].includes(this.config.sources.executionKind)) throw Error('live_sources_required');
+    this.assertPauseResumeConfig(scenario);
     if (this.config.target.role === 'owned-ios-simulator'
         && this.config.sources?.participants?.some(source => source.kind === 'virtual-microphone')) {
       const custody = this.config.sources.inputCustody;
@@ -85,6 +86,17 @@ export class AppiumUI {
         || caps['appium:prerun'] !== undefined || caps['appium:postrun'] !== undefined
         || caps['appium:app'] !== undefined || (this.config.target.role === 'owned-ios-simulator'
       ? caps['appium:shouldTerminateApp'] !== false : caps['appium:skipAppKill'] !== true)) throw Error('app_retention_required');
+  }
+  assertPauseResumeConfig(scenario) {
+    if (scenario.acceptanceScope?.pauseResume !== true) return;
+    const window = this.config.sources?.quietWindow;
+    if (!Array.isArray(window) || window.length !== 2 || !window.every(Number.isFinite)
+        || window[0] <= 0 || window[1] <= window[0]) throw Error('requested_pause_resume_quiet_window_required');
+    for (const action of ['pause', 'resume']) {
+      const plan = this.config.journey?.[action];
+      if (plan?.actions?.length !== 1 || plan.actions[0].action !== 'click' || !plan.actions[0].locator
+          || !Array.isArray(plan.assertions) || plan.assertions.length === 0) throw Error('requested_pause_resume_controls_required');
+    }
   }
   async lockIdentity(scenario) {
     await this.loadConfig(scenario);
@@ -772,18 +784,36 @@ export class AppiumUI {
       if (this.inputSafetyUncertain) throw Error('native_input_recovery_required');
       if (!this.sources) throw Error('sources_not_configured');
       if (!this.sources.participants.length) throw Error('prepared_sources_missing');
+      this.assertPauseResumeConfig(scenario);
+      const requestedPauseResume = scenario.acceptanceScope?.pauseResume === true, pauseResume = {};
+      const control = async (action, active) => {
+        if (requestedPauseResume && (pauseResume[action] || action === 'resume' && !pauseResume.pause?.nativeObservation))
+          throw Error('requested_pause_resume_dispatch_order');
+        if (requestedPauseResume) pauseResume[action] = { dispatchCount: 1 };
+        await this.steps(this.config.journey[action], active); await this.check(this.config.journey[action], active);
+        if (requestedPauseResume) {
+          const native = await this.readRecording(active), expected = action === 'pause' ? 'paused' : 'recording';
+          if (native.busy || native.pendingMutation || (this.desktop
+            ? native.captureState !== expected || native.phase !== (action === 'pause' ? 'stopped' : 'recording')
+            : native.phase !== expected)) throw Error('requested_pause_resume_native_state_missing');
+          pauseResume[action].nativeObservation = native;
+        }
+      };
       let result, sourceFailure;
       try {
         await this.startInputWatch(signal);
         if (this.inputWatchUnsafe) throw Error('virtual_input_scope_unconfirmed');
         result = await this.sources.play({ signal, quietWindow: this.config.sources.quietWindow,
-          pause: async () => { await this.steps(this.config.journey.pause, signal); await this.check(this.config.journey.pause, signal); },
-          resume: async () => { await this.steps(this.config.journey.resume, signal); await this.check(this.config.journey.resume, signal); } });
+          pause: ({ signal: active = signal } = {}) => control('pause', active),
+          resume: ({ signal: active = signal } = {}) => control('resume', active) });
       } catch (error) { sourceFailure = error; }
       try { await this.stopInputWatch(); } catch (error) { sourceFailure ??= error; }
       if (sourceFailure) throw sourceFailure;
       if (this.inputWatchUnsafe) throw Error('virtual_input_scope_changed');
       if (result.executionKind !== 'live') throw Error('live_sources_required');
+      if (requestedPauseResume && (!pauseResume.pause?.nativeObservation || !pauseResume.resume?.nativeObservation
+          || result.measurements?.length !== this.sources.participants.length
+          || result.measurements.some(value => value.pausePerformed !== true))) throw Error('requested_pause_resume_not_observed');
       const observed = await this.observe('record', signal);
       this.assertMicrophoneSignal(observed.nativeObservation, 'completed');
       const fixtureSHA256 = result.measurements.length === 1 ? result.measurements[0].fixtureSHA256
@@ -793,6 +823,7 @@ export class AppiumUI {
         checks: [...observed.checks, { locator: 'owned-source-graph', kind: 'audio-clock', actual: result.sourceState, expected: 'ended' }],
         sourceMeasurements: result.measurements, sourceTiming: { phases: result.phases, onsetToleranceMs: result.onsetToleranceMs,
           timingScope: result.timingScope, captureTiming: result.captureTiming },
+        ...(requestedPauseResume ? { pauseResume } : {}),
         ...(this.inputWatchSummary ? { inputScope: this.inputWatchSummary } : {}) };
     }
     if (['sign_in', 'create_visit'].includes(action)) await this.installVisitObserver(signal);

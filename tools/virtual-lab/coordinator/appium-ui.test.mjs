@@ -203,6 +203,99 @@ test('missing simulator input custody is rejected before any native UI operation
       admissionBinding: admission, adapterSHA256: sha256(bytes) }), /virtual_input_custody_configuration_required/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+const pausePlan = name => ({ actions: [{ action: 'click', locator: { using: 'accessibility id', value: name } }],
+  assertions: [{ locator: { using: 'accessibility id', value: name }, kind: 'visible', expected: true }] });
+test('requested Pause/Resume rejects absent quiet windows and controls at configuration load', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'scribe-pause-config-'));
+  try {
+    const path = join(root, 'config.json'), ui = new AppiumUI(path);
+    const config = { appiumUrl: 'http://127.0.0.1:4723', targetId: 'owned-test', target: { role: 'owned-ios-simulator' },
+      app: { bundleId: 'test.app', build: '1' }, admissionBinding: admission, accountIdentitySHA256: 'a'.repeat(64),
+      capabilities: { 'appium:noReset': true, 'appium:shouldTerminateApp': false },
+      sources: { quietWindow: [16.7, 17.2] }, journey: { pause: pausePlan('Pause'), resume: pausePlan('Resume recording') } };
+    const scenario = { targetId: config.targetId, build: { bundleId: 'test.app', number: '1' }, admissionBinding: admission,
+      acceptanceScope: { pauseResume: true } };
+    for (const window of [undefined, [], [0, 1], [2, 1], [1, '2'], [1, 2, 3]]) {
+      const value = structuredClone(config); value.sources.quietWindow = window;
+      const bytes = JSON.stringify(value); await writeFile(path, bytes);
+      await assert.rejects(ui.loadConfig({ ...scenario, adapterSHA256: sha256(bytes) }), /requested_pause_resume_quiet_window_required/);
+    }
+    for (const change of [value => { delete value.journey.pause; }, value => { value.journey.pause.actions = []; },
+      value => { value.journey.resume.actions.push(value.journey.resume.actions[0]); },
+      value => { value.journey.resume.assertions = []; }]) {
+      const value = structuredClone(config); change(value); const bytes = JSON.stringify(value); await writeFile(path, bytes);
+      await assert.rejects(ui.loadConfig({ ...scenario, adapterSHA256: sha256(bytes) }), /requested_pause_resume_controls_required/);
+    }
+    const bytes = JSON.stringify(config); await writeFile(path, bytes);
+    await ui.loadConfig({ ...scenario, adapterSHA256: sha256(bytes) });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+function pauseDriver() {
+  const ui = driver(), dispatched = []; let phase = 'recording', revision = 1;
+  ui.scenario.acceptanceScope = { pauseResume: true };
+  ui.config.sources = { quietWindow: [16.7, 17.2] };
+  ui.config.journey = { pause: pausePlan('Pause'), resume: pausePlan('Resume recording') };
+  ui.lastNativeRecording = recording();
+  ui.steps = async (plan, signal) => { signal?.throwIfAborted(); dispatched.push(plan.actions[0].locator.value);
+    phase = plan === ui.config.journey.pause ? 'paused' : 'recording'; revision++; };
+  ui.check = async () => [];
+  ui.webview = async () => ({ ...recording(), phase, nativeRevision: revision });
+  ui.observe = async () => ({ checks: [], nativeObservation: await ui.readRecording() });
+  ui.assertMicrophoneSignal = () => {};
+  ui.startInputWatch = async () => {}; ui.stopInputWatch = async () => {};
+  const completed = { executionKind: 'live', sourceState: 'ended', measurements: [{ fixtureSHA256: 'a'.repeat(64),
+    framesCompleted: 16000, pausePerformed: true }] };
+  ui.sources = { participants: [{}], play: async ({ pause, resume }) => { await pause(); await resume(); return completed; } };
+  return { ui, dispatched, completed };
+}
+test('requested Pause/Resume records one normal click and actual same-recorder native transition per action', async () => {
+  const { ui, dispatched } = pauseDriver();
+  const value = await ui.perform('play_source', ui.scenario, AbortSignal.timeout(1000));
+  assert.deepEqual(dispatched, ['Pause', 'Resume recording']);
+  assert.equal(value.pauseResume.pause.dispatchCount, 1); assert.equal(value.pauseResume.resume.dispatchCount, 1);
+  assert.equal(value.pauseResume.pause.nativeObservation.phase, 'paused');
+  assert.equal(value.pauseResume.resume.nativeObservation.phase, 'recording');
+  assert(value.pauseResume.resume.nativeObservation.nativeRevision > value.pauseResume.pause.nativeObservation.nativeRevision);
+  assert.equal(value.sourceMeasurements[0].pausePerformed, true);
+});
+test('source completion cannot hide missing Pause/Resume dispatch or per-source coverage', async () => {
+  for (const mode of ['no-callbacks', 'no-resume', 'false-source-coverage', 'missing-source-coverage']) {
+    const { ui, completed } = pauseDriver();
+    ui.sources.play = async ({ pause, resume }) => {
+      if (mode !== 'no-callbacks') { await pause(); if (mode !== 'no-resume') await resume(); }
+      return { ...completed, measurements: mode === 'missing-source-coverage' ? []
+        : completed.measurements.map(value => ({ ...value, pausePerformed: mode !== 'false-source-coverage' })) };
+    };
+    await assert.rejects(ui.perform('play_source', ui.scenario, AbortSignal.timeout(1000)), /requested_pause_resume_not_observed/);
+  }
+});
+test('out-of-order or duplicate source callbacks cannot dispatch extra native controls', async () => {
+  for (const mode of ['resume-first', 'duplicate-pause', 'duplicate-resume']) {
+    const { ui, dispatched, completed } = pauseDriver();
+    ui.sources.play = async ({ pause, resume }) => {
+      if (mode === 'resume-first') await resume();
+      await pause(); if (mode === 'duplicate-pause') await pause(); await resume(); await resume(); return completed;
+    };
+    await assert.rejects(ui.perform('play_source', ui.scenario, AbortSignal.timeout(1000)), /requested_pause_resume_dispatch_order/);
+    assert.deepEqual(dispatched, mode === 'resume-first' ? [] : mode === 'duplicate-pause' ? ['Pause'] : ['Pause', 'Resume recording']);
+  }
+});
+test('visible Pause UI without matching settled native state or same owner does not qualify', async () => {
+  for (const patch of [{ phase: 'recording' }, { phase: 'paused', busy: true }, { phase: 'paused', sessionId: admission.workspaceId },
+    { phase: 'paused', recorderId: admission.workspaceId }]) {
+    const { ui, dispatched } = pauseDriver(); ui.webview = async () => ({ ...recording(), ...patch });
+    await assert.rejects(ui.perform('play_source', ui.scenario, AbortSignal.timeout(1000)),
+      /requested_pause_resume_native_state_missing|native_recording_state_unavailable|native_recorder_identity_changed/);
+    assert.deepEqual(dispatched, ['Pause']);
+  }
+});
+test('source cancellation reaches Pause UI before input while its input-watch cleanup still runs', async () => {
+  const { ui, dispatched } = pauseDriver(); let cleaned = false;
+  ui.stopInputWatch = async () => { cleaned = true; };
+  ui.sources.play = async ({ pause }) => pause({ signal: AbortSignal.abort(Error('source_cancelled')) });
+  await assert.rejects(ui.perform('play_source', ui.scenario, AbortSignal.timeout(1000)), /source_cancelled/);
+  assert.deepEqual(dispatched, []); assert.equal(cleaned, true);
+});
 test('a failed first custody sample retains evidence even if owned source cleanup rejects', async () => {
   const root = await mkdtemp(join(tmpdir(), 'scribe-input-first-failure-'));
   try {

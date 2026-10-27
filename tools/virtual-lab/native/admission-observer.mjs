@@ -18,7 +18,7 @@ export function installAdmissionObserver(binding, projectNoteObservation = null,
   let receipt = null, recording = null, terminal = null, recorderId = null, mountRef = null, nativeRevision = 0, generation = 0;
   let recordingGeneration = 0, mutationPending = false;
   let notes = {}, noteRequests = {}, noteSession = null, noteGeneration = 0, currentNote = null, currentNoteRequest = null;
-  let recordingOwner = null, closedLifecycle = null, captureMutationSequence = 0, currentScopeMatches = true;
+  let recordingOwner = null, closedLifecycle = null, closedTerminal = null, captureMutationSequence = 0, currentScopeMatches = true;
   let timingSamples = [], timingEvicted = 0, timingInvalid = 0, timingUnavailable = 0, timingDiscarded = 0;
   const resetTiming = () => { timingSamples = []; timingEvicted = timingInvalid = timingUnavailable = timingDiscarded = 0; };
   const clockStamp = () => {
@@ -55,7 +55,7 @@ export function installAdmissionObserver(binding, projectNoteObservation = null,
     return value;
   }
   const invalidateLifecycle = (keepOwner = false) => {
-    captureMutationSequence++; closedLifecycle = null;
+    captureMutationSequence++; closedLifecycle = closedTerminal = terminal = null;
     if (!keepOwner) recordingOwner = null;
   };
   // Exact metadata emitted by NativeProviderRecordingBridge/PCMSignalMonitor.
@@ -137,7 +137,7 @@ export function installAdmissionObserver(binding, projectNoteObservation = null,
     if (plugin === "CosmasWorkspaceAuth" && ["openProviderRecording", "providerRecordingCommand"].includes(method)) {
       if (method === 'openProviderRecording') resetTiming();
       if (method === 'providerRecordingCommand' && options?.kind === 'close') {
-        const selected = recordingOwner, priorClosed = closedLifecycle;
+        const selected = recordingOwner, priorClosed = closedLifecycle, priorTerminal = terminal ?? closedTerminal;
         invalidateLifecycle(true);
         const sequence = captureMutationSequence;
         recording = terminal = null; recordingGeneration++; mutationPending = true;
@@ -156,6 +156,12 @@ export function installAdmissionObserver(binding, projectNoteObservation = null,
             recordingSource: 'normal-native-recording-response', nativeRevisionBeforeClose: selected.nativeRevision,
             closeRequestId: options.requestId, closeMethod: 'close', phase: 'closed', captureMutationSequence: sequence,
             observedAtMonotonicMs: performance.now(), browserTimeOriginMs: performance.timeOrigin });
+          // Keep only a sealed response actually observed before this exact
+          // owner's successful close. This is historical Finish evidence, not
+          // a fresh recording or a sealed state inferred from a close reply.
+          if (priorTerminal?.phase === 'sealed' && !priorTerminal.busy
+              && priorTerminal.sessionId === selected.sessionId && priorTerminal.recorderId === selected.recorderId
+              && priorTerminal.nativeRevision <= selected.nativeRevision) closedTerminal = priorTerminal;
         }, () => { if (sequence === captureMutationSequence) mutationPending = false; });
         return result;
       }
@@ -280,7 +286,7 @@ export function installAdmissionObserver(binding, projectNoteObservation = null,
       if (!recording || performance.now() - recording.observedAtMonotonicMs > 15000) return null;
       return copyRecording(recording);
     },
-    readTerminal() { return copyRecording(terminal); },
+    readTerminal() { return currentScopeMatches ? copyRecording(terminal ?? closedTerminal) : null; },
     readTiming() { return { source: 'passive-native-timing-history', ...binding, samples: timingSamples.map(copyTiming),
       maximumSamples: 128, evictedSamples: timingEvicted, invalidSamples: timingInvalid, unavailableSamples: timingUnavailable,
       discardedRevisionSamples: timingDiscarded, nativeJournalCompleteness: 'UNKNOWN',
