@@ -12,8 +12,8 @@ describe("local runtime diagnostics", () => {
       for (let i = 0; i < 128; i++) record("connect_begin");
       for (let i = 0; i < 32; i++) record("audio_stop_confirmed");
       await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(160));
-      // H6's native constructor was reached only after its old budget had
-      // discarded the entire setup-renewal interval. These durations are synthetic.
+      // A long-lived process can exhaust its allowance before renewed setup
+      // reaches native startup. These durations are synthetic.
       record(boundary); record("provider_preparation_metadata", 123.456); record("provider_source_prepare", 456.789);
       record("audio_start_pending"); record("audio_ready"); record("audio_stop_confirmed");
       await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(166));
