@@ -8,6 +8,7 @@ import { bindTranscriptPlayback } from "../../../review-ui/src/passage-playback"
 import { canonical, reviewedSource, sha256, type PendingNoteSave } from "./core-notes";
 import type { AuthorizedCoreRequest } from "./core-client";
 import type { JournalSnapshot } from "./workspace-journal";
+import type { ProviderEncounterSetup } from "./encounter-setup";
 
 // Real workspace mounting, note rendering, view toggling and lifetime checks run.
 // Player lifecycle/audio are tested by passage-playback.test.ts; this boundary spy
@@ -47,7 +48,7 @@ class TextArea extends Surface {
 }
 const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); vi.unstubAllGlobals(); });
-async function mount(capability = true) {
+async function mount(capability = true, privateRead?: ProviderEncounterSetup["readPrivateNote"]) {
   vi.stubGlobal("Element", Surface); vi.stubGlobal("HTMLTextAreaElement", TextArea);
   vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "visible", activeElement: null }));
   vi.stubGlobal("window", { scrollX: 0, scrollY: 710, scrollTo: vi.fn(), matchMedia: () => ({ matches: false }) });
@@ -64,12 +65,19 @@ async function mount(capability = true) {
   let snapshot: JournalSnapshot = { revision: "1", progress: { admission: null, sessionId: id(2), uploaded: true, pendingSave: null } };
   const journal = { load: vi.fn(async () => snapshot), save: vi.fn(async (_previous, progress) => { snapshot = { revision: "2", progress }; return snapshot; }) };
   const playPassage = vi.fn<NonNullable<AuthorizedProviderEncounter["playPassage"]>>(async () => null), recorder = vi.fn(async () => { throw new Error("Recording must stay closed"); });
+  const openInCore = vi.fn<AuthorizedProviderEncounter["openInCore"]>(async () => undefined);
   const active: AuthorizedProviderEncounter = { encounter, scope, request, signal: abort.signal, journal,
     openingReview: { scope, receivedAt: Date.now(), view }, ...(capability ? { playPassage } : {}),
-    reviewJournal: () => ({ load: async () => null, save: vi.fn(), clear: vi.fn() }), recorder, openInCore: vi.fn() };
-  const host: ProviderWorkspaceHost = { signal: abort.signal, listEncounters: vi.fn(async () => [encounter]), openEncounter: vi.fn(async () => active), createEncounter: vi.fn() };
+    reviewJournal: () => ({ load: async () => null, save: vi.fn(), clear: vi.fn() }), recorder, openInCore };
+  const host: ProviderWorkspaceHost = { signal: abort.signal, listEncounters: vi.fn(async () => [encounter]), openEncounter: vi.fn(async () => active), createEncounter: vi.fn(),
+    ...(privateRead ? { encounterSetup: { state: vi.fn(), search: vi.fn(), submit: vi.fn(),
+      readPrivateNote: privateRead, savePrivateNote: vi.fn() } } : {}) };
   const dispose = mountProviderWorkspace(root as unknown as HTMLElement, host); disposers.push(dispose);
   const content = root.querySelector("[data-workspace-content]")!;
+  if (privateRead) {
+    const privateEditor = new Surface(), query = content.querySelector.bind(content);
+    content.querySelector = selector => selector === "scribe-private-note" ? privateEditor : query(selector);
+  }
   const click = async (action: string): Promise<void> => {
     await vi.waitFor(() => expect(root.attributes.has("aria-busy")).toBe(false));
     const button = new Surface(); button.dataset.workspaceAction = action; button.dataset.appointment = ref;
@@ -79,8 +87,62 @@ async function mount(capability = true) {
   await click("open"); await mounted.mock.lastCall![2]!.continueToNote!(view);
   expect(content.innerHTML).toContain('class="provider-note"');
   const options = bound.mock.lastCall![1], player = bound.mock.results.at(-1)!.value as ReturnType<typeof bindTranscriptPlayback>;
-  return { root, content, view, options, player, playPassage, recorder, abort, dispose, click, request, journal, draft };
+  return { root, content, view, options, player, playPassage, recorder, abort, dispose, click, request, journal, draft, openInCore };
 }
+
+it("shows an acknowledged saved note before a separate explicit dashboard action", async () => {
+  const f = await mount(); await f.click("finish-note");
+  expect(f.content.innerHTML).toContain("Saved for review");
+  expect(f.content.innerHTML).toContain("you may need to sign in");
+  expect(f.openInCore).not.toHaveBeenCalled();
+  expect(f.request.mock.calls.some(([, body]) => body.action === "save")).toBe(false);
+  f.openInCore.mockRejectedValueOnce(Error("Synthetic browser open unavailable"));
+  await f.click("core");
+  expect(f.openInCore).toHaveBeenCalledExactlyOnceWith(f.draft.note_ref);
+  expect(f.content.innerHTML).toContain("Saved for review");
+  expect(f.recorder).not.toHaveBeenCalled();
+  expect((await f.journal.load()).progress?.pendingSave).toBeNull();
+});
+
+it.each(["acknowledged", "failed", "revoked"] as const)("waits for the actual %s edit-save outcome before showing completion", async outcome => {
+  const f = await mount(), editor = new TextArea();
+  editor.defaultValue = f.draft.fields.Plan; editor.value = "Edited synthetic plan."; editor.readOnly = false;
+  const queryAll = f.content.querySelectorAll.bind(f.content);
+  f.content.querySelectorAll = selector => selector === "textarea[data-note-field]" ? [editor] : queryAll(selector);
+  f.content.nodes.set('[name="note-0"]', editor); f.content.nodes.set("textarea[data-note-field]", editor);
+  Object.assign(document, { createElement: () => new Surface() });
+  let settle!: (response: Response) => void;
+  let body: Readonly<Record<string, unknown>> | undefined;
+  f.request.mockImplementation(async (_path, value) => {
+    if (value.action !== "save") return new Response(null, { status: 503 });
+    body = value; return new Promise<Response>(resolve => { settle = resolve; });
+  });
+  const finish = f.click("finish-note"); await vi.waitFor(() => expect(body?.action).toBe("save"));
+  expect(f.content.innerHTML).not.toContain("Saved for review"); expect(f.openInCore).not.toHaveBeenCalled();
+  const receipt = { ...f.draft, note_ref: f.draft.note_ref.slice(0, -1) + "1", fields: { Plan: editor.value },
+    note_sha256: await sha256(JSON.stringify([["Plan", editor.value]])) };
+  if (outcome === "revoked") f.abort.abort();
+  settle(outcome === "failed" ? new Response(null, { status: 503 }) : Response.json({ ...body,
+    contract_version: "1", checked_at: new Date().toISOString(), action: "save", receipt }));
+  await finish;
+  expect(f.content.innerHTML.includes("Saved for review")).toBe(outcome === "acknowledged");
+  expect(f.openInCore).not.toHaveBeenCalled(); expect(f.recorder).not.toHaveBeenCalled();
+  expect((await f.journal.load()).progress?.pendingSave === null).toBe(outcome === "acknowledged");
+});
+
+it.each(["acknowledged", "failed"] as const)("keeps the private-reminder %s flush ahead of saved confirmation", async outcome => {
+  let resolve!: (value: { text: string; version: number; updatedAt: null }) => void;
+  let reject!: (error: Error) => void;
+  const read = vi.fn<NonNullable<ProviderEncounterSetup["readPrivateNote"]>>(() => new Promise((yes, no) => { resolve = yes; reject = no; }));
+  const f = await mount(true, read), finish = f.click("finish-note");
+  await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+  expect(f.content.innerHTML).not.toContain("Saved for review"); expect(f.openInCore).not.toHaveBeenCalled();
+  if (outcome === "failed") reject(Error("Synthetic private reminder unavailable"));
+  else resolve({ text: "", version: 0, updatedAt: null });
+  await finish;
+  expect(f.content.innerHTML.includes("Saved for review")).toBe(outcome === "acknowledged");
+  expect(f.openInCore).not.toHaveBeenCalled();
+});
 
 it("binds the authorized saved-note transcript to its existing passage capability and live encounter signal", async () => {
   const f = await mount();
