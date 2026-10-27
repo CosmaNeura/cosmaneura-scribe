@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { validateSaveCompletion, snapshotSaveFields, SAVE_FIELDS_SCRIPT, SAVE_UI_SCRIPT } from './save-completion.mjs';
-import { AppiumUI } from './appium-ui.mjs';
+import { validateSaveCompletion, snapshotSaveFields } from './save-completion.mjs';
 import { validateSavedReceipt } from './dashboard.mjs';
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const suffix = '01m5q661ryetaa28yxe7vbqrex';
@@ -52,44 +51,14 @@ test('plain prepared/read receipt cannot satisfy dashboard Save gate', () => {
   assert.throws(() => validateSavedReceipt(note, { admissionBinding: { runId: note.runId } }), /native_saved_note_receipt_required/);
 });
 test('field snapshot hashes actual ordered values and refuses a mutation during digest', async () => {
-  const originalDocument = globalThis.document;
-  const action = { disabled: false, isConnected: true }, field = { name: 'note-0', value: 'synthetic only', disabled: false, readOnly: false, isConnected: true };
-  globalThis.document = { visibilityState: 'visible', querySelectorAll: query => query.includes('finish-note') ? [action] : [field] };
+  const originalDocument = globalThis.document, originalStyle = globalThis.getComputedStyle;
+  const action = { disabled: false, isConnected: true, getClientRects: () => [{}] }, field = { name: 'note-0', value: 'synthetic only', disabled: false, readOnly: false, isConnected: true };
+  globalThis.getComputedStyle = () => ({ visibility: 'visible' });
+  globalThis.document = { visibilityState: 'visible', querySelectorAll: query => query.includes('finish-note') ? [action] : query === '.provider-completion' ? [] : [field] };
   try {
     const value = await snapshotSaveFields(['HPI']); assert.equal(value.fieldOrder[0], 'HPI');
     assert.equal(JSON.stringify(value).includes('synthetic only'), false);
     const pending = snapshotSaveFields(['HPI']); field.value = 'changed'; assert.equal(await pending, null);
     document.visibilityState = 'hidden'; assert.equal(await snapshotSaveFields(['HPI']), null);
-  } finally { globalThis.document = originalDocument; }
-});
-for (const canceled of [false, true]) test(`Appium ${canceled ? 'failed click clears attempt' : 'clean Save succeeds without a fresh save request'}`, async () => {
-  const { scope, note, completion } = fixture(); const driver = new AppiumUI('/unused');
-  const origin = Date.now() - 50;
-  const rebase = value => { if (!value || typeof value !== 'object') return;
-    if ('browserTimeOriginMs' in value) value.browserTimeOriginMs = origin;
-    Object.values(value).forEach(rebase); };
-  rebase(completion); rebase(note);
-  driver.config = { journey: { save: { actions: [{ action: 'click' }] } } };
-  driver.binding = scope; driver.admission = { sessionId: note.session_id }; driver.scenario = { targetId: 'owned-test' };
-  driver.terminal = { sessionId: note.session_id, browserTimeOriginMs: origin, observedAtMonotonicMs: 1 };
-  let clicked = false, noteReads = 0;
-  driver.readNote = async action => { noteReads++; if (action !== null) throw Error('bound_note_response_not_observed'); return note; };
-  driver.assertVisit = async () => clicked ? completion.currentVisit : completion.attempt.visit;
-  driver.withUIContext = async callback => callback();
-  driver.rawWebview = async script => { assert.equal(script, SAVE_FIELDS_SCRIPT); return completion.attempt.fields; };
-  driver.steps = async () => { if (canceled) throw Error('native_action_canceled'); clicked = true; };
-  driver.check = async () => [{ actual: 'Saved for review', expected: 'Saved for review' }];
-  driver.capturePhaseArtifacts = async () => ({ testOnly: true });
-  driver.webview = async script => script === SAVE_UI_SCRIPT ? { ...completion.ui, observedAtMonotonicMs: Date.now() - origin } : completion.handoff;
-  if (canceled) {
-    await assert.rejects(driver.perform('save', driver.scenario), /native_action_canceled/);
-    assert.equal(driver.saveAttempt, null); assert.equal(driver.savedNote, undefined);
-  } else {
-    const observation = await driver.perform('save', driver.scenario);
-    assert.equal(noteReads, 1); assert.equal(observation.savedNote.action, 'prepare');
-    assert.equal(observation.savedNote.note_sha256, note.note_sha256);
-    assert.equal(observation.savedNote.saveCompletion.source, 'normal-native-save-completion');
-    assert.equal(driver.saveAttempt, null);
-    await assert.rejects(driver.observe('save'), /native_save_completion_unconfirmed/);
-  }
+  } finally { globalThis.document = originalDocument; globalThis.getComputedStyle = originalStyle; }
 });

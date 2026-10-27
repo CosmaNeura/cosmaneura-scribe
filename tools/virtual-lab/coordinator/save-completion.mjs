@@ -11,7 +11,9 @@ const noteKeys = [...scopeKeys, 'source', 'action', 'session_id', 'note_ref', 't
 export async function snapshotSaveFields(order) {
   const actions = [...document.querySelectorAll('[data-workspace-action="finish-note"]')];
   const fields = [...document.querySelectorAll('textarea[data-note-field]')];
+  const shown = element => !!element && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden';
   if (document.visibilityState !== 'visible' || actions.length !== 1 || actions[0].disabled
+      || !shown(actions[0]) || [...document.querySelectorAll('.provider-completion')].some(shown)
       || !Array.isArray(order) || !order.length || fields.length !== order.length
       || fields.some((field, i) => field.name !== `note-${i}` || field.disabled || field.readOnly)) return null;
   const values = fields.map(field => field.value);
@@ -21,18 +23,24 @@ export async function snapshotSaveFields(order) {
   const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(n => n.toString(16).padStart(2, '0')).join('');
   if (fields.some((field, i) => !field.isConnected || field.value !== values[i])
       || document.querySelectorAll('textarea[data-note-field]').length !== fields.length
-      || !actions[0].isConnected || actions[0].disabled || document.visibilityState !== 'visible') return null;
+      || !actions[0].isConnected || actions[0].disabled || !shown(actions[0])
+      || [...document.querySelectorAll('.provider-completion')].some(shown) || document.visibilityState !== 'visible') return null;
   return { source: 'normal-note-editor-fields', fieldsSHA256: hash, fieldOrder: [...order],
     observedAtMonotonicMs: performance.now(), browserTimeOriginMs: performance.timeOrigin };
 }
 export const SAVE_FIELDS_SCRIPT = `const done=arguments[arguments.length-1];(${snapshotSaveFields.toString()})(arguments[0]).then(done,()=>done(null));`;
-export const SAVE_UI_SCRIPT = `const completion=document.querySelector('.provider-completion');
-const buttons=completion?[...completion.querySelectorAll('button')]:[];
-const heading=completion?.querySelector('h1')?.textContent;
-return {source:'normal-saved-review-ui',heading:heading==='Saved for review'?heading:null,
-actions:buttons.filter(button=>!button.disabled).map(button=>button.dataset.workspaceAction),
-fieldCount:document.querySelectorAll('textarea[data-note-field]').length,documentVisibility:document.visibilityState,
-observedAtMonotonicMs:performance.now(),browserTimeOriginMs:performance.timeOrigin};`;
+export function snapshotSaveUI() {
+  const shown = element => !!element && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden';
+  const completions = [...document.querySelectorAll('.provider-completion')].filter(shown);
+  const completion = completions.length === 1 ? completions[0] : null;
+  const buttons = completion ? [...completion.querySelectorAll('button')] : [];
+  const heading = completion?.querySelector('h1')?.textContent;
+  return { source: 'normal-saved-review-ui', heading: heading === 'Saved for review' ? heading : null,
+    actions: buttons.filter(button => !button.disabled && shown(button)).map(button => button.dataset.workspaceAction),
+    fieldCount: document.querySelectorAll('textarea[data-note-field]').length, documentVisibility: document.visibilityState,
+    observedAtMonotonicMs: performance.now(), browserTimeOriginMs: performance.timeOrigin };
+}
+export const SAVE_UI_SCRIPT = `return (${snapshotSaveUI.toString()})();`;
 
 /** Manual completion is distinct from the Core persistence receipt. Never
  * relabel a prior read/prepare/autosave as a newly issued save request. */

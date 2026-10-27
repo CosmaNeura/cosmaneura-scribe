@@ -42,6 +42,16 @@ agree with fresh native recorder metadata. A checked checkbox alone cannot
 manufacture consent. Finish checks the same recorder immediately before clicking
 and retains its first physical-stop observation. Save checks the current source
 session before editing; save/reopen require the normal Core note/version tuple.
+The current in-app Save contract observes the normal Save click, the ordered
+editor-field digest, visible “Saved for review”, and two passive pending-zero
+snapshots around that UI read. Both snapshots must retain the same mounted
+visit, account revision, capture session, source and persisted note tuple.
+A clean already-persisted draft retains its actual `read`/`prepare` action;
+the coordinator does not issue a second save or require an external browser
+handoff. Changed fields require a fresh actual `save` response. Reopen remains
+a separate normal UI action and must return the same saved note and source.
+Historical browser-handoff receipt validators remain available for archived
+runs; they are not used to qualify the current in-app completion.
 
 The iOS observer preserves an already-observed `sealed` response across the
 same recorder's exact successful normal close. It retains the original timestamp

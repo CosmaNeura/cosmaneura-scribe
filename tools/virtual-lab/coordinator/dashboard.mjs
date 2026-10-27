@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { atomicJSON, sha256 } from './journal.mjs';
 import { validateSaveCompletion } from './save-completion.mjs';
 import { validateDesktopSaveCompletion } from './desktop-save-completion.mjs';
+import { validateInAppSaveCompletion } from './in-app-save-completion.mjs';
 
 export const DASHBOARD_ORIGIN = 'https://staging-app.cosmaneura.com';
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
@@ -124,7 +125,8 @@ export function validateSavedReceipt(receipt, scenario) {
       || receipt.field_order.some(field => typeof field !== 'string' || !field.trim() || field.length > 200)
       || new Set(receipt.field_order).size !== receipt.field_order.length) throw Error('native_saved_note_receipt_required');
   if (receipt.action !== 'save' || receipt.saveCompletion) {
-    const validate = receipt.saveCompletion?.source === 'normal-desktop-save-completion' ? validateDesktopSaveCompletion : validateSaveCompletion;
+    const validate = receipt.saveCompletion?.source === 'normal-in-app-save-completion' ? validateInAppSaveCompletion
+      : receipt.saveCompletion?.source === 'normal-desktop-save-completion' ? validateDesktopSaveCompletion : validateSaveCompletion;
     validate(receipt, receipt.saveCompletion);
   }
   return receipt;

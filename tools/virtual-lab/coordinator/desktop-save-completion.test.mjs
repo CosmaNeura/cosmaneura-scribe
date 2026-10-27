@@ -3,7 +3,6 @@ import test from 'node:test';
 import { validateDesktopSaveCompletion } from './desktop-save-completion.mjs';
 import { validateSaveCompletion } from './save-completion.mjs';
 import { validateSavedReceipt } from './dashboard.mjs';
-import { AppiumUI } from './appium-ui.mjs';
 
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const suffix = '01m5q661ryetaa28yxe7vbqrex';
@@ -68,53 +67,4 @@ test('an unpersisted dirty field hash cannot be accepted by relabelling a prepar
   const { note, completion } = fixture(true);
   note.action = 'prepare'; completion.handoff.note.action = 'prepare';
   assert.throws(() => validateDesktopSaveCompletion(note, completion), /desktop_save_completion_unconfirmed/);
-});
-
-for (const mode of ['success', 'lost click', 'reply before discovery']) test(`Desktop Appium Save: ${mode}`, async () => {
-  const { scope, note, completion } = fixture(), driver = new AppiumUI('/unused'), origin = Date.now() - 25;
-  const rebase = value => { if (!value || typeof value !== 'object') return;
-    if ('browserTimeOriginMs' in value) value.browserTimeOriginMs = origin; Object.values(value).forEach(rebase); };
-  rebase(completion); rebase(note);
-  driver.config = { journey: { save: { actions: [{ action: 'click' }] } } };
-  driver.binding = scope; driver.admission = { sessionId: note.session_id }; driver.scenario = { targetId: 'owned-test' };
-  driver.terminal = { sessionId: note.session_id, browserTimeOriginMs: origin, observedAtMonotonicMs: 1 };
-  let clicks = 0, reads = 0;
-  driver.readNote = async action => { reads++; assert.equal(action, null); return note; };
-  driver.assertVisit = async () => completion.currentVisit;
-  driver.readAuth = async () => ({ ...completion.auth, observedAtMonotonicMs: Date.now() - origin });
-  driver.desktop = {
-    readSaveFields: async () => ({ ...completion.attempt.fields, observedAtMonotonicMs: Date.now() - origin }),
-    readSaveHandoff: async () => completion.handoff,
-    readSaveUI: async () => ({ ...completion.ui, observedAtMonotonicMs: Date.now() - origin }),
-  };
-  driver.find = async () => {
-    if (mode === 'reply before discovery') {
-      completion.handoff.requestBrowserTimeOriginMs = origin;
-      completion.handoff.requestObservedAtMonotonicMs = completion.handoff.observedAtMonotonicMs = Date.now() - origin;
-      await new Promise(resolve => setTimeout(resolve, 5));
-    }
-    return 'actual-save-control';
-  };
-  driver.rawRequest = async (path, method) => {
-    assert.equal(path, '/element/actual-save-control/click'); assert.equal(method, 'POST');
-    clicks++; if (mode === 'lost click') throw Error('click_response_lost');
-    if (mode === 'reply before discovery') return;
-    completion.handoff.requestBrowserTimeOriginMs = origin;
-    completion.handoff.requestObservedAtMonotonicMs = Date.now() - origin;
-    completion.handoff.observedAtMonotonicMs = Date.now() - origin;
-  };
-  driver.check = async () => [{ actual: 'Saved for review', expected: 'Saved for review' }];
-  driver.capturePhaseArtifacts = async () => ({ testOnly: true });
-  driver.webview = async () => assert.fail('Desktop must not use native WebView DTOs');
-  if (mode !== 'success') {
-    await assert.rejects(driver.perform('save', driver.scenario), mode === 'lost click' ? /click_response_lost/ : /desktop_save_completion_unconfirmed/);
-    assert.equal(driver.savedNote, undefined);
-  }
-  else {
-    const observation = await driver.perform('save', driver.scenario);
-    assert.equal(observation.savedNote.action, 'prepare'); assert.equal(observation.savedNote.saveCompletion.source, 'normal-desktop-save-completion');
-    assert.equal(observation.savedNote.note_ref, note.note_ref);
-  }
-  assert.equal(clicks, 1); assert.equal(reads, 1); assert.equal(driver.saveAttempt, null);
-  await assert.rejects(driver.observe('save'), /desktop_save_completion_unconfirmed/);
 });

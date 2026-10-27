@@ -13,8 +13,8 @@ import { recoveryStage } from './recovery.mjs';
 import { nativeIdentity, verifyBuild } from './native-identity.mjs';
 import { installAdmissionObserver } from '../native/admission-observer.mjs';
 import { installVisitScopeObserver } from '../native/visit-observer.mjs';
-import { SAVE_FIELDS_SCRIPT, SAVE_UI_SCRIPT, validateSaveCompletion } from './save-completion.mjs';
-import { validateDesktopSaveCompletion } from './desktop-save-completion.mjs';
+import { SAVE_FIELDS_SCRIPT, SAVE_UI_SCRIPT } from './save-completion.mjs';
+import { validateInAppSaveCompletion } from './in-app-save-completion.mjs';
 import { createDesktopObserver } from './desktop-observer.mjs';
 import { projectNoteObservation } from '../native/note-observation.mjs';
 import { verifyDashboard } from './dashboard.mjs';
@@ -434,30 +434,37 @@ export class AppiumUI {
   async beginSaveAttempt(signal) {
     this.saveAttempt = null; this.lastSaveCompletion = null;
     const note = await this.readNote(null, signal), visit = await this.assertVisit(signal);
-    const auth = this.desktop ? await this.readAuth(signal) : null;
+    const auth = await this.readAuth(signal);
     const fields = this.desktop ? await this.desktop.readSaveFields(note.field_order)
       : await this.withUIContext(() => this.rawWebview(SAVE_FIELDS_SCRIPT, [note.field_order], signal, false, true));
     if (!fields || fields.source !== 'normal-note-editor-fields' || !/^[a-f0-9]{64}$/.test(fields.fieldsSHA256)
         || this.config.journey?.save?.actions?.length !== 1 || this.config.journey.save.actions[0].action !== 'click')
       throw Error('native_save_editor_unconfirmed');
-    this.saveAttempt = { nonce: randomUUID(), note, visit, fields, ...(this.desktop ? { auth } : {}) };
-    this.lastSaveCompletion = { source: this.desktop ? 'normal-desktop-save-completion' : 'normal-native-save-completion', attempt: this.saveAttempt };
+    this.saveAttempt = { nonce: randomUUID(), note, visit, fields, auth };
+    this.lastSaveCompletion = { source: 'normal-in-app-save-completion', platform: this.desktop ? 'desktop' : 'ios', attempt: this.saveAttempt };
   }
   async completeSaveAttempt(currentVisit, signal) {
     const attempt = this.saveAttempt; this.saveAttempt = null;
-    if (this.desktop) {
-      const auth = await this.readAuth(signal), ui = await this.desktop.readSaveUI(), handoff = await this.desktop.readSaveHandoff();
-      const completion = { source: 'normal-desktop-save-completion', attempt, handoff, currentVisit, auth, ui };
+    if (!attempt) throw Error('in_app_save_completion_unconfirmed');
+    const deadline = performance.now() + 10000, pendingSamples = [];
+    do {
+      signal?.throwIfAborted();
+      const auth = await this.readAuth(signal), first = await this.captureStateSnapshot(signal);
+      const ui = this.desktop ? await this.desktop.readSaveUI() : await this.webview(SAVE_UI_SCRIPT, [], signal);
+      const last = await this.captureStateSnapshot(signal);
+      pendingSamples.push({ before: first.observerPendingReplies, after: last.observerPendingReplies, observedAtEpochMs: Date.now() });
+      const completion = { source: 'normal-in-app-save-completion', platform: this.desktop ? 'desktop' : 'ios',
+        attempt, currentVisit, auth, ui, snapshots: [first, last], pendingSamples: [...pendingSamples] };
       this.lastSaveCompletion = completion;
-      validateDesktopSaveCompletion(handoff?.note, completion);
-      return { ...handoff.note, saveCompletion: completion };
-    }
-    const handoff = await this.webview('return window.__scribeLabVisitObserver?.readNoteHandoff() ?? null;', [], signal);
-    const ui = await this.webview(SAVE_UI_SCRIPT, [], signal);
-    const completion = { source: 'normal-native-save-completion', attempt, handoff, currentVisit, ui };
-    this.lastSaveCompletion = completion;
-    validateSaveCompletion(handoff?.note, completion);
-    return { ...handoff.note, saveCompletion: completion };
+      // Wait only for real observer replies. No Save/mount/API call is issued
+      // here, and a scope/auth/content mismatch is never retried as an input.
+      if (first.observerPendingReplies === 0 && last.observerPendingReplies === 0) {
+        validateInAppSaveCompletion(last.currentNote, completion);
+        return { ...last.currentNote, saveCompletion: completion };
+      }
+      await wait(100);
+    } while (performance.now() < deadline);
+    throw Error('in_app_save_completion_unconfirmed');
   }
   async restore(state, { observations, signal, output }) {
     this.output = await realpath(output);
