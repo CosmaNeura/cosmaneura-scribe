@@ -28,3 +28,18 @@ it("distinguishes draft saving and failed or uncertain saves from acknowledged s
   expect(draftSaveState({ ...acknowledged, dirty: true, unconfirmed: true })).toBe("Draft not saved");
   expect(draftSaveState({ ...acknowledged, pending: true, unconfirmed: true, savedAt })).toBe("Draft save not confirmed");
 });
+
+it("offers transcript review without assigning roles or hiding Save, and warns only for observed unassigned speakers", () => {
+  const draft = { note_type: "Example", field_order: ["Plan"], fields: { Plan: "Unchanged saved words." }, reviewed_source: {} } as unknown as CoreDraft;
+  const before = JSON.stringify(draft);
+  for (const unassigned of [false, true]) {
+    const html = noteView(draft, "Synthetic visit", "<p>Authorized conversation</p>", unassigned);
+    expect(html.match(/data-workspace-action="review"/gu)).toHaveLength(1);
+    expect(html).toContain('data-workspace-action="review">Review transcript and speakers');
+    expect(html).toContain('data-workspace-action="finish-note">Save and review');
+    expect(html.includes("Identify the patient and clinician to improve this draft.")).toBe(unassigned);
+    expect(html).not.toContain('name="role"');
+    expect(html).toContain("Corrections keep the original transcript and saved notes.");
+  }
+  expect(JSON.stringify(draft)).toBe(before);
+});

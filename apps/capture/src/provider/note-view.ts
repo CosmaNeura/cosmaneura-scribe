@@ -37,13 +37,15 @@ export function noteConversationView(note: HTMLElement, shown: boolean, lastFiel
   return position;
 }
 
-export function noteView(draft: CoreDraft, patient: string, conversation: string): string {
+export function noteView(draft: CoreDraft, patient: string, conversation: string, unassignedSpeakers = false): string {
   const field = (key: string, index: number): string => `<label>${escapeText(noteFieldLabel(key))}<textarea data-note-field name="note-${index}" rows="2">${escapeText(draft.fields?.[key] ?? "")}</textarea></label>`;
   return `<section class="provider-note" data-note-view="note" data-conversation="hidden">
     <div class="provider-save-bar provider-note-actions"><button class="provider-primary" data-workspace-action="finish-note">Save and review</button><p class="provider-draft-status"><span data-note-save-state role="status" aria-atomic="true">Draft saved</span></p></div>
     <div class="provider-note-heading"><h1>${escapeText(patient)}</h1>
     <button class="provider-text-link" data-workspace-action="transcript-view" aria-expanded="false">Show the conversation</button></div>
     <p class="provider-note-review-help">Check it against the conversation first. Then review it in the CosmaNeura dashboard.</p>
+    <div class="provider-note-review-help">${unassignedSpeakers ? '<p role="status">Some speakers are not identified. Identify the patient and clinician to improve this draft. Keep “Not sure” for any voice you cannot identify.</p>' : ''}<button class="provider-text-link" data-workspace-action="review">Review transcript and speakers</button>
+      <p>Corrections keep the original transcript and saved notes. You can then choose Prepare updated draft.</p></div>
     ${draft.reviewed_source.capture_continuity ? '<p class="provider-warning" role="status">Some speech may be missing. Check this note against the conversation.</p>' : ''}
     <scribe-private-note mode="note"></scribe-private-note><div class="provider-note-grid"><div class="provider-note-editor" tabindex="0" role="region" aria-label="Draft note">${draft.field_order?.map(field).join("") ?? ''}
       <details class="provider-note-guidance"><summary>Details</summary><p>${escapeText(draft.note_type)} · Saving keeps your edits. Clinical review is still required.</p></details>
