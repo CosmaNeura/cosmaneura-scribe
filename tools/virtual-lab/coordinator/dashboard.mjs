@@ -344,11 +344,11 @@ export async function verifyDashboard({ config, scenario, savedReceipt, output, 
           }, 1500); }),
         ]);
         active.throwIfAborted();
-        if (currentAccount.hostedSessionSHA256 !== receipt.initialAccount.hostedSessionSHA256)
-          throw Error('dashboard_failure_session_changed');
-        const filename = 'dashboard-failure.png';
-        const bytes = await page.screenshot({ path: resolve(output, filename), timeout: 1500 });
-        receipt.failureScreenshot = { file: filename, sha256: sha256(bytes) };
+        if (currentAccount.hostedSessionSHA256 === receipt.initialAccount.hostedSessionSHA256) {
+          const filename = 'dashboard-failure.png';
+          const bytes = await page.screenshot({ path: resolve(output, filename), timeout: 1500 });
+          receipt.failureScreenshot = { file: filename, sha256: sha256(bytes) };
+        } else receipt.failureScreenshot = { status: 'unavailable' };
       } catch { receipt.failureScreenshot = { status: 'unavailable' }; }
       finally { clearTimeout(evidenceTimer); evidence.abort(); }
     }

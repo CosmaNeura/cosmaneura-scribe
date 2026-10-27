@@ -144,18 +144,18 @@ class ScopePage extends EventEmitter {
     this.response(this.request('view-as/status'), inactive());
   }
 }
-test('normal account verification precedes list allowance and a render failure retains its screenshot', async () => {
+test('normal account verification precedes list allowance and a render failure retains its screenshot', { timeout: 10000 }, async () => {
   const folder = await mkdtemp(join(tmpdir(), 'scribe-dashboard-boundary-'));
   const key = 'dashboardBoundaryFixture' + Date.now();
   try {
     const statePath = join(folder, 'state.json'), playwrightPath = join(folder, 'playwright.mjs');
     await writeFile(statePath, '{}');
     await writeFile(playwrightPath, `export const chromium = { launch: async () => globalThis[${JSON.stringify(key)}] };`);
-    for (const situation of ['verified', 'initial-wrong-account', 'later-wrong-account', 'later-session', 'in-flight-scope', 'failed-scope']) {
+    for (const situation of ['verified', 'initial-wrong-account', 'later-wrong-account', 'later-session', 'in-flight-scope', 'failed-scope', 'late-clerk-proof']) {
       const wrongAccount = situation === 'initial-wrong-account';
       const page = new ScopePage();
       if (wrongAccount) page.userId = 'other_synthetic_user';
-      let handler, closed = false, noteNavigations = 0, listReads = 0;
+      let handler, finishLateProof, closed = false, noteNavigations = 0, listReads = 0;
       page.setDefaultTimeout = () => {};
       page.isClosed = () => closed;
       page.screenshot = async ({ path, timeout }) => {
@@ -172,6 +172,7 @@ test('normal account verification precedes list allowance and a render failure r
         if (situation === 'later-session') page.sessionId = 'different_session';
         if (situation === 'in-flight-scope') page.request('settings');
         if (situation === 'failed-scope') page.response(page.request('settings'), {}, 503);
+        if (situation === 'late-clerk-proof') page.waitForFunction = async () => new Promise(resolve => { finishLateProof = resolve; });
       };
       globalThis[key] = { close: async () => { closed = true; },
         newContext: async () => ({ newPage: async () => page, route: async (_pattern, route) => { handler = route; } }) };
@@ -181,6 +182,9 @@ test('normal account verification precedes list allowance and a render failure r
         scenario: { executionKind: 'live', targetId: 'synthetic', admissionBinding: { runId: uuid } },
         savedReceipt: receipt(), output: join(folder, situation), signal: new AbortController().signal,
       });
+      // The optional proof must settle without this reply. Completing it later
+      // cannot initiate a screenshot after the browser has been retired.
+      if (finishLateProof) { finishLateProof(); await tick(); }
       assert.equal(result.cleanup.ownedResourcesSettled, true);
       assert.equal(result.failureCode, wrongAccount ? 'dashboard_actor_scope_mismatch' : 'test_render_failure');
       assert.equal(listReads, wrongAccount ? 0 : 1); assert.equal(noteNavigations, wrongAccount ? 0 : 1);
