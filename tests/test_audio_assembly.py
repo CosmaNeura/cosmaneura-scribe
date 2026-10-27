@@ -186,15 +186,20 @@ def _encrypt(
     return encode_envelope(header, ciphertext)
 
 
-def _streaming_fixture(tmp_path: Path, count: int = 3, frames: int = 40):
+def _streaming_fixture(
+    tmp_path: Path,
+    count: int = 3,
+    frames: int | tuple[int, ...] = 40,
+    channel: CaptureChannel = CaptureChannel.MICROPHONE,
+):
     """Invented authorized manifest and synthetic PCM, using the existing envelope."""
     key = b"k" * 32
     session_id = uuid4()
-    initial = tuple(_chunk(session_id, i, CaptureChannel.MICROPHONE, uuid4()) for i in range(count))
+    initial = tuple(_chunk(session_id, i, channel, uuid4()) for i in range(count))
     request = _request(session_id, initial)
     objects, complete = {}, []
     for i, chunk in enumerate(initial):
-        pcm = struct.pack("<h", i + 1) * frames
+        pcm = struct.pack("<h", i + 1) * (frames if isinstance(frames, int) else frames[i])
         envelope = _encrypt(request, chunk, _wave_bytes(pcm), key, i.to_bytes(12, "big"))
         objects[chunk.object_id] = envelope
         complete.append(
@@ -219,6 +224,26 @@ def _streaming_fixture(tmp_path: Path, count: int = 3, frames: int = 40):
         temporary_directory=tmp_path,
     )
     return assembler, request, blobs
+
+
+@pytest.mark.asyncio
+async def test_mixed_track_pause_flush_uses_cumulative_pcm_passage_offsets(tmp_path: Path) -> None:
+    # Same invented vector as Desktop passage-continuity.test.ts: the third
+    # chunk is a short pause flush; the resumed source begins at sequence 3.
+    # This is the real server assembler/reader consumed by the speech provider.
+    frames = (16_000, 16_000, 4_000, 16_000)
+    assembler, request, _ = _streaming_fixture(tmp_path, 4, frames, CaptureChannel.MIXED)
+    expected_pcm = b"".join(
+        struct.pack("<h", index + 1) * count for index, count in enumerate(frames)
+    )
+    async with assembler.assemble(request) as (track,):
+        with track.open() as stream:
+            assert stream.read() == _wave_bytes(expected_pcm)
+            for start_ms, end_ms in ((500, 1500), (2000, 2500), (2500, 3000)):
+                stream.seek(44 + start_ms * 32)
+                assert stream.read((end_ms - start_ms) * 32) == expected_pcm[
+                    start_ms * 32 : end_ms * 32
+                ]
 
 
 @pytest.mark.asyncio

@@ -276,11 +276,12 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
             const client = new CoreCaptureClient(selected.scope, request, AbortSignal.any([mountSignal, operation]));
             const view = parseCreatorReview(await client.operation(sessionId, { kind: "creator_review" }), sessionId); playbackCurrent();
             const segment = view.source?.segments.find(item => item.source_segment_id === segmentId);
-            if (!segment || view.capture_continuity) return null;
+            if (!segment) return null;
             const archive = owned.store!.namespace(`playback:${sessionId}`);
             const key = await new DurableDesktopFlowStore(owned.store!.namespace("flow")).playbackKey(sessionId, owned.store!.namespace(`playback-key:${sessionId}`)); playbackCurrent();
             if (!key) return null;
-            const wav = await passageWav(archive, sessionId, key, segment.start_ms, Math.min(segment.end_ms, segment.start_ms + 30_000), playbackCurrent);
+            const wav = await passageWav(archive, sessionId, key, segment.start_ms, Math.min(segment.end_ms, segment.start_ms + 30_000), playbackCurrent,
+              view.capture_continuity ?? undefined);
             if (!wav) return null;
             try { playbackCurrent(); return { wavBase64: Buffer.from(wav).toString("base64") }; }
             finally { wav.fill(0); }
