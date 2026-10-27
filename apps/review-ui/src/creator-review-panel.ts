@@ -1,3 +1,4 @@
+import type { PlayPassage } from "./passage-playback";
 import {
   CreatorReviewError,
   type CreatorReviewApi,
@@ -30,7 +31,7 @@ export interface CreatorReviewOptions {
   readonly initialAction?: "open-draft";
   /** Current authorized encounter/profile display values; assignment still needs confirmation. */
   readonly speakerNameSuggestions?: SpeakerNameSuggestions;
-  readonly playPassage?: (sessionId: string, segmentId: string, signal: AbortSignal) => Promise<{ wavBase64: string } | null>;
+  readonly playPassage?: PlayPassage;
   readonly journal?: CreatorReviewJournal;
   readonly editJournal?: CreatorEditJournal;
   /** Open the host's existing Core note flow with this action's fresh authorized read. */

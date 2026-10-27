@@ -1,9 +1,16 @@
 import type { CreatorReviewView } from "./creator-review-api";
 
+export interface NativePassageHandle {
+  read(): Promise<{ playing: boolean; positionMs: number; durationMs: number }>;
+  stop(): Promise<void>;
+}
+export type PassagePlayback = { wavBase64: string } | { native: NativePassageHandle };
+export type PlayPassage = (sessionId: string, segmentId: string, signal: AbortSignal) => Promise<PassagePlayback | null>;
+
 export interface TranscriptPlaybackOptions {
   /** Returns only this mounted surface's current, authorized transcript. */
   readonly current: () => CreatorReviewView | null;
-  readonly playPassage?: (sessionId: string, segmentId: string, signal: AbortSignal) => Promise<{ wavBase64: string } | null>;
+  readonly playPassage?: PlayPassage;
   readonly signal?: AbortSignal;
 }
 
@@ -14,9 +21,13 @@ export function bindTranscriptPlayback(root: HTMLElement, options: TranscriptPla
   let disposed = false;
   let playbackAbort: AbortController | null = null, playbackUrl: string | null = null;
   let playbackAudio: HTMLAudioElement | null = null;
+  let nativeAudio: NativePassageHandle | null = null, nativeTimer: ReturnType<typeof setTimeout> | null = null;
   let playbackResult: HTMLDivElement | null = null, pendingButton: HTMLButtonElement | null = null;
   const selector = 'button[data-review-action="play-passage"]';
   const releaseAudio = (): void => {
+    if (nativeTimer !== null) clearTimeout(nativeTimer); nativeTimer = null;
+    const native = nativeAudio; nativeAudio = null;
+    if (native) void native.stop().catch(() => undefined);
     if (playbackAudio) { playbackAudio.pause(); playbackAudio.removeAttribute("src"); playbackAudio.load(); playbackAudio = null; }
     if (playbackUrl) URL.revokeObjectURL(playbackUrl); playbackUrl = null;
   };
@@ -61,8 +72,33 @@ export function bindTranscriptPlayback(root: HTMLElement, options: TranscriptPla
       releaseAudio(); result.textContent = "Audio could not open. Check your connection and try again.";
     };
     void options.playPassage(view.session_id, id, controller.signal).then(value => {
-      if (!current()) return;
+      if (!current()) { if (value && "native" in value) void value.native.stop().catch(() => undefined); return; }
       if (!value) { result.textContent = "Audio playback is unavailable for this passage on this device. The transcript is retained."; return; }
+      if ("native" in value) {
+        const handle = value.native; nativeAudio = handle;
+        const label = document.createElement("span"), stopButton = document.createElement("button");
+        stopButton.type = "button"; stopButton.textContent = "Stop passage";
+        stopButton.addEventListener("click", () => {
+          if (nativeTimer !== null) clearTimeout(nativeTimer); nativeTimer = null;
+          stopButton.disabled = true;
+          void handle.stop().then(() => {
+            if (nativeAudio === handle) nativeAudio = null;
+            if (current()) result.textContent = "Playback stopped.";
+          }).catch(() => { if (current()) { label.textContent = "Audio could not stop. Try again."; stopButton.disabled = false; } });
+        });
+        result.replaceChildren(label, stopButton);
+        const poll = async (): Promise<void> => {
+          if (!current() || nativeAudio !== handle) return;
+          try {
+            const state = await handle.read();
+            if (!current() || nativeAudio !== handle) return;
+            if (!state.playing) { nativeAudio = null; await handle.stop(); result.textContent = "Playback finished."; return; }
+            label.textContent = `Playing passage: ${Math.floor(state.positionMs / 1000)} of ${Math.ceil(state.durationMs / 1000)} seconds. `;
+            nativeTimer = setTimeout(() => { void poll(); }, 250);
+          } catch { failed(); }
+        };
+        void poll(); return;
+      }
       if (value.wavBase64.length > 1_300_000 || !/^[A-Za-z0-9+/]+={0,2}$/u.test(value.wavBase64)) throw new Error("Invalid passage audio");
       const bytes = Uint8Array.from(atob(value.wavBase64), char => char.charCodeAt(0));
       try { playbackUrl = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" })); } finally { bytes.fill(0); }

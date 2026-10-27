@@ -96,6 +96,25 @@ public actor NativeRecordingBindingOwner {
     catch { await service.abandonFreshInitialWindow(); throw error }
   }
 
+  /// Restore confirmed custody only. Saved-audio retention must never create a
+  /// replacement key, publish a key, or replay a binding operation.
+  public func reopenBound() async throws -> NativeRecordingEncryption {
+    guard !busy else { throw NativeRecordingBindingFailure.operationInProgress }
+    busy = true
+    defer { busy = false }
+    try await checkScope()
+    guard let saved = try records.readBinding(key: recordKey) else {
+      throw NativeRecordingFailure.keyUnavailable
+    }
+    let journal = try decode(saved)
+    guard journal.bound, let receipt = journal.receipt else {
+      throw NativeRecordingFailure.keyUnavailable
+    }
+    let cipher = try NativeRecordingEncryption.reopen(scope: scope, expected: receipt, storage: keys)
+    try await checkScope()
+    return cipher
+  }
+
   private func openCandidate() async throws -> NativeRecordingEncryption {
     // Actor isolation alone does not exclude another call across network awaits.
     guard !busy else { throw NativeRecordingBindingFailure.operationInProgress }

@@ -106,6 +106,14 @@ const preparation = { mode: "configured_core" as const, schemaVersion: 2 as cons
   leaseIdempotencyKey: null, leaseRequest: null };
 
 describe("native provider host composition", () => {
+  it("forwards saved playback through the exact mounted surface and refuses it after teardown", async () => {
+    const play = vi.fn<NonNullable<AuthorizedProviderIOSMount["playPassage"]>>(async () => null), g = connection({ playPassage: play });
+    const encounter = await g.openAny(), passage = crypto.randomUUID(), signal = new AbortController().signal;
+    expect(await encounter.playPassage!(session, passage, signal)).toBeNull();
+    expect(play).toHaveBeenCalledWith(session, passage, signal);expect(g.mount.reauthorizeRecorder).not.toHaveBeenCalled();
+    g.abort.abort();expect(() => encounter.playPassage!(session, passage, signal)).toThrow();
+  });
+
   it("keeps early preparation off without a packaged beta control and starts no native work when enabled", () => {
     const service = connection();
     expect(createProviderIOSHost(service.backend).consentPreparation).toBeUndefined();

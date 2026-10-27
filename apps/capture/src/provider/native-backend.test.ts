@@ -79,6 +79,22 @@ function fixture() {
 }
 
 describe("native provider connection", () => {
+  it.each([undefined, 1])("offers native saved passage only with the declared version (%s), never a recorder acquisition", async version => {
+    const f = fixture();f.setState({ ...f.state, ...(version ? { nativePassagePlaybackVersion: version } : {}) });
+    const play = vi.fn(async () => ({ available: false }));
+    Object.assign(f.plugin, { playProviderPassage: play, readProviderPassage: vi.fn(), stopProviderPassage: vi.fn(async () => {}) });
+    const backend = await f.connect();
+    try {
+      await backend.listEncounters(backend.signal);
+      const mounted = await backend.openEncounter(appointment, backend.signal);
+      if (version === 1) {
+        expect(await mounted.playPassage!(session, crypto.randomUUID(), backend.signal)).toBeNull();
+        expect(play).toHaveBeenCalledWith({ requestId: expect.any(String), revision: f.state.revision, workspaceId: workspace, bindingRef: binding, sessionId: session, segmentId: expect.any(String) });
+      } else expect(mounted.playPassage).toBeUndefined();
+      expect(f.plugin.openProviderRecording).not.toHaveBeenCalled();expect(f.plugin.prepareProviderSource).not.toHaveBeenCalled();
+    } finally { await backend.dispose(); }
+  });
+
   it.each(["scope", "account"])("refuses a later mobile catalog %s change within the same native owner", async change => {
     const f = fixture(); let changed = false;
     f.plugin.providerRequest.mockImplementation(async request => {

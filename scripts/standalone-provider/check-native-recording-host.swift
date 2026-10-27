@@ -25,10 +25,22 @@ import Security
     }
     throw Failed(line: #line)
   }
+  private final class PassageGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var started = false, released = false
+    var running: Bool { condition.lock();defer { condition.unlock() };return started }
+    func hold() throws {
+      condition.lock();defer { condition.unlock() };started = true
+      let deadline = Date().addingTimeInterval(5)
+      while !released { guard condition.wait(until: deadline) else { throw CancellationError() } }
+    }
+    func release() { condition.lock();released = true;condition.broadcast();condition.unlock() }
+  }
   private final class Records: NativeProviderRecordingHost.Records, @unchecked Sendable {
     var rows: [String: NativeRecordingStoredRecord] = [:]
     var failSeal = false, failInventory = false, loseSealReply = false
-    var failCheckpoint = false
+    var failCheckpoint = false, failPassage = false
+    var passageGate: PassageGate?
     func read(key: String) throws -> NativeRecordingStoredRecord {
       guard let row = rows[key] else { throw NativeRecordingFailure.storageUnavailable }
       return row
@@ -49,6 +61,8 @@ import Security
       return rows.keys.filter { $0.hasPrefix(prefix) }
     }
     func createBinding(key: String, data: Data) throws {
+      if key.hasPrefix("scribe-native-passage:") { try passageGate?.hold() }
+      if failPassage && key.hasPrefix("scribe-native-passage:") { throw NativeRecordingFailure.storageUnavailable }
       try compareAndSwap(key: key, expectedRevision: 0, data: data)
     }
     func createLease(key: String, data: Data) throws { try createBinding(key: key, data: data) }
@@ -307,6 +321,46 @@ import Security
 
   static func run() async throws -> Int {
     var checks = 0
+    do {
+      let f = try Fixture(), host = f.host(), gate = PassageGate()
+      try await host.open();try await host.start();f.records.passageGate = gate
+      let sealing = Task { try await host.sealForUpload() }
+      try await wait { gate.running }
+      try check(host.busy && f.runs[0].isPhysicallyIdle)
+      let closing = Task { try await host.close() }
+      try await wait { host.requiresReopen }
+      let other = f.host();try await rejects { try await other.open() };try await other.close()
+      gate.release()
+      try await rejects { try await sealing.value };try await closing.value
+      try check(host.phase == .closed && !f.records.rows.keys.contains { $0.hasSuffix(":manifest") })
+      let reopened = f.host();try await reopened.open();try await reopened.close();checks += 3
+    }
+    do {
+      let f = try Fixture(), host = f.host()
+      try await host.open();try await host.start()
+      f.records.failPassage = true
+      try await rejects { try await host.sealForUpload() }
+      try check(host.saved?.phase == .sealed && f.runs[0].isPhysicallyIdle)
+      try check(f.records.rows.keys.contains { $0.hasPrefix("scribe-provider-queue:") })
+      try await host.close();f.records.failPassage = false
+      let reopened = f.host();try await reopened.open();try await reopened.sealForUpload()
+      let archive = try NativeRecordingPassageArchive.open(account: f.scope.accountDigest, recovery: f.recovery,
+        workspace: f.scope.workspaceID, session: f.scope.sessionID, records: f.records)
+      try check(archive != nil)
+      // Match CaptureQueue.purge: retain reservation/registration metadata,
+      // remove only ciphertext fields. This is not a queue-delete operation.
+      for (key, stored) in f.records.rows where key.hasPrefix("scribe-provider-queue:") {
+        var value = try JSONSerialization.jsonObject(with: stored.data) as! [String: Any]
+        guard value["state"] as? String == "encrypted" else { continue }
+        value["state"] = "purged"
+        for field in ["envelope", "sha256", "byteLength"] { value.removeValue(forKey: field) }
+        f.records.rows[key] = NativeRecordingStoredRecord(data: try JSONSerialization.data(withJSONObject: value), revision: stored.revision + 1)
+      }
+      let audio = try archive?.audio(startMs: 0, endMs: 5, keys: f.keys, current: {})
+      try check(audio?.count == 204)
+      try await reopened.sealForUpload() // Retained archive survives idempotent post-purge seal.
+      try await reopened.close();checks += 3
+    }
     do {
       let f = try Fixture()
       let host = f.host()

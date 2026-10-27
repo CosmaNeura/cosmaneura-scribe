@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { bindTranscriptPlayback, type TranscriptPlaybackOptions } from "./passage-playback";
+import { bindTranscriptPlayback, type TranscriptPlaybackOptions, type NativePassageHandle } from "./passage-playback";
 import { parseCreatorReview } from "./creator-review-api";
 
 // Actual binding, promises and cleanup execute on a small DOM event fixture.
@@ -219,4 +219,18 @@ it("retains manual controls when autoplay is denied without claiming playback su
   expect(f.root.querySelectorAll("audio")).toHaveLength(1); expect(f.buttons()[0]!.disabled).toBe(false);
   expect(f.rows[0]!.textContent).not.toMatch(/playing|played|Audio could not open/u);
   expect(f.revokeUrl).not.toHaveBeenCalled();
+});
+
+it("shows native playback controls without creating a Blob or HTML audio and stops on disposal", async () => {
+  const native = { read: vi.fn(async () => ({ playing: true, positionMs: 500, durationMs: 1000 })), stop: vi.fn(async () => {}) };
+  const f = fixture(async () => ({ native }));f.click();await Promise.resolve();await Promise.resolve();
+  expect(f.rows[0]!.textContent).toContain("Playing passage");expect(f.rows[0]!.textContent).toContain("Stop passage");
+  expect(f.createUrl).not.toHaveBeenCalled();expect(f.audios).toHaveLength(0);
+  f.binding.dispose();expect(native.stop).toHaveBeenCalledTimes(1);
+});
+it("stops a late native playback handle after navigation instead of leaving audio active", async () => {
+  const pending = deferred<{ native: NativePassageHandle }>();
+  const native = { read: vi.fn(async () => ({ playing: true, positionMs: 0, durationMs: 1000 })), stop: vi.fn(async () => {}) }, f = fixture(() => pending.promise);
+  f.click();f.binding.dispose();pending.resolve({ native });await Promise.resolve();await Promise.resolve();
+  expect(native.stop).toHaveBeenCalledTimes(1);expect(native.read).not.toHaveBeenCalled();
 });

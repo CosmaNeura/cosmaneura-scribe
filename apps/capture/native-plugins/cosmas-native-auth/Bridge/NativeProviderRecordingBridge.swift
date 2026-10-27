@@ -79,6 +79,10 @@ private func recordingUUID(_ value: Any?) throws -> UUID {
   private var version = 0
   private var readyTimingRecorded: UUID?
 
+  var permitsPassagePlayback: Bool {
+    openingRevision == nil && (entry.map { [.sealed, .closed].contains($0.host.phase) && !$0.host.busy } ?? true)
+  }
+
   func recordReadyTiming(revision: String, milliseconds: Double) {
     guard milliseconds.isFinite, milliseconds >= 0, milliseconds <= 3_600_000,
       let selected = entry, selected.selection.revision == revision,

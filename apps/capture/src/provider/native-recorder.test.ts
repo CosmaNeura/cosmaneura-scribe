@@ -50,6 +50,22 @@ async function retainedUpload(h: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("native provider controller", () => {
+  it("rechecks sealed native retention before queue purge and preserves ciphertext on a failed seal", async () => {
+    const h = await fixture(), retained = await retainedUpload(h);
+    h.f.set({ phase: "sealed", recordedChunks: 1, recordedPlaintextBytes: 204, completion: retained.completion });
+    const original = h.port.command;
+    h.port.command = async request => {
+      if (request.kind === "seal") throw new Error("Archive write failed");
+      return original(request);
+    };
+    const view = await h.open();
+    try {
+      await expect(view.resumePendingWork()).rejects.toThrow("Archive write failed");
+      expect((await retained.queue.get(retained.objectId))?.state).toBe("encrypted");
+      expect(retained.receipt).not.toHaveBeenCalled();expect(retained.complete).not.toHaveBeenCalled();
+    } finally { await view.deactivate();h.storage.close(); }
+  });
+
   it("maps native time on existing requests without adding a polling or authority path", async () => {
     const h = await fixture(); let now = 100;
     vi.spyOn(performance, "now").mockImplementation(() => now);
@@ -548,7 +564,7 @@ describe("native provider controller", () => {
       expect(complete.mock.calls[1]![2]).toEqual({ idempotencyKey: completion.idempotencyKey });
       expect(reopened.controller.snapshot.state).toBe("processing");
       expect(getChunkReceipt).toHaveBeenCalledTimes(3);
-      expect(h.commands.every(c => c.kind === "close")).toBe(true);
+      expect(h.commands.map(c => c.kind)).toEqual(["seal", "close", "seal"]);
     } finally { await reopened.deactivate(); h.storage.close(); }
   });
 

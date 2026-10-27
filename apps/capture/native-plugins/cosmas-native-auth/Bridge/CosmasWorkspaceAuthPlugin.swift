@@ -1,5 +1,6 @@
 @preconcurrency import Capacitor
 import CosmasNativeAuth
+import CosmaneuraNativeRecording
 import Foundation
 import CoreFoundation
 #if os(iOS)
@@ -30,6 +31,9 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         CAPPluginMethod(name: "closeProviderSource", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openProviderRecording", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "providerRecordingCommand", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "playProviderPassage", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "readProviderPassage", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "stopProviderPassage", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getProviderConfiguration", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openProviderCore", returnType: CAPPluginReturnPromise),
 
@@ -45,11 +49,14 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
     private var providerSourceID: UUID?
     private var observedDriver: W13ObservedAuthDriver?
     private static let recordingBridge = NativeProviderRecordingBridge()
+    private static let passagePlayback = NativePassagePlayback()
+    private static var passageRevision: String?
+    private var passageObservations: [RecordingOpenObservation] = []
     private var recordingOpenObservation: RecordingOpenObservation?
     private var recordingOpenPending = false
 
     nonisolated public override func load() {
-        Task { @MainActor in self.initializeAuth(); self.observeRecordingLinks() }
+        Task { @MainActor in self.initializeAuth(); self.observeRecordingLinks(); self.observePassageLifecycle() }
     }
 
     private func observeRecordingLinks() {
@@ -127,6 +134,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             }
         }
         auth?.onChange = { [weak self] state in
+            if state.phase != .ready || state.revision != Self.passageRevision { Self.passagePlayback.stopAll() }
             Self.recordingBridge.authChanged(state)
             self?.providerConnection?.authChanged(state)
             if state.phase != .ready || self?.providerSourceRevision != state.revision {
@@ -244,6 +252,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             value["providerReady"] = self.providerRequestsAvailable
             if self.nativeRecordingAvailable {
                 value["nativeRecordingVersion"] = 2
+                value["nativePassagePlaybackVersion"] = 1
                 value["recordingSignInPreparationVersion"] = 1
             }
             call.resolve(value)
@@ -336,6 +345,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                     guard self.nativeRecordingAvailable, auth.state().phase == .ready,
                           auth.state().revision == selection.revision else { throw ProviderNativeError.authorityChanged }
                 }
+                Self.passagePlayback.stopAll()
                 let result = try await Self.recordingBridge.open(selection, current: current, make: {
                     try await NativeProviderRecordingHost.make(connection: connection, auth: auth,
                         recovery: recovery, workspaceID: selection.workspaceID, bindingRef: selection.bindingRef,
@@ -375,6 +385,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             do {
                 guard let options = call.options as? [String: Any] else { throw ProviderNativeError.invalidRequest }
                 let request = try NativeProviderRecordingCommand(options)
+                if request.kind == .start { Self.passagePlayback.stopAll() }
                 let result = try await Self.recordingBridge.command(request, current: {
                     guard self.nativeRecordingAvailable, let auth = self.auth, auth.state().phase == .ready,
                           auth.state().revision == request.revision else { throw ProviderNativeError.authorityChanged }
@@ -384,6 +395,73 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             #else
             Self.rejectProvider(call)
             #endif
+        }
+    }
+
+    private func observePassageLifecycle() {
+        #if os(iOS)
+        guard passageObservations.isEmpty else { return }
+        for name in [UIApplication.willResignActiveNotification, AVAudioSession.interruptionNotification] {
+            let token = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                Task { @MainActor in Self.passagePlayback.stopAll() }
+            }
+            passageObservations.append(RecordingOpenObservation(token))
+        }
+        #endif
+    }
+
+    private static func passagePayload(_ state: NativePassagePlayback.State?) -> [String: Any] {
+        guard let state else { return ["available": false] }
+        return ["available": true, "playing": state.playing, "positionMs": state.positionMs, "durationMs": state.durationMs]
+    }
+
+    @objc nonisolated public func playProviderPassage(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            #if os(iOS)
+            do {
+                guard let options = call.options as? [String: Any] else { throw ProviderNativeError.invalidRequest }
+                let selection = try NativeProviderPassageSelection(options)
+                self.initializeAuth(); self.observePassageLifecycle()
+                guard let connection = self.providerConnection else { throw ProviderNativeError.unavailable }
+                let current: @MainActor () throws -> Void = {
+                    guard self.nativeRecordingAvailable, let auth = self.auth, auth.state().phase == .ready,
+                        auth.state().revision == selection.revision, UIApplication.shared.applicationState == .active,
+                        Self.recordingBridge.permitsPassagePlayback, self.providerSourceOwner == nil,
+                        self.providerSourcePreparation == nil else { throw ProviderNativeError.authorityChanged }
+                }
+                try current(); Self.passageRevision = selection.revision
+                let state = try await Self.passagePlayback.play(requestID: selection.requestID, current: current,
+                    prepare: { try await connection.passageAudio(selection, current: current) },
+                    makePlayer: { try LiveNativePassagePlayer($0) })
+                call.resolve(Self.passagePayload(state))
+            } catch { Self.rejectProvider(call) }
+            #else
+            Self.rejectProvider(call)
+            #endif
+        }
+    }
+
+    @objc nonisolated public func readProviderPassage(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            do {
+                guard Set(call.options.keys) == ["requestId", "revision"], let auth = self.auth,
+                    auth.state().phase == .ready, auth.state().revision == call.getString("revision"),
+                    Self.passageRevision == auth.state().revision else { throw ProviderNativeError.authorityChanged }
+                let id = try NativeProviderPassageSelection.uuid(call.getString("requestId"))
+                call.resolve(Self.passagePayload(Self.passagePlayback.state(requestID: id)))
+            } catch { Self.rejectProvider(call) }
+        }
+    }
+
+    @objc nonisolated public func stopProviderPassage(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            do {
+                guard Set(call.options.keys) == ["requestId"] else { throw ProviderNativeError.invalidRequest }
+                let id = try NativeProviderPassageSelection.uuid(call.getString("requestId"))
+                try Self.passagePlayback.stop(requestID: id)
+                self.providerConnection?.cancel(id)
+                call.resolve()
+            } catch { Self.rejectProvider(call) }
         }
     }
 
@@ -472,6 +550,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                 self.initializeAuth()
                 guard let auth = self.auth, auth.state().phase == .ready,
                       auth.state().revision == revision else { throw ProviderNativeError.unavailable }
+                Self.passagePlayback.stopAll()
                 let preparation = try NativeSourcePreparation(workspaceID: workspace, bindingRef: binding,
                     sessionID: session, leaseID: lease, leaseReceiptID: receipt,
                     leaseGeneration: generation, captureAuthorizedUntil: deadline, source: .ios,

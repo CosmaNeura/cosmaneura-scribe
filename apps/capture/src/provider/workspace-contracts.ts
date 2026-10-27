@@ -1,3 +1,4 @@
+import type { PlayPassage } from "../../../review-ui/src/passage-playback";
 import type { CaptureFlowStore } from "../flow/types";
 import type { CaptureStorageCapacity } from "../flow/storage-capacity";
 import type { CaptureSource } from "../capture";
@@ -50,7 +51,7 @@ export interface AuthorizedProviderEncounter<R = ProviderRecorderResources | Pre
   readonly editJournal?: (sessionId: string) => CreatorEditJournal;
   /** Reauthorize and acquire the existing exclusive, creator-scoped recorder. */
   readonly recorder: (sessionId: string, signal: AbortSignal) => Promise<R>;
-  readonly playPassage?: (sessionId: string, segmentId: string, signal: AbortSignal) => Promise<{ wavBase64: string } | null>;
+  readonly playPassage?: PlayPassage;
   readonly openInCore: (noteRef: string | null) => Promise<void>;
 }
 export interface ProviderWorkspaceHost<R = ProviderRecorderResources | PreparedProviderRecorder> {

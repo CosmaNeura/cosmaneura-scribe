@@ -314,6 +314,16 @@ public final class NativeRecordingEncryption: Sendable {
   func authenticatedPlaintextBytes(
     envelope: Data, objectID: UUID, sequence: Int, additionalAuthenticatedData: String
   ) throws -> Int {
+    var wav = try authenticatedWav(envelope: envelope, objectID: objectID, sequence: sequence,
+      additionalAuthenticatedData: additionalAuthenticatedData)
+    defer { wav.resetBytes(in: 0..<wav.count) }
+    return wav.count
+  }
+
+  // Module-internal native playback primitive; never a Capacitor/key export API.
+  func authenticatedWav(
+    envelope: Data, objectID: UUID, sequence: Int, additionalAuthenticatedData: String
+  ) throws -> Data {
     guard envelope.startIndex == 0, (0..<2048).contains(sequence),
       (72...327_680).contains(envelope.count),
       envelope.prefix(8) == Data("CSCRIBE1".utf8)
@@ -338,7 +348,8 @@ public final class NativeRecordingEncryption: Sendable {
       ciphertext: envelope.subdata(in: (12 + length)..<(envelope.count - 16)),
       tag: envelope.suffix(16))
     var wav = try AES.GCM.open(sealed, using: key, authenticating: aad)
-    defer { wav.resetBytes(in: 0..<wav.count) }
+    var accepted = false
+    defer { if !accepted { wav.resetBytes(in: 0..<wav.count) } }
     guard (46...320_044).contains(wav.count), wav.count.isMultiple(of: 2) else {
       throw NativeRecordingFailure.invalidPacket
     }
@@ -353,7 +364,8 @@ public final class NativeRecordingEncryption: Sendable {
       little(28) == 32_000, little(32, 2) == 2, little(34, 2) == 16,
       wav[36..<40] == Data("data".utf8), little(40) == wav.count - 44
     else { throw NativeRecordingFailure.invalidPacket }
-    return wav.count
+    accepted = true
+    return wav
   }
 }
 
