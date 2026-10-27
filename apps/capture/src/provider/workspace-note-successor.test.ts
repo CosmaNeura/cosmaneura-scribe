@@ -666,7 +666,7 @@ it("opens current transcript review from a saved note without editing or prepari
   await f.click("open-draft"); await lastOptions().continueToNote!(ready());
   const link = f.content.querySelector('[data-workspace-action="review"]');
   expect(link).not.toBeNull();
-  expect(f.content.innerHTML).toContain("Review transcript and speakers");
+  expect(f.content.innerHTML).toContain('data-workspace-action="review">Speakers');
   const before = f.journal.snapshot();
   const mountCount = mounted.mock.calls.length;
   await f.click("review");
@@ -691,7 +691,7 @@ it("does not navigate the new saved-note review action after the encounter is re
   const w = wire(); w.setDraft();
   const f = mount({ request: w.request });
   await f.click("open-draft"); await lastOptions().continueToNote!(ready());
-  expect(f.content.innerHTML).toContain("Review transcript and speakers");
+  expect(f.content.innerHTML).toContain('data-workspace-action="review">Speakers');
   const mountCount = mounted.mock.calls.length;
   f.abort.abort();
   await f.click("review");
@@ -709,7 +709,7 @@ it.each(["unknown", "patient"] as const)("uses current working speaker roles for
   await f.click("open-draft"); await lastOptions().continueToNote!(current);
   // The immutable original remains unknown even after a working role correction.
   expect(current.source!.segments[0]!.speaker_role).toBe("unknown");
-  expect(f.content.innerHTML.includes("Identify the patient and clinician to improve this draft.")).toBe(role === "unknown");
+  expect(f.content.innerHTML.includes("Use Speakers to identify the patient and clinician.")).toBe(role === "unknown");
   expect(w.preparations).toEqual([]);
 });
 

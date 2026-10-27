@@ -35,6 +35,7 @@ import { PrivateNoteSession } from "./private-note-session";
 import "./private-note-editor";
 import type { PrivateNoteEditor } from "./private-note-editor";
 import { draftSaveState, noteConversationView, noteView } from "./note-view";
+import { bindNoteSections } from "./note-sections";
 import { NoteAutosave } from "./note-autosave";
 import { PatientListObserver } from "./patient-list-observer";
 import { providerPreferences } from "./provider-preferences";
@@ -1224,11 +1225,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       const size = (): void => { area.style.height = "auto"; area.style.height = `${Math.max(68, area.scrollHeight + 2)}px`; };
       size(); area.addEventListener("input", size);
     }
-    const templateDetails = content.querySelector<HTMLDetailsElement>(".provider-template-details");
-    const resizeDetails = (): void => {
-      if (templateDetails?.open) for (const area of templateDetails.querySelectorAll<HTMLTextAreaElement>("textarea[data-note-field]")) { area.style.height = "auto"; area.style.height = `${Math.max(68, area.scrollHeight + 2)}px`; }
-    };
-    templateDetails?.addEventListener("toggle", resizeDetails);
+    const stopNoteSections = bindNoteSections(content);
     const transcriptDetails = content.querySelector<HTMLDetailsElement>(".provider-note-evidence details");
     if (transcriptDetails && window.matchMedia("(min-width: 900px)").matches) transcriptDetails.open = true;
     const stopTranscriptTools = bindTranscriptTools(content);
@@ -1253,7 +1250,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     content.addEventListener("focusin", rememberEditorField);
     disposeContent = () => {
       playback.dispose(); if (stopNotePlayback === playback.stop) stopNotePlayback = null;
-      templateDetails?.removeEventListener("toggle", resizeDetails);
+      stopNoteSections();
       sourceNavigation.dispose();
       if (refreshNoteSources === sourceNavigation.refresh) refreshNoteSources = null;
       autosave.dispose(); if (noteAutosave === autosave) noteAutosave = null;
@@ -1659,7 +1656,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         case "check-note": await readNote(false); break;
         case "review": await guardNavigation("review"); break;
         case "note-view": case "transcript-view": {
-          setNoteView(button.dataset.workspaceAction === "transcript-view" && content.querySelector<HTMLElement>(".provider-note")?.dataset.conversation !== "shown");
+          setNoteView(button.dataset.workspaceAction === "transcript-view");
           break;
         }
         case "match-patient": {

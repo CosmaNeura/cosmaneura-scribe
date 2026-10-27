@@ -40,6 +40,7 @@ function fixture(desktop = false) {
   evidence.parentElement = note; back.parentElement = evidence; search.parentElement = evidence; toggle.parentElement = note;
   note.children.set(".provider-note-evidence", evidence);
   note.children.set('[data-workspace-action="transcript-view"]', toggle);
+  note.children.set('[data-workspace-action="note-view"]', back);
   evidence.children.set("[data-note-back]", back); evidence.children.set("input, summary", search); evidence.children.set("details", details);
   note.dataset.conversation = "hidden"; evidence.hidden = true;
   const page = { scrollX: 12, scrollY: 710, matchMedia: () => ({ matches: desktop }), getComputedStyle: () => ({ overflowY: "visible" }), scrollTo: vi.fn((x: number, y: number) => { page.scrollX = x; page.scrollY = y; }) };
@@ -77,9 +78,11 @@ it("keeps desktop conversation beside the mounted note without scrolling to a mo
   const position = f.show(f.clinical);
   expect(f.note.dataset.conversation).toBe("shown"); expect(f.evidence.hidden).toBe(false);
   expect(f.note.scrollIntoView).not.toHaveBeenCalled(); expect(active).toBe(f.search);
-  expect(f.toggle.textContent).toBe("Hide the conversation"); expect(f.toggle.attributes.get("aria-expanded")).toBe("true");
+  expect(f.toggle.attributes.get("aria-pressed")).toBe("true"); expect(f.back.attributes.get("aria-pressed")).toBe("false");
+  expect(f.toggle.attributes.get("aria-expanded")).toBe("true");
   noteConversationView(f.note as unknown as HTMLElement, false, null, position);
   expect(active).toBe(f.clinical); expect(f.toggle.attributes.get("aria-expanded")).toBe("false");
+  expect(f.back.attributes.get("aria-pressed")).toBe("true");
 });
 
 it("does not restore a field from another visit and returns keyboard focus to the visible Conversation button", () => {

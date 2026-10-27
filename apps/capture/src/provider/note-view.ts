@@ -1,5 +1,5 @@
 import type { CoreDraft } from "./core-notes";
-import { noteFieldLabel } from "./workspace-display";
+import { noteSections } from "./note-sections";
 import { escapeText } from "./visit-list-view";
 import { noteEditorPosition, restoreNoteEditorPosition, type NoteEditorPosition } from "./note-editor-state";
 
@@ -19,7 +19,9 @@ export function noteConversationView(note: HTMLElement, shown: boolean, lastFiel
   const evidence = note.querySelector<HTMLElement>(".provider-note-evidence");
   if (evidence) evidence.hidden = !shown;
   const toggle = note.querySelector<HTMLButtonElement>('[data-workspace-action="transcript-view"]');
-  if (toggle) { toggle.textContent = shown ? "Hide the conversation" : "Show the conversation"; toggle.setAttribute("aria-expanded", String(shown)); }
+  if (toggle) { toggle.setAttribute("aria-expanded", String(shown)); toggle.setAttribute("aria-pressed", String(shown)); }
+  const noteButton = note.querySelector<HTMLButtonElement>('[data-workspace-action="note-view"]');
+  noteButton?.setAttribute("aria-pressed", String(!shown));
   if (shown) {
     const details = evidence?.querySelector<HTMLDetailsElement>("details");
     if (details) details.open = true;
@@ -27,7 +29,7 @@ export function noteConversationView(note: HTMLElement, shown: boolean, lastFiel
       evidence?.querySelector<HTMLElement>("input, summary")?.focus({ preventScroll: true });
     } else {
       note.scrollIntoView({ block: "start" });
-      evidence?.querySelector<HTMLElement>("[data-note-back]")?.focus({ preventScroll: true });
+      noteButton?.focus({ preventScroll: true });
     }
   } else if (wasShown) {
     restoreNoteEditorPosition(position);
@@ -38,17 +40,17 @@ export function noteConversationView(note: HTMLElement, shown: boolean, lastFiel
 }
 
 export function noteView(draft: CoreDraft, patient: string, conversation: string, unassignedSpeakers = false): string {
-  const field = (key: string, index: number): string => `<label>${escapeText(noteFieldLabel(key))}<textarea data-note-field name="note-${index}" rows="2">${escapeText(draft.fields?.[key] ?? "")}</textarea></label>`;
   return `<section class="provider-note" data-note-view="note" data-conversation="hidden">
     <div class="provider-save-bar provider-note-actions"><button class="provider-primary" data-workspace-action="finish-note">Save and review</button><p class="provider-draft-status"><span data-note-save-state role="status" aria-atomic="true">Draft saved</span></p></div>
-    <div class="provider-note-heading"><h1>${escapeText(patient)}</h1>
-    <button class="provider-text-link" data-workspace-action="transcript-view" aria-expanded="false">Show the conversation</button></div>
-    <p class="provider-note-review-help">Check it against the conversation first. Then review it in the CosmaNeura dashboard.</p>
-    <div class="provider-note-review-help">${unassignedSpeakers ? '<p role="status">Some speakers are not identified. Identify the patient and clinician to improve this draft. Keep “Not sure” for any voice you cannot identify.</p>' : ''}<button class="provider-text-link" data-workspace-action="review">Review transcript and speakers</button>
-      <p>Corrections keep the original transcript and saved notes. You can then choose Prepare updated draft.</p></div>
+    <div class="provider-note-heading"><h1>${escapeText(patient)}</h1></div>
+    <nav class="provider-note-tabs" aria-label="Note tools"><button type="button" data-note-back data-workspace-action="note-view" aria-pressed="true">Note</button>
+      <button type="button" data-workspace-action="transcript-view" aria-expanded="false" aria-pressed="false">Transcript</button>
+      <button type="button" data-workspace-action="review">Speakers</button></nav>
+    <p class="provider-note-review-help">Review the note, then save it for the dashboard.</p>
+    ${unassignedSpeakers ? '<p class="provider-note-review-help" role="status">Some speakers are not identified. Use Speakers to identify the patient and clinician. Keep “Not sure” for any voice you cannot identify.</p>' : ''}
     ${draft.reviewed_source.capture_continuity ? '<p class="provider-warning" role="status">Some speech may be missing. Check this note against the conversation.</p>' : ''}
-    <scribe-private-note mode="note"></scribe-private-note><div class="provider-note-grid"><div class="provider-note-editor" tabindex="0" role="region" aria-label="Draft note">${draft.field_order?.map(field).join("") ?? ''}
-      <details class="provider-note-guidance"><summary>Details</summary><p>${escapeText(draft.note_type)} · Saving keeps your edits. Clinical review is still required.</p></details>
-    </div><aside class="provider-note-evidence" hidden><button class="provider-text-link provider-note-mobile-back" data-note-back data-workspace-action="note-view">Back to note</button><p class="provider-note-mobile-context">${escapeText(patient)}</p><h2>Conversation</h2><div class="provider-note-source-toolbar"></div><div data-note-transcript-scroll tabindex="0" role="region" aria-label="Recording transcript">${conversation}</div></aside></div>
+    <scribe-private-note mode="note"></scribe-private-note><div class="provider-note-grid"><div class="provider-note-editor" tabindex="0" role="region" aria-label="Draft note">${noteSections(draft)}
+      <details class="provider-note-guidance"><summary>About this draft</summary><p>${escapeText(draft.note_type)} · Clinical review is still required. Transcript and speaker corrections keep the original transcript and saved notes. You can then choose Prepare updated draft.</p></details>
+    </div><aside class="provider-note-evidence" hidden><p class="provider-note-mobile-context">${escapeText(patient)}</p><div class="provider-note-source-toolbar"></div><div data-note-transcript-scroll tabindex="0" role="region" aria-label="Recording transcript">${conversation}</div></aside></div>
     <p class="provider-support">Still stuck? Email <a href="mailto:dev@cosmaneura.com">dev@cosmaneura.com</a></p></section>`;
 }
