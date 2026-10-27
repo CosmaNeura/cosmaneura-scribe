@@ -73,6 +73,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let queuedRecordReadyTiming: RecordReadyTiming | undefined;
   let leaveAfterRecordingPreparation = false;
   let openingRef: string | null = null;
+  let separateVisitPatientRef: string | null = null;
   let cancelOpening: (() => void) | null = null;
   type NavigationDestination = "encounters" | "review" | (() => void | Promise<void>);
   let pendingNavigation: NavigationDestination | null = null;
@@ -155,6 +156,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
 
   const clearEncounter = async (): Promise<void> => {
     generation += 1;
+    separateVisitPatientRef = null;
     queuedRecordReadyTiming?.cancel(); queuedRecordReadyTiming = undefined;
     preparationSignIn?.close(); preparationSignIn = null;
     const controls = preparationControls;
@@ -230,7 +232,11 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
               ? "This visit could not be opened. Your saved work is retained. Retry opening the visit."
               : `The ${step} could not be confirmed. Your saved work is retained. Return to Your encounters and reopen this encounter to recover.`;
         if (error instanceof CaptureDeviceCustodyError) {
-          show('<h1>Recording access needed on this device</h1><p>If this recording was prepared on another device, continue on that device. Moving an unfinished recording between devices is not supported. If this is the original device, contact support before retrying. Do not remove Scribe or reset its data.</p><button data-workspace-action="encounters">Your encounters</button>');
+          const canStartSeparateVisit = separateVisitPatientRef !== null && host.encounterSetup
+            && context?.encounter.patientRef === separateVisitPatientRef;
+          show(`<h1>Recording access needed on this device</h1><p>If this recording was prepared on another device, continue on that device. Moving an unfinished recording between devices is not supported. If this is the original device, contact support before retrying. Do not remove Scribe or reset its data.</p>
+            ${canStartSeparateVisit ? '<p>You can start a separate visit here for the same patient. The earlier visit and its saved work will stay unchanged. A new recording starts only after you confirm consent.</p><button data-workspace-action="new-visit-same-patient">Start a new visit for this patient</button>' : ''}
+            <button data-workspace-action="encounters">Your encounters</button>`);
         } else if (context && journal.progress?.pendingSave) {
           showSaveRecovery();
         } else if (step === "encounter setup" || step === "encounter creation") {
@@ -386,7 +392,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     disposeContent = () => { observer.dispose(); controller.abort(); stopSwipe(); document.removeEventListener("visibilitychange", visibility); searchInput?.removeEventListener("input", filterVisits); showHidden?.removeEventListener("change", filterVisits); content.removeEventListener("click", dayClick); content.removeEventListener("keydown", dayKeys); };
     observer.schedule();
   };
-  const setup = async (checkPending = false): Promise<void> => {
+  const setup = async (checkPending = false, existingPatientRef?: string): Promise<void> => {
     requireValue(host.encounterSetup);
     await clearEncounter(); header.hidden = true; step = "encounter setup";
     const n = generation;
@@ -398,6 +404,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     // Only an explicit recovery action can resubmit the retained request.
     // Ordinary New encounter navigation still stops at the pending-request screen.
     if (checkPending && state.pending) await create(null);
+    else if (existingPatientRef && !state.pending) await create({ kind: "existing", patientRef: existingPatientRef });
     else showSetup();
   };
   const create = async (patient: EncounterDraft["patient"] | null, openAfterCreation = true): Promise<void> => {
@@ -875,7 +882,13 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           else preparation();
         }
         else {
-          if (recovered.status === "created" || recovered.status === "capturing") throw new CaptureDeviceCustodyError();
+          if (recovered.status === "created" || recovered.status === "capturing") {
+            // Only this authorized, read-only discovery without a local journal
+            // may offer a separate visit. It never adopts the earlier recording.
+            const patientRef = opened.encounter.patientRef;
+            if (host.encounterSetup && patientRef && reference(patientRef, "patient")) separateVisitPatientRef = patientRef;
+            throw new CaptureDeviceCustodyError();
+          }
           await persist({ admission: null, sessionId: recovered.session_id, uploaded: true, pendingSave: null });
           if (authorized(n)) showReview(recovered, initialAction);
         }
@@ -1532,6 +1545,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         }
         case "create": await host.createEncounter(host.signal); await list(); break;
         case "new-encounter": await setup(); break;
+        case "new-visit-same-patient": {
+          if (button.disabled || button !== content.querySelector('[data-workspace-action="new-visit-same-patient"]')) return;
+          const patientRef = separateVisitPatientRef;
+          requireValue(patientRef && context?.encounter.patientRef === patientRef && host.encounterSetup);
+          await setup(false, patientRef); break;
+        }
         case "add-dob": addDateOfBirth(); break;
         case "new-patient": {
           if (button.disabled || button !== content.querySelector(".provider-create-choice")) return;
