@@ -61,20 +61,20 @@ for (const { viewport, title, largeText = false, safeArea = false } of cases) {
     if (safeArea) expect((await save.boundingBox()).y).toBeGreaterThanOrEqual(24);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath("scrolled-reduced.png") });
-    await page.getByRole("button", { name: "Show the conversation", exact: true }).click();
+    await page.getByRole("button", { name: "Transcript", exact: true }).click();
     if (viewport.width < 900) {
       await expect(save).toBeHidden();
-      await expect(page.getByRole("button", { name: "Back to note", exact: true })).toBeFocused();
+      await expect(page.getByRole("button", { name: "Note", exact: true })).toBeFocused();
       await page.keyboard.press("Enter");
     } else {
       await page.mouse.move(4, 290); await page.mouse.wheel(0, 1200);
       await expect(save).toBeInViewport({ ratio: 1 });
-      const conversation = page.getByRole("heading", { name: "Conversation", exact: true });
+      const conversation = page.getByRole("heading", { name: "Transcript", exact: true });
       await expect(conversation).toBeInViewport({ ratio: 1 });
       expect(await conversation.evaluate(el => { const r = el.getBoundingClientRect();
         return el.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); })).toBe(true);
       await page.screenshot({ path: testInfo.outputPath("conversation-scrolled.png") });
-      await page.getByRole("button", { name: "Hide the conversation", exact: true }).click();
+      await page.getByRole("button", { name: "Note", exact: true }).click();
     }
     for (const [name, text] of Object.entries(fields)) await expect(page.getByRole("textbox", { name, exact: true })).toHaveValue(text);
     // Keyboard navigation reaches the single Save action, with the last edit
@@ -90,6 +90,8 @@ for (const { viewport, title, largeText = false, safeArea = false } of cases) {
     await expect(page.getByRole("heading", { name: "Saved for review", exact: true })).toBeVisible();
     expect(server.calls.filter(action => action === "save")).toHaveLength(1);
     expect(server.current().fields).toEqual({ ...fields, Subjective: edited });
+    expect(await page.evaluate(() => globalThis.noteLab.dashboardNoteRefs)).toEqual([]);
+    await page.getByRole("button", { name: "Open the dashboard", exact: true }).click();
     expect(await page.evaluate(() => globalThis.noteLab.dashboardNoteRefs)).toEqual([server.current().note_ref]);
     expect(await page.evaluate(() => globalThis.__noteLabMediaCalls)).toBe(0);
     server.assertHealthy();

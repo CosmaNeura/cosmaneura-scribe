@@ -21,17 +21,19 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
       };
       const openNote = async target => {
         await target.getByRole("button", { name: /^(Continue to note|Review draft note)$/u }).click();
+        await target.locator("[data-note-section-group] > summary").click();
+        await target.locator('[data-note-section="0"] > summary').click();
         await expect(target.getByRole("textbox", { name: "Patient", exact: true })).toBeVisible();
       };
       await test.step("note_open", async () => { await openVisit(page); await openNote(page); });
       const edited = "SYNTHETIC ACCEPTANCE — exact saved edit\nAvery’s fictional visit; no real patient.";
-      await page.getByRole("textbox", { name: "Patient", exact: true }).fill(edited);
+      await page.getByRole("textbox", { name: "Patient", exact: true, includeHidden: true }).fill(edited);
       await expect(page.locator("[data-note-save-state]")).toHaveText("Draft saving…");
       await test.step("automatic_save", async () => {
         await expect(page.locator("[data-note-save-state]")).toHaveText(loseSaveResponse
           ? "Draft save not confirmed" : /^Draft saved at /u);
         expect(server.calls.filter(call => call === "save")).toHaveLength(1);
-        await expect(page.getByRole("textbox", { name: "Patient", exact: true })).toHaveValue(edited);
+        await expect(page.getByRole("textbox", { name: "Patient", exact: true, includeHidden: true })).toHaveValue(edited);
         expect(await page.evaluate(() => globalThis.noteLab.dashboardNoteRefs)).toEqual([]);
       });
       // A reduced mobile viewport exercises the save bar while the clinician
@@ -47,6 +49,8 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
           expect(await page.evaluate(() => globalThis.noteLab.dashboardNoteRefs)).toEqual([]);
         } else {
           await expect(page.getByRole("heading", { name: "Saved for review", exact: true })).toBeVisible();
+          expect(await page.evaluate(() => globalThis.noteLab.dashboardNoteRefs)).toEqual([]);
+          await page.getByRole("button", { name: "Open the dashboard", exact: true }).click();
           expect(await page.evaluate(() => globalThis.noteLab.dashboardNoteRefs)).toEqual([server.current().note_ref]);
         }
       });
@@ -63,19 +67,21 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
             expect(server.calls.filter(call => call === "resolve")).toHaveLength(0);
           });
         } else await openNote(relaunched);
-        await expect(relaunched.getByRole("textbox", { name: "Patient", exact: true })).toHaveValue(edited);
+        await expect(relaunched.getByRole("textbox", { name: "Patient", exact: true, includeHidden: true })).toHaveValue(edited);
         await expect(relaunched.getByRole("textbox", { name: "Plan", exact: true })).toHaveValue(server.original.fields.Plan);
         await relaunched.getByRole("button", { name: "Back to encounters", exact: true }).click();
         const savedRow = relaunched.locator(`[data-visit-ref="${server.scope.appointmentRef}"]`);
         await expect(savedRow.getByText("Note ready", { exact: true })).toBeVisible();
         const openingReads = server.calls.filter(call => call === "note-opening").length;
         await savedRow.getByRole("button", { name: "Open note", exact: true }).click();
-        await expect(relaunched.getByRole("textbox", { name: "Patient", exact: true })).toHaveValue(edited);
+        await expect(relaunched.getByRole("textbox", { name: "Patient", exact: true, includeHidden: true })).toHaveValue(edited);
         expect(server.calls.filter(call => call === "note-opening")).toHaveLength(openingReads + 1);
         expect(await relaunched.evaluate(() => globalThis.noteLab.openRefs)).toEqual([server.scope.appointmentRef, server.scope.appointmentRef]);
       });
       await relaunched.getByRole("button", { name: "Save and review", exact: true }).click();
       await expect(relaunched.getByRole("heading", { name: "Saved for review", exact: true })).toBeVisible();
+      expect(await relaunched.evaluate(() => globalThis.noteLab.dashboardNoteRefs)).toEqual([]);
+      await relaunched.getByRole("button", { name: "Open the dashboard", exact: true }).click();
       expect(await relaunched.evaluate(() => globalThis.noteLab.dashboardNoteRefs)).toEqual([server.current().note_ref]);
       expect(server.calls.filter(call => call === "save")).toHaveLength(1);
       expect(server.calls.filter(call => call === "resolve")).toHaveLength(0);
@@ -130,7 +136,7 @@ test("locally ready note actions reject foreign, superseded and removed catalog 
   await page.goto("/e2e/fixtures/provider-note.html");
   await page.locator(`[data-workspace-action="open"][data-appointment="${server.scope.appointmentRef}"]`).click();
   await page.getByRole("button", { name: "Review draft note", exact: true }).click();
-  await expect(page.getByRole("textbox", { name: "Patient", exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Plan", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Back to encounters", exact: true }).click();
   const row = page.locator(`[data-visit-ref="${server.scope.appointmentRef}"]`);
   await expect(row.getByRole("button", { name: "Open note", exact: true })).toBeVisible();

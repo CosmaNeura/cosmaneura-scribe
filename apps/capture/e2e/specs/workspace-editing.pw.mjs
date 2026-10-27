@@ -146,10 +146,10 @@ test("phone conversation view retains unsaved edits without a save or remount", 
   const plan = page.getByRole("textbox", { name: "Plan", exact: true });
   await plan.fill("Synthetic retained draft"); await plan.focus();
   await plan.evaluate(field => { window.savedEditorNode = field; field.setSelectionRange(2, 6); });
-  await page.getByRole("button", { name: "Show the conversation", exact: true }).click();
+  await page.getByRole("button", { name: "Transcript", exact: true }).click();
   await expect(plan).not.toBeVisible();
   await expect(page.locator(".provider-note-evidence")).toBeVisible();
-  await page.getByRole("button", { name: "Back to note", exact: true }).click();
+  await page.getByRole("button", { name: "Note", exact: true }).click();
   await expect(plan).toHaveValue("Synthetic retained draft");
   await expect(plan).toBeFocused();
   expect(await plan.evaluate(field => ({ same: field === window.savedEditorNode, start: field.selectionStart, end: field.selectionEnd })))
