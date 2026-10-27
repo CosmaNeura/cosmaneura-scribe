@@ -24,6 +24,7 @@ const TERMINAL_EVENTS = ["audio_stop_confirmed", "audio_permission_required", "a
   "audio_packet_invalid", "audio_chunk_commit_failed"] as const;
 const EVENTS = ["host_open", "window_ready", "connect_begin", "backend_ready", "presentation_ready", "connect_ready", "connect_failed",
   "before_quit", "window_close", "renderer_gone", "renderer_navigation", "close_begin", "boundary_closed", "owner_closed", "close_failed", "quit_ready",
+  "provider_start_requested", "provider_resume_requested",
   "audio_start_pending", "audio_helper_spawned", "audio_ready", "audio_start_timeout",
   ...TERMINAL_EVENTS,
   "meeting_windows_ready", "meeting_windows_empty", "meeting_windows_screen_access_denied", "meeting_windows_lookup_failed",
@@ -45,9 +46,13 @@ export function runtimeDiagnostics(directory: string): RuntimeDiagnostic {
     const reasonLimits = failureReason ? FAILURE_REASON_LIMITS[event as FailureReasonEvent] : undefined;
     if (reasonLimits ? !Number.isSafeInteger(reasonCode) || reasonCode! < reasonLimits[0]
       || reasonCode! > reasonLimits[1] : reasonCode !== undefined) return;
-    // A later Record/Resume attempt needs fresh readiness evidence even when a
-    // previous long visit exhausted routine events. Bound queued writes as well
-    // as the existing on-disk ring so repeated attempts cannot grow memory.
+    // Record/Resume can spend time renewing setup before the native source is
+    // constructed. Restore its bounded stage coverage at that operation boundary;
+    // only audio_start_pending advances the existing native-attempt counter.
+    if (event === "provider_start_requested" || event === "provider_resume_requested") {
+      remaining = 128; remainingTerminal = 32;
+    }
+    // Bound queued writes as well as the on-disk ring across later attempts.
     if (event === "audio_start_pending") { remaining = 128; remainingTerminal = 32; attempt += 1; }
     if (pending >= 160) return;
     // Preserve a bounded terminal allowance after routine startup/upload events

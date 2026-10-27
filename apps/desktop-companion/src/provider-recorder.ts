@@ -746,7 +746,14 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     this.requireOpen();
     if (this.operation || this.stopping || this.initializing && action !== "prepare") return Promise.reject(unavailable());
     this.action = action;
-    this.operation = Promise.resolve().then(() => { this.requireOpen(); return work(); }).finally(() => {
+    this.operation = Promise.resolve().then(() => {
+      this.requireOpen();
+      if (action === "start" || action === "resume") {
+        try { this.options.native.diagnostics?.(action === "start" ? "provider_start_requested" : "provider_resume_requested"); }
+        catch { /* Diagnostic failure cannot affect capture or cleanup. */ }
+      }
+      return work();
+    }).finally(() => {
       this.operation = null; this.action = null; this.publish();
     });
     this.publish(); return this.operation;

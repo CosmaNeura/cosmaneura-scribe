@@ -141,6 +141,44 @@ function interruptedDriver(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("desktop preparation screen", () => {
+  it("starts diagnostic coverage before normal Record/Resume work and ignores rejected duplicate commands", async () => {
+    const f = await fixture(true), driver = interruptedDriver(f), mounting = deferred(), mounted = deferred();
+    const events: string[] = [];
+    const recorder = await f.open({ native: { ...f.options.native, diagnostics: event => { events.push(event); } },
+      authorizeMount: async (prepared, signal) => {
+        events.push("mount_entered"); mounting.resolve(); await mounted.promise;
+        return f.options.authorizeMount(prepared, signal);
+      }, retireSource: async () => { events.push("retire_entered"); await f.options.retireSource(); } });
+    try {
+      expect(events).not.toContain("provider_start_requested");
+      await expect(recorder.resumeRecording()).rejects.toThrow();
+      expect(events).not.toContain("provider_resume_requested");
+      const starting = recorder.startRecording();
+      await mounting.promise;
+      expect(events.indexOf("provider_start_requested")).toBeLessThan(events.indexOf("mount_entered"));
+      await expect(recorder.startRecording()).rejects.toThrow();
+      expect(events.filter(event => event === "provider_start_requested")).toHaveLength(1);
+      mounted.resolve(); await starting; await driver.interrupt(true);
+      await vi.waitFor(() => expect(recorder.snapshot).toMatchObject({ statusCode: "capture_paused", desktop: { phase: "interrupted" } }));
+      const beforeResume = events.length;
+      await recorder.resumeRecording();
+      expect(events.slice(beforeResume)[0]).toBe("provider_resume_requested");
+      expect(events.slice(beforeResume)).toContain("retire_entered");
+      expect(events.filter(event => event === "provider_resume_requested")).toHaveLength(1);
+      expect(f.nativeStart).toHaveBeenCalledTimes(2);
+    } finally { mounted.resolve(); await f.close(); }
+  });
+  it("keeps a throwing diagnostic callback outside normal capture behavior", async () => {
+    const f = await fixture(true); interruptedDriver(f);
+    const diagnostics = vi.fn(() => { throw Error("synthetic diagnostic failure"); });
+    const recorder = await f.open({ native: { ...f.options.native, diagnostics } });
+    try {
+      await recorder.startRecording();
+      expect(recorder.snapshot.desktop?.phase).toBe("recording");
+      expect(diagnostics).toHaveBeenCalledWith("provider_start_requested");
+      expect(f.nativeStart).toHaveBeenCalledTimes(1);
+    } finally { await f.close(); }
+  });
   it.each(["success", "revoked", "cancelled"] as const)("joins combined preparation metadata before writes or release on %s", async outcome => {
     const f = await fixture(true), reviewReply = deferred(), keyReply = deferred();
     const baseline = f.options.createBff(f.abort.signal);
