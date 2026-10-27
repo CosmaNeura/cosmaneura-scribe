@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
-import { ENGINEERING_BUDGETS, JOURNEY, nativeCleanupProvesStopped, runJourney, validateScenario } from './engine.mjs';
+import { ENGINEERING_BUDGETS, JOURNEY, assertObservation, nativeCleanupProvesStopped, runJourney, validateScenario } from './engine.mjs';
 import { Journal, lockTarget, sha256 } from './journal.mjs';
 
 const scenario = () => ({ schema: 1, syntheticOnly: true, runId: 'synthetic-engine-test', mode: 'fixed', executionKind: 'mock',
@@ -15,6 +15,32 @@ const observation = (action, s) => ({ action, origin: 'product-ui', executionKin
   observedAtEpochMs: Date.now(), checks: [{ locator: 'test-only', kind: 'text', actual: action, expected: action }],
   nativeState: 'recording', elapsedSeconds: 1, consentReceiptSHA256: 'd'.repeat(64), fixtureSHA256: s.fixture.sha256,
   sourceState: 'ended', completedSourceFrames: 16000 });
+test('journey acceptance requires requested Pause/Resume dispatch, native binding and source coverage', () => {
+  const s = { ...scenario(), acceptanceScope: { pauseResume: true } };
+  const native = { source: 'normal-native-recording-response', runId: 'run', workspaceId: 'workspace', appointmentRef: 'appointment',
+    sessionId: 'session', recorderId: 'recorder', nativeRevision: 3, phase: 'recording', busy: false,
+    observedAtMonotonicMs: 30, browserTimeOriginMs: 1000 };
+  const value = { ...observation('play_source', s), nativeObservation: native,
+    sourceMeasurements: [{ pausePerformed: true }], pauseResume: {
+      pause: { dispatchCount: 1, nativeObservation: { ...native, nativeRevision: 2, phase: 'paused', observedAtMonotonicMs: 20 } },
+      resume: { dispatchCount: 1, nativeObservation: native } } };
+  assertObservation('play_source', value, s);
+  for (const change of [x => { delete x.pauseResume; }, x => { x.sourceMeasurements = []; },
+    x => { x.sourceMeasurements[0].pausePerformed = false; }, x => { x.pauseResume.pause.dispatchCount = 0; },
+    x => { x.pauseResume.resume.dispatchCount = 2; }, x => { x.pauseResume.pause.nativeObservation.phase = 'recording'; },
+    x => { x.pauseResume.pause.nativeObservation.recorderId = 'foreign'; }, x => { x.pauseResume.pause.nativeObservation.busy = true; },
+    x => { x.pauseResume.resume.nativeObservation.nativeRevision = 1; }, x => { x.pauseResume.resume.nativeObservation.observedAtMonotonicMs = 10; }]) {
+    const invalid = structuredClone(value); change(invalid);
+    assert.throws(() => assertObservation('play_source', invalid, s), /requested_pause_resume_not_observed/);
+  }
+  const desktop = structuredClone(value);
+  for (const n of [desktop.nativeObservation, ...Object.values(desktop.pauseResume).map(x => x.nativeObservation)]) {
+    n.source = 'normal-desktop-recording-response'; n.pendingMutation = false;
+    n.captureState = n.phase; n.phase = n.phase === 'paused' ? 'stopped' : 'recording';
+  }
+  assertObservation('play_source', desktop, s);
+  assertObservation('play_source', observation('play_source', s), { ...s, acceptanceScope: undefined });
+});
 function adapter(s, overrides = {}) {
   const calls = [];
   return { calls, lockIdentity: async () => s.targetId, doctor: async () => ({ ready: true, targetId: s.targetId, executionKind: 'mock' }), connect: async () => {},

@@ -60,6 +60,25 @@ export function assertObservation(action, observation, scenario) {
   if (action === 'play_source' && (observation.fixtureSHA256 !== scenario.fixture.sha256
       || observation.sourceState !== 'ended' || !Number.isSafeInteger(observation.completedSourceFrames)
       || observation.completedSourceFrames <= 0)) throw Error('source_completion_not_observed');
+  if (action === 'play_source' && scenario.acceptanceScope?.pauseResume === true) {
+    const phases = observation.pauseResume, current = observation.nativeObservation;
+    if (!Array.isArray(observation.sourceMeasurements) || observation.sourceMeasurements.length === 0
+        || observation.sourceMeasurements.some(value => value.pausePerformed !== true)
+        || ['pause', 'resume'].some(action => {
+          const evidence = phases?.[action], native = evidence?.nativeObservation;
+          const desktop = native?.source === 'normal-desktop-recording-response';
+          return evidence?.dispatchCount !== 1 || !native || !current
+            || !['normal-native-recording-response', 'normal-desktop-recording-response'].includes(native.source)
+            || ['source', 'runId', 'workspaceId', 'appointmentRef', 'sessionId', 'recorderId'].some(key => !native[key] || native[key] !== current[key])
+            || !Number.isSafeInteger(native.nativeRevision) || native.nativeRevision < 0
+            || !Number.isFinite(native.observedAtMonotonicMs) || native.browserTimeOriginMs !== current.browserTimeOriginMs
+            || (desktop ? native.pendingMutation !== false || native.captureState !== (action === 'pause' ? 'paused' : 'recording')
+                || native.phase !== (action === 'pause' ? 'stopped' : 'recording')
+              : native.busy !== false || native.phase !== (action === 'pause' ? 'paused' : 'recording'));
+        }) || phases.resume.nativeObservation.nativeRevision < phases.pause.nativeObservation.nativeRevision
+        || phases.resume.nativeObservation.observedAtMonotonicMs < phases.pause.nativeObservation.observedAtMonotonicMs)
+      throw Error('requested_pause_resume_not_observed');
+  }
   // Only metadata and digests enter the journal. Synthetic text/screenshots remain
   // in private evidence files, never in stdout, actions or Git history.
   return { observationSHA256: sha256(JSON.stringify(observation)), checks: observation.checks.length,

@@ -43,6 +43,29 @@ manufacture consent. Finish checks the same recorder immediately before clicking
 and retains its first physical-stop observation. Save checks the current source
 session before editing; save/reopen require the normal Core note/version tuple.
 
+The iOS observer preserves an already-observed `sealed` response across the
+same recorder's exact successful normal close. It retains the original timestamp
+as historical Finish evidence, separately from fresh recording and current
+closed-lifecycle evidence. Navigation hides it until the same visit and auth
+revision rebind; failed or uncorrelated close, new capture, auth or scope changes
+retire it. A close without an observed seal cannot reconstruct missing history.
+An earlier failed run with a missing seal remains failed after this tooling fix.
+
+When a scenario explicitly requests `acceptanceScope.pauseResume:true`, its
+native `sources.quietWindow` must contain two increasing positive source offsets
+in seconds, with one configured click and nonempty assertions for each normal
+Pause/Resume control. Playback must actually dispatch both controls once, observe
+the same recorder paused then recording, and report `pausePerformed:true` for
+every source. Missing configuration or coverage fails the requested gate.
+The source stops inside the selected silent interval and stays stopped while
+both native controls settle; it resumes from that exact offset afterward.
+Choose the interval from the pinned fixture's timeline and verify its PCM is
+silent. For `round2-corrections` manifest `ef1d513eb2be387c62970561eb1a6104a450b89fd86b183c970b4ffcf6bf2ea8`,
+the first interturn gap is 16.685–17.285 seconds; `[16.7,17.2]` is a verified
+silent candidate for that fixture. This is a 500ms source-stop acquisition
+window, not a native UI deadline or evidence that the operational test passed.
+Do not substitute R3's longer pause interval or change an old run's frozen config.
+
 `dashboard` config pins a private normal hosted session store and expected Clerk
 identity. It verifies the exact saved appointment, note, transcript and ordered
 content hash through the normal page, then reloads it. Broad patient lists are

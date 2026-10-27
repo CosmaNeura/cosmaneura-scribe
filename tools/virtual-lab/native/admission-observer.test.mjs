@@ -319,9 +319,10 @@ test('actual recording envelope is required; a flat state, failed or foreign rep
 });
 
 test('correlated close survives same-scope navigation and remains an absorbing lifecycle receipt, not fresh recording', async () => {
-  const h = await lifecycleHarness(); let settle;
+  const h = await lifecycleHarness(), terminal = h.observer.readTerminal(); let settle;
   const held = new Promise(resolve => { settle = resolve; });
   const promise = h.invoke('providerRecordingCommand', h.close, held);
+  assert.equal(h.observer.readTerminal(), null);
   h.observer.clear({ reason: 'navigation' });
   assert.equal(h.observer.readClosed(), null); assert.equal(h.observer.uninstall().ownedResourcesSettled, false);
   settle({ requestId: h.close.requestId, ok: true, recording: null }); await promise;
@@ -330,20 +331,25 @@ test('correlated close survives same-scope navigation and remains an absorbing l
   assert.equal(closed.sessionId, id(7)); assert.equal(closed.recorderId, id(8));
   assert.equal(closed.nativeRevisionBeforeClose, 8); assert.equal(closed.pendingObservedReplies, 0);
   assert.equal(closed.currentCaptureMutationSequence, closed.captureMutationSequence);
+  assert.equal(h.observer.readTerminal(), null); // Navigation has not rebound the scope yet.
   assert.equal(h.observer.rebindCurrent({ ...binding, revision: id(4) }), true);
+  assert.deepEqual(h.observer.readTerminal(), terminal);
   await new Promise(resolve => setTimeout(resolve, 2));
   assert.equal(h.observer.readClosed().observedAtMonotonicMs, closed.observedAtMonotonicMs);
   assert(h.observer.readClosed().inspectedAtMonotonicMs > closed.inspectedAtMonotonicMs);
   assert.equal(h.observer.readRecording(), null); assert.equal(h.observer.read(), null);
+  h.observer.clear({ reason: 'navigation' }); assert.equal(h.observer.readTerminal(), null);
+  h.observer.rebindCurrent({ ...binding, revision: id(4) }); assert.deepEqual(h.observer.readTerminal(), terminal);
   h.observer.rebindCurrent({ ...binding, workspaceId: id(99), revision: id(4) });
-  assert.equal(h.observer.readClosed(), null); h.observer.uninstall();
+  assert.equal(h.observer.readClosed(), null); assert.equal(h.observer.readTerminal(), null);
+  h.observer.rebindCurrent({ ...binding, revision: id(4) }); assert.equal(h.observer.readTerminal(), null); h.observer.uninstall();
 });
 
 test('failed, uncorrelated and late closes cannot settle a newer recorder or survive auth invalidation', async () => {
   for (const patch of [{ ok: false }, { requestId: id(99) }, { recording: {} }, { unexpected: true }]) {
     const h = await lifecycleHarness();
     await h.invoke('providerRecordingCommand', h.close, { requestId: h.close.requestId, ok: true, recording: null, ...patch });
-    assert.equal(h.observer.readClosed(), null); h.observer.uninstall();
+    assert.equal(h.observer.readClosed(), null); assert.equal(h.observer.readTerminal(), null); h.observer.uninstall();
   }
   for (const invalidate of ['open', 'start', 'auth']) {
     const h = await lifecycleHarness(); let settle;
@@ -357,7 +363,7 @@ test('failed, uncorrelated and late closes cannot settle a newer recorder or sur
 });
 
 test('idempotent iOS close retains its first timestamp, and old close acknowledgement cannot bind a new recorder', async () => {
-  const h = await lifecycleHarness(), reply = { requestId: h.close.requestId, ok: true, recording: null };
+  const h = await lifecycleHarness(), reply = { requestId: h.close.requestId, ok: true, recording: null }, terminal = h.observer.readTerminal();
   await h.invoke('providerRecordingCommand', h.close, reply);
   const first = h.observer.readClosed(); await new Promise(resolve => setTimeout(resolve, 2));
   const repeat = { ...h.close, requestId: id(11) };
@@ -367,10 +373,53 @@ test('idempotent iOS close retains its first timestamp, and old close acknowledg
   assert.equal(repeated.closeRequestId, first.closeRequestId);
   assert(repeated.captureMutationSequence > first.captureMutationSequence);
   assert.equal(repeated.captureMutationSequence, repeated.currentCaptureMutationSequence);
+  assert.deepEqual(h.observer.readTerminal(), terminal);
   await h.invoke('openProviderRecording', h.open, { requestId: h.open.requestId, ok: true,
     recording: { ...h.state, recorderId: id(88) } });
   await h.invoke('providerRecordingCommand', h.close, reply);
-  assert.equal(h.observer.readClosed(), null); h.observer.uninstall();
+  assert.equal(h.observer.readClosed(), null); assert.equal(h.observer.readTerminal(), null); h.observer.uninstall();
+});
+
+test('normal close cannot manufacture a missed sealed response from a recording or paused owner', async () => {
+  for (const phase of ['recording', 'paused', 'sealing']) {
+    const h = await lifecycleHarness();
+    await h.invoke('openProviderRecording', h.open, { requestId: h.open.requestId, ok: true,
+      recording: { ...h.state, phase } });
+    assert.equal(h.observer.readTerminal(), null);
+    await h.invoke('providerRecordingCommand', h.close, { requestId: h.close.requestId, ok: true, recording: null });
+    assert(h.observer.readClosed()); assert.equal(h.observer.readTerminal(), null); h.observer.uninstall();
+  }
+});
+
+test('throwing, rejected and wrong-owner closes retire sealed history and preserve the original result', async () => {
+  for (const mode of ['throw', 'reject', 'wrong-auth', 'wrong-recorder']) {
+    const h = await lifecycleHarness(), error = Error('synthetic close failure');
+    if (mode === 'throw') h.throws('providerRecordingCommand', h.close, error);
+    else if (mode === 'reject') await assert.rejects(h.invoke('providerRecordingCommand', h.close, Promise.reject(error)), actual => actual === error);
+    else await h.invoke('providerRecordingCommand', { ...h.close,
+      ...(mode === 'wrong-auth' ? { revision: id(99) } : { recorderId: id(99) }) }, { requestId: h.close.requestId, ok: true, recording: null });
+    assert.equal(h.observer.readTerminal(), null); assert.equal(h.observer.readClosed(), null);
+    assert.equal(h.observer.describe().pendingObservedReplies, 0); h.observer.uninstall();
+  }
+});
+
+test('auth changes, a new capture mutation or late close never resurrect retired terminal history', async () => {
+  for (const invalidate of ['auth', 'rebind-auth', 'new-capture']) {
+    const h = await lifecycleHarness();
+    await h.invoke('providerRecordingCommand', h.close, { requestId: h.close.requestId, ok: true, recording: null });
+    assert(h.observer.readTerminal());
+    if (invalidate === 'auth') h.observer.clear();
+    else if (invalidate === 'rebind-auth') h.observer.rebindCurrent({ ...binding, revision: id(99) });
+    else await h.invoke('providerRecordingCommand', { ...h.close, kind: 'start' },
+      { requestId: h.close.requestId, ok: true, recording: { ...h.state, revision: 9, phase: 'recording' } });
+    assert.equal(h.observer.readTerminal(), null); h.observer.uninstall();
+  }
+  const h = await lifecycleHarness(); let settle;
+  const closing = h.invoke('providerRecordingCommand', h.close, new Promise(resolve => { settle = resolve; }));
+  await h.invoke('openProviderRecording', h.open, { requestId: h.open.requestId, ok: true,
+    recording: { ...h.state, recorderId: id(88), phase: 'recording' } });
+  settle({ requestId: h.close.requestId, ok: true, recording: null }); await closing;
+  assert.equal(h.observer.readTerminal(), null); assert.equal(h.observer.readClosed(), null); h.observer.uninstall();
 });
 
 test('synchronous recording or admission mutations invalidate closed evidence without replacing the product error', async () => {
