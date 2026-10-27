@@ -151,7 +151,8 @@ test('normal account verification precedes list allowance and a render failure r
     const statePath = join(folder, 'state.json'), playwrightPath = join(folder, 'playwright.mjs');
     await writeFile(statePath, '{}');
     await writeFile(playwrightPath, `export const chromium = { launch: async () => globalThis[${JSON.stringify(key)}] };`);
-    for (const wrongAccount of [false, true]) {
+    for (const situation of ['verified', 'initial-wrong-account', 'later-wrong-account', 'later-session', 'in-flight-scope', 'failed-scope']) {
+      const wrongAccount = situation === 'initial-wrong-account';
       const page = new ScopePage();
       if (wrongAccount) page.userId = 'other_synthetic_user';
       let handler, closed = false, noteNavigations = 0, listReads = 0;
@@ -167,6 +168,10 @@ test('normal account verification precedes list allowance and a render failure r
         noteNavigations++;
         await handler({ request: () => ({ url: () => `${DASHBOARD_ORIGIN}/internal/v1/notes`, method: () => 'GET' }),
           continue: async () => { listReads++; }, abort: async () => { throw Error('required_list_blocked'); } });
+        if (situation === 'later-wrong-account') page.userId = 'other_synthetic_user';
+        if (situation === 'later-session') page.sessionId = 'different_session';
+        if (situation === 'in-flight-scope') page.request('settings');
+        if (situation === 'failed-scope') page.response(page.request('settings'), {}, 503);
       };
       globalThis[key] = { close: async () => { closed = true; },
         newContext: async () => ({ newPage: async () => page, route: async (_pattern, route) => { handler = route; } }) };
@@ -174,16 +179,20 @@ test('normal account verification precedes list allowance and a render failure r
         config: { syntheticOnly: true, identitySHA256: sha256('user_a'), storageStateSHA256: sha256('{}'),
           storageState: statePath, playwrightPath, apiOrigin: DASHBOARD_ORIGIN, expectedVisiblePhrases: ['Synthetic saved correction.'] },
         scenario: { executionKind: 'live', targetId: 'synthetic', admissionBinding: { runId: uuid } },
-        savedReceipt: receipt(), output: join(folder, String(wrongAccount)), signal: new AbortController().signal,
+        savedReceipt: receipt(), output: join(folder, situation), signal: new AbortController().signal,
       });
       assert.equal(result.cleanup.ownedResourcesSettled, true);
       assert.equal(result.failureCode, wrongAccount ? 'dashboard_actor_scope_mismatch' : 'test_render_failure');
       assert.equal(listReads, wrongAccount ? 0 : 1); assert.equal(noteNavigations, wrongAccount ? 0 : 1);
       if (!wrongAccount) {
-        assert.equal(result.failureScreenshot.sha256,
-          sha256(await readFile(join(folder, String(wrongAccount), result.failureScreenshot.file))));
         assert.equal(result.notesListScope.doctorRef, 'doctor_' + id);
         assert.equal(result.uiStage, 'open_saved_note');
+        if (situation === 'verified') assert.equal(result.failureScreenshot.sha256,
+          sha256(await readFile(join(folder, situation, result.failureScreenshot.file))));
+        else {
+          assert.deepEqual(result.failureScreenshot, { status: 'unavailable' });
+          await assert.rejects(readFile(join(folder, situation, 'dashboard-failure.png')), { code: 'ENOENT' });
+        }
       } else assert.equal(result.failureScreenshot, undefined);
     }
   } finally { delete globalThis[key]; await rm(folder, { recursive: true, force: true }); }

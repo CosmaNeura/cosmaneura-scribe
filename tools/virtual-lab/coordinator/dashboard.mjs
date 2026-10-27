@@ -332,11 +332,25 @@ export async function verifyDashboard({ config, scenario, savedReceipt, output, 
     receipt.detail ??= lastDetail;
     receipt.checks.push({ locator: 'dashboard-verification', kind: 'text', actual: receipt.failureCode, expected: 'observed' });
     if (receipt.initialAccount && page && !page.isClosed()) {
+      const evidence = new AbortController();
+      let evidenceTimer;
       try {
+        const currentAccount = await Promise.race([
+          accountObserver.read({ expectedIdentitySHA256: config.identitySHA256,
+            expectedDoctorRef: receipt.initialAccount.doctorRef,
+            signal: AbortSignal.any([active, evidence.signal]), timeoutMs: 1000 }),
+          new Promise((_, reject) => { evidenceTimer = setTimeout(() => {
+            evidence.abort(); reject(Error('dashboard_failure_scope_timeout'));
+          }, 1500); }),
+        ]);
+        active.throwIfAborted();
+        if (currentAccount.hostedSessionSHA256 !== receipt.initialAccount.hostedSessionSHA256)
+          throw Error('dashboard_failure_session_changed');
         const filename = 'dashboard-failure.png';
         const bytes = await page.screenshot({ path: resolve(output, filename), timeout: 1500 });
         receipt.failureScreenshot = { file: filename, sha256: sha256(bytes) };
       } catch { receipt.failureScreenshot = { status: 'unavailable' }; }
+      finally { clearTimeout(evidenceTimer); evidence.abort(); }
     }
   } finally {
     active.removeEventListener('abort', aborted);

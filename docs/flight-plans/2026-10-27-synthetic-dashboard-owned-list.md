@@ -20,7 +20,8 @@ blocked. Cross-account denial verification retains its existing list restriction
 The exact saved note, transcript, ordered content hash, doctor, and new reopen
 response remain required; a successful list or network response cannot establish
 a visual pass. A failed rendered check retains its stage and a bounded screenshot
-when the browser remains available.
+only after a fresh passive account check confirms the same identity, session,
+and doctor. A missing, failed, or pending scope response retains no screenshot.
 
 Validation includes the exact request boundary and the maintained verifier's
 normal account-before-list ordering, wrong-account refusal, failure screenshot,
