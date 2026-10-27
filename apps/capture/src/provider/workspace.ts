@@ -1197,7 +1197,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     }
     if (draft.status === "not_prepared") { show('<section class="provider-saved-card"><h1>Recording saved</h1><p>Your conversation is ready. Create a draft using your selected template.</p><button class="provider-primary" data-workspace-action="generate">Write visit note</button><details><summary>Details</summary><button class="provider-text-link" data-workspace-action="check-note">Check for note</button><button class="provider-text-link" data-workspace-action="review">Show the conversation</button></details></section>'); return; }
     const identity = identityOverride ?? context?.encounter.identity;
-    show(noteView(draft, identity?.name ?? context?.encounter.patientName ?? context?.encounter.title ?? "Visit note", noteTranscript ? renderNoteTranscript(noteTranscript) : ""));
+    show(noteView(draft, identity?.name ?? context?.encounter.patientName ?? context?.encounter.title ?? "Visit note", noteTranscript ? renderNoteTranscript(noteTranscript) : "",
+      noteTranscript?.working?.segments.some(segment => segment.speaker_role === "unknown") === true));
     conversationPosition = null;
     if (identity && host.encounterSetup?.patientCandidates) content.querySelector(".provider-note-heading")?.insertAdjacentHTML("beforeend", `<button class="provider-text-link" data-workspace-action="match-patient">${identity.state === "provisional" ? "Match patient later" : identity.state === "matched" ? "Patient matched · Details" : "Patient confirmed · Details"}</button>`);
     const privateEditor = content.querySelector<PrivateNoteEditor>("scribe-private-note"); if (privateEditor) privateEditor.port = privateNotes();
