@@ -338,14 +338,15 @@ for (const change of ['note', 'auth', 'visit', 'newer open_core']) test(`pending
 });
 
 test('fixed renderer reads return only field digest and actual completion, and reject a page change', async () => {
-  const h = await saveHarness(), action = { disabled: false, isConnected: true };
+  const h = await saveHarness(), shown = () => [{}], action = { disabled: false, isConnected: true, getClientRects: shown };
   const field = { name: 'note-0', value: 'synthetic only', disabled: false, readOnly: false, isConnected: true };
-  const buttons = ['encounters', 'core'].map(workspaceAction => ({ disabled: false, dataset: { workspaceAction } }));
-  h.renderer.document = { visibilityState: 'visible', querySelectorAll: query => query.includes('finish-note') ? [action] : [field],
-    querySelector: () => ({ querySelectorAll: () => buttons, querySelector: () => ({ textContent: 'Saved for review' }) }) };
+  const buttons = ['encounters', 'core'].map(workspaceAction => ({ disabled: false, getClientRects: shown, dataset: { workspaceAction } }));
+  const card = { getClientRects: shown, querySelectorAll: () => buttons, querySelector: () => ({ textContent: 'Saved for review' }) };
+  h.renderer.getComputedStyle = () => ({ visibility: 'visible' });
+  h.renderer.document = { visibilityState: 'visible', querySelectorAll: query => query.includes('finish-note') ? [action] : query === '.provider-completion' ? [] : [field] };
   const fields = await h.api.readSaveFields(['HPI']); assert.equal(fields.source, 'normal-note-editor-fields');
   assert(!JSON.stringify(fields).includes(field.value)); assert.equal(await h.api.readSaveFields(['wrong']), null);
-  h.renderer.document.querySelectorAll = () => [];
+  h.renderer.document.querySelectorAll = query => query === '.provider-completion' ? [card] : [];
   assert.equal((await h.api.readSaveUI()).heading, 'Saved for review');
   const execute = h.target.executeJavaScript;
   h.target.executeJavaScript = async script => {
