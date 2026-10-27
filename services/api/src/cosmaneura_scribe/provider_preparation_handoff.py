@@ -34,7 +34,9 @@ class PreparedContext:
     interaction_ref: str
     turn: UUID
     issued_at: float
-    stage: Literal["admission", "recording_window", "source_start"] = "recording_window"
+    stage: Literal[
+        "admission", "recording_window", "source_start", "unused_continuation_source"
+    ] = "recording_window"
     native_read_done: bool = False
     native_read_supported: bool = False
     admission_native_preparation_supported: bool = False
@@ -210,7 +212,9 @@ class PreparationHandoff:
         revision: UUID,
         workspace: str,
         binding: str,
-        stage: Literal["admission", "recording_window", "source_start"] = "recording_window",
+        stage: Literal[
+            "admission", "recording_window", "source_start", "unused_continuation_source"
+        ] = "recording_window",
     ) -> PreparedContext | None:
         self._expire()
         value = self._pending.pop(self._scope(origin, account, revision, workspace, binding), None)

@@ -44,6 +44,10 @@ from cosmaneura_scribe.provider_performance import (
 from cosmaneura_scribe.provider_preparation_core_transport import prepare_then_dispatch
 from cosmaneura_scribe.provider_preparation_handoff import PreparationHandoff
 from cosmaneura_scribe.provider_source_preparation import prepare_source
+from cosmaneura_scribe.provider_unused_continuation import (
+    is_unused_continuation,
+    prepare_unused_source,
+)
 from cosmas_os.api.auth import (
     CORE_STAGING_PERSONAL,
     AccessDenied,
@@ -403,7 +407,10 @@ class ProviderReceiver:
                 ) or (
                     action == "capture-operations"
                     and isinstance(operation, dict)
-                    and operation.get("kind") == "prepare_recording_window"
+                    and (
+                        operation.get("kind") == "prepare_recording_window"
+                        or is_unused_continuation(body)
+                    )
                 )
                 if (
                     self.encounter_creation_enabled
@@ -460,7 +467,18 @@ class ProviderReceiver:
                             lambda bind: self.encounter_account(authorization, bind=bind)
                         )
 
-                    prepared_source = await prepare_source(
+                    source_payload = (
+                        operation.get("payload") if isinstance(operation, dict) else None
+                    )
+                    unused_source = (
+                        isinstance(source_payload, dict)
+                        and source_payload.get("source") == "desktop_companion"
+                        and source_payload.get("lease_generation") == 2
+                        and source_payload.get("first_sequence_number", 0) == 0
+                        and self._preparation_handoff is not None
+                    )
+                    source_preparer = prepare_unused_source if unused_source else prepare_source
+                    prepared_source = await source_preparer(
                         self.profile.core_origin,
                         body,
                         key,
