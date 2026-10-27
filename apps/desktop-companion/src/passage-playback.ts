@@ -4,6 +4,7 @@ import type { CaptureChunkRecord } from "../../capture/src/queue/types";
 import type { DesktopRecordNamespace } from "./durable-record-store.js";
 import { failure } from "./durable-record-store.js";
 import { encodePcm16MonoWav } from "../../capture/src/capture/wav";
+import { parseCaptureContinuity, type CaptureContinuity } from "../../review-ui/src/creator-review-api";
 
 /** Sealed review copies of immutable envelopes, separate from upload recovery.
  * Original queue purging and confirmed registration remain unchanged. */
@@ -24,8 +25,9 @@ export async function retainPassageAudio(archive: DesktopRecordNamespace, record
 /** Inputs are from a fresh server segment, never a renderer time range. Only
  * up to 30 seconds are decrypted at once. No plaintext touches disk. */
 export async function passageWav(archive: DesktopRecordNamespace, sessionId: string, key: CryptoKey, startMs: number, endMs: number,
-  current: () => void): Promise<Uint8Array<ArrayBuffer> | null> {
+  current: () => void, continuity?: CaptureContinuity): Promise<Uint8Array<ArrayBuffer> | null> {
   current();
+  if (continuity) parseCaptureContinuity(continuity);
   if (key.extractable || key.algorithm.name !== "AES-GCM" || key.usages.length !== 1 || key.usages[0] !== "decrypt"
     || !Number.isSafeInteger(startMs) || !Number.isSafeInteger(endMs) || startMs < 0 || endMs <= startMs || endMs - startMs > 30_000) throw failure();
   const startFrame = startMs * 16, endFrame = endMs * 16;
@@ -35,12 +37,27 @@ export async function passageWav(archive: DesktopRecordNamespace, sessionId: str
     // Individual audio envelopes are decrypted only until this bounded passage.
     const metadata: { key: string; sequence: number }[] = [];
     for await (const stored of archive.scan()) {
-      current(); if (!stored.key.startsWith("chunk:")) continue;
-      const sequence = Number(stored.key.slice(6));
-      if (!Number.isSafeInteger(sequence) || sequence < 0 || sequence >= 2048) throw failure();
-      metadata.push({ key: stored.key, sequence });
+      try {
+        current(); if (!stored.key.startsWith("chunk:")) continue;
+        const sequence = Number(stored.key.slice(6));
+        if (!Number.isSafeInteger(sequence) || sequence < 0 || sequence >= 2048) throw failure();
+        if (continuity) {
+          const record = decodeCaptureRecord(new TextDecoder().decode(stored.data));
+          try {
+            if (!("envelope" in record) || record.reservation.sequenceNumber !== sequence
+              || record.reservation.sessionId !== sessionId || record.reservation.channel !== "mixed") throw failure();
+          } finally { if ("envelope" in record) record.envelope.fill(0); }
+        }
+        metadata.push({ key: stored.key, sequence });
+      } finally { stored.data.fill(0); }
     }
     metadata.sort((a, b) => a.sequence - b.sequence);
+    // The server's mixed track concatenates consecutive chunks without inserting
+    // wall-clock pause time; its phrase offsets use those same PCM frames. A
+    // restart therefore does not move a passage. Require the complete local
+    // sequence and every declared boundary, retaining the review's gap warning.
+    if (continuity && (!metadata.length || metadata.some((item, index) => item.sequence !== index)
+      || continuity.starts.some(start => start.first_sequence_number > metadata.length))) return null;
     for (const [index, item] of metadata.entries()) {
       current(); if (item.sequence !== index) return null;
       const stored = await archive.get(item.key); current(); if (!stored) return null;

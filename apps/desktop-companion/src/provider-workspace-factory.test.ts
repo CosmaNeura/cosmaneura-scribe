@@ -13,6 +13,12 @@ import { CoreCaptureClient } from "../../capture/src/provider/core-client";
 import { claimDesktopInitialWindow, type DesktopInitialWindowProof } from "./desktop-initial-window.js";
 import { DesktopRecordNamespace } from "./durable-record-store.js";
 import type { ConfiguredCapturePreparationState, SessionKeyBindingState } from "../../capture/src/flow/types";
+import { DurableDesktopRecordStore } from "./durable-record-store.js";
+import { DurableDesktopFlowStore } from "./durable-flow-store.js";
+import { retainPassageAudio } from "./passage-playback.js";
+import { attachEncryptedEnvelope, createReservedRecord } from "../../capture/src/queue/records";
+import { encodePcm16MonoWav } from "../../capture/src/capture/wav";
+import { base64UrlEncode, encodeChunkAdditionalDataBase64Url, encodeEnvelope } from "@cosmaneura-scribe/capture-protocol";
 
 const workspaceId = "10000000-0000-4000-8000-000000000001", recoveryScope = "20000000-0000-4000-8000-000000000002";
 const sessionId = "30000000-0000-4000-8000-000000000003";
@@ -403,6 +409,57 @@ it("reauthorizes passage review, refuses a foreign session or segment, and suppr
   const original = f.request.getMockImplementation()!;
   f.request.mockImplementationOnce(async (...args) => { const value = await original(...args); f.authorized.abort(); return value; });
   await expect(opened.playPassage!(sessionId, segment, operation)).rejects.toThrow();
+});
+
+it("plays a freshly authorized saved passage across a normal pause from real retained custody", async () => {
+  const f = await fixture(), segmentId = crypto.randomUUID(), workingId = crypto.randomUUID();
+  const store = await DurableDesktopRecordStore.open({ directory: f.resources.directory, recoveryScope, workspaceId, key: f.key });
+  cleanup.push(async () => { store.close(); });
+  const flow = new DurableDesktopFlowStore(store.namespace("flow"));
+  const rsa = await crypto.subtle.generateKey({ name: "RSA-OAEP", hash: "SHA-256", modulusLength: 3072,
+    publicExponent: new Uint8Array([1, 0, 1]) }, true, ["wrapKey", "unwrapKey"]);
+  const jwk = await crypto.subtle.exportKey("jwk", rsa.publicKey);
+  const key = await flow.createSessionKey(sessionId, { algorithm: "RSA-OAEP-256", key_version: "invented-v1",
+    public_jwk: { kty: "RSA", alg: "RSA-OAEP-256", e: "AQAB", n: jwk.n!, ext: true, key_ops: ["wrapKey"] } }, crypto);
+  await flow.putSessionKeyCandidate({ schemaVersion: 2, sessionId, keyVersion: key.keyVersion, wrappedDek: key.wrappedDek,
+    idempotencyKey: "invented-consented-key", state: "pending" }, key.key);
+  await flow.markSessionKeyBound(sessionId); await flow.retainPlaybackKey(sessionId, store.namespace(`playback-key:${sessionId}`));
+  for (const [sequenceNumber, frames] of [16_000, 16_000, 4_000, 16_000].entries()) {
+    const objectId = crypto.randomUUID(), channel = "mixed" as const;
+    const reserved = createReservedRecord({ protocolVersion: "1.0", sessionId, objectId, channel, sequenceNumber,
+      createdAt: new Date().toISOString(), additionalAuthenticatedData: encodeChunkAdditionalDataBase64Url({ sessionId, objectId, tenantId: recoveryScope, sequenceNumber, channel }) },
+    { reservation: "invented-reservation", uploadAuthorization: "invented-upload", uploadAuthorizationGeneration: 1, registration: "invented-registration" });
+    const samples = new Int16Array(frames).fill(sequenceNumber + 1);
+    const wav = encodePcm16MonoWav(samples, { sampleRateHz: 16_000, channels: 1, targetChunkDurationMs: frames / 16, maxEnvelopeBytes: 327_680 }); samples.fill(0);
+    const nonce = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce,
+      additionalData: new Uint8Array(Buffer.from(reserved.reservation.additionalAuthenticatedData, "base64url")) }, key.key, wav); wav.fill(0);
+    const envelope = encodeEnvelope({ schema_version: "1.0", content_encryption: "A256GCM", media_type: "audio/wav", nonce: base64UrlEncode(nonce) }, new Uint8Array(ciphertext));
+    const digest = Buffer.from(await crypto.subtle.digest("SHA-256", new Uint8Array(envelope))).toString("hex");
+    await retainPassageAudio(store.namespace(`playback:${sessionId}`), attachEncryptedEnvelope(reserved, envelope, digest)); envelope.fill(0);
+  }
+  const view = { schema_version: "1.0", session_id: sessionId, status: "transcript_ready",
+    capture_continuity: { schema_version: "1.0", continuity: "interrupted_or_unconfirmed", missing_audio: "unknown",
+      starts: [{ source_start_id: crypto.randomUUID(), first_sequence_number: 0 }, { source_start_id: crypto.randomUUID(), first_sequence_number: 3 }] },
+    source: { source_transcript_version: 1, segments: [{ source_segment_id: segmentId, source_segment_version: 1,
+      source_locale: "en-US", speaker_role: "unknown", content: "Invented consented passage.", start_ms: 2000, end_ms: 2500 }] },
+    working: { source_transcript_version: 1, working_transcript_id: workingId, working_transcript_version: 1,
+      note_ready: true, blockers: [], segments: [{ source_segment_id: segmentId, source_segment_version: 1, resolution: "english_source", content: "Invented consented passage." }] },
+    review_queue: { schema_version: "1.0", session_id: sessionId, source_transcript_version: 1,
+      working_transcript_id: workingId, working_transcript_version: 1, status: "complete", items: [] } };
+  f.request.mockImplementation(async (_path, body) => Response.json({ contract_version: "1", binding_ref: body.binding_ref,
+    workspace_id: body.workspace_id, request_nonce: body.request_nonce, checked_at: new Date().toISOString(), operation: "creator_review", receipt: view }));
+  const opened = await f.connect().workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+  await opened.journal.save(await opened.journal.load(), { ...progress, uploaded: true });
+  const playback = await opened.playPassage!(sessionId, segmentId, new AbortController().signal);
+  expect(playback).not.toBeNull();
+  if (!playback || !("wavBase64" in playback)) throw new Error("Expected Desktop passage");
+  const wav = Buffer.from(playback.wavBase64, "base64");
+  expect(wav.length).toBe(16_044);
+  expect(wav.readInt16LE(44)).toBe(3); expect(wav.readInt16LE(44 + 4_000 * 2)).toBe(4); wav.fill(0);
+  expect(f.request).toHaveBeenCalledOnce();
+  expect(view.capture_continuity.missing_audio).toBe("unknown");
+  expect(f.authorizeRecorder).not.toHaveBeenCalled(); expect(f.authorizeStart).not.toHaveBeenCalled();
 });
 
 it.each(["opening", "ready"])("suppresses a delayed passage when a recorder becomes %s", async phase => {
