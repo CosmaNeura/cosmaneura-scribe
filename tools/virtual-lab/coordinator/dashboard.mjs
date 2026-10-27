@@ -1,3 +1,4 @@
+/* global window -- Playwright page callbacks execute in the browser. */
 import { mkdir, readFile, realpath, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -171,9 +172,10 @@ export function projectNoteDetail(data, receipt) {
     transcriptDurationSeconds: transcript.duration, noteCreatedAt: note.created_at, transcriptCreatedAt: transcript.created_at };
 }
 
-/** The current Core search filters an already-loaded list. Query parameters do
- * not scope /notes. Block broad lists and unrelated records before transmission. */
-export function dashboardRequestAllowed(url, method, { apiOrigin, appointmentRef, noteRef }) {
+/** The current Core notes layout requires its ordinary doctor-owned list before
+ * rendering a detail route. Enable that exact read only after normal synthetic
+ * account verification; query parameters do not scope it. Other records stay blocked. */
+export function dashboardRequestAllowed(url, method, { apiOrigin, appointmentRef, noteRef, allowOwnedNotesList = false }) {
   const parsed = new URL(url);
   if (parsed.origin === DASHBOARD_ORIGIN && /^\/notes(?:\/|$)/.test(parsed.pathname))
     return parsed.pathname === `/notes/${appointmentRef}` && ![...parsed.searchParams.keys()].some(key => key !== 'reviewNote')
@@ -181,6 +183,8 @@ export function dashboardRequestAllowed(url, method, { apiOrigin, appointmentRef
   if (!parsed.pathname.startsWith('/internal/')) return true;
   if (parsed.origin !== apiOrigin) return false;
   if (method !== 'GET') return false;
+  if (parsed.pathname === '/internal/v1/notes')
+    return allowOwnedNotesList === true && parsed.href === `${apiOrigin}/internal/v1/notes`;
   const path = parsed.pathname.replace(/^\/internal\/v1/, '');
   return path === `/notes/${appointmentRef}` || ['/settings', '/practice', '/practice/organization-access', '/view-as/status'].includes(path);
 }
@@ -263,16 +267,23 @@ export async function verifyDashboard({ config, scenario, savedReceipt, output, 
       responseWork.add(work); work.finally(() => responseWork.delete(work));
     });
     // Normal Settings navigation supplies the ordinary provider's doctor ID.
-    // No API fetch, support impersonation or notes-list request is introduced.
+    // No API fetch or support impersonation is introduced. The ordinary Core
+    // layout may read this verified synthetic doctor's own notes sidebar.
     const accountOptions = { expectedIdentitySHA256: config.identitySHA256, signal: active };
     receipt.initialAccount = await accountObserver.prime(accountOptions);
+    boundary.allowOwnedNotesList = true;
+    receipt.notesListScope = { source: 'normal-hosted-account-observation',
+      doctorRef: receipt.initialAccount.doctorRef, identitySHA256: receipt.initialAccount.identitySHA256,
+      method: 'GET', path: '/internal/v1/notes', queryAllowed: false };
     receipt.identitySHA256 = receipt.initialAccount.identitySHA256;
     receipt.hostedSessionSHA256 = receipt.initialAccount.hostedSessionSHA256;
     active.throwIfAborted();
     const url = `${DASHBOARD_ORIGIN}/notes/${savedReceipt.appointmentRef}?reviewNote=${savedReceipt.note_ref}`;
+    receipt.uiStage = 'open_saved_note';
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     const note = page.locator(`[data-note-viewer][id="note-${savedReceipt.note_ref}"]`);
     await note.waitFor({ state: 'visible' });
+    receipt.uiStage = 'note_ready';
     await page.getByText('Note ready', { exact: true }).first().waitFor({ state: 'visible' });
     await Promise.allSettled([...responseWork]);
     if (!lastDetail?.binding) throw Error(lastDetail?.failureCode ?? 'dashboard_detail_not_observed');
@@ -288,6 +299,7 @@ export async function verifyDashboard({ config, scenario, savedReceipt, output, 
     for (const phrase of config.expectedVisiblePhrases) receipt.checks.push({ locator: 'saved-note-content', kind: 'visible', actual: visible.includes(phrase), expected: true });
     if (headings.length !== savedReceipt.field_order.length || receipt.checks.some(check => check.actual !== check.expected)) throw Error('dashboard_rendered_note_mismatch');
     const transcriptToggle = page.getByRole('button', { name: 'Visit Transcript', exact: true });
+    receipt.uiStage = 'source_transcript';
     if (await transcriptToggle.count() !== 1) throw Error('dashboard_transcript_ui_ambiguous');
     await transcriptToggle.click();
     const expanded = await transcriptToggle.getAttribute('aria-expanded');
@@ -299,8 +311,11 @@ export async function verifyDashboard({ config, scenario, savedReceipt, output, 
     receipt.renderedTranscriptSHA256 = sha256(transcriptText);
     // Refresh normal account proof, then reopen the same exact note route.
     // Require a new detail request; a late prior reply cannot satisfy it.
+    boundary.allowOwnedNotesList = false;
     await accountObserver.prime({ ...accountOptions, expectedDoctorRef: receipt.detail.binding.doctorRef });
+    boundary.allowOwnedNotesList = true;
     const beforeReload = responseSequence;
+    receipt.uiStage = 'reopen_saved_note';
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     await page.locator(`[data-note-viewer][id="note-${savedReceipt.note_ref}"]`).waitFor({ state: 'visible' });
     await Promise.allSettled([...responseWork]);
@@ -311,10 +326,18 @@ export async function verifyDashboard({ config, scenario, savedReceipt, output, 
     if (receipt.reopenedAccount.doctorRef !== receipt.savedAccount.doctorRef) throw Error('dashboard_actor_scope_mismatch');
     receipt.reopenedDetail = reopenedDetail;
     await note.screenshot({ path: resolve(output, 'dashboard-saved-note.png') });
+    receipt.uiStage = 'complete';
   } catch (error) {
     receipt.failureCode = active.aborted ? 'dashboard_aborted' : failure(error);
     receipt.detail ??= lastDetail;
     receipt.checks.push({ locator: 'dashboard-verification', kind: 'text', actual: receipt.failureCode, expected: 'observed' });
+    if (receipt.initialAccount && page && !page.isClosed()) {
+      try {
+        const filename = 'dashboard-failure.png';
+        const bytes = await page.screenshot({ path: resolve(output, filename), timeout: 1500 });
+        receipt.failureScreenshot = { file: filename, sha256: sha256(bytes) };
+      } catch { receipt.failureScreenshot = { status: 'unavailable' }; }
+    }
   } finally {
     active.removeEventListener('abort', aborted);
     await close().catch(() => {});

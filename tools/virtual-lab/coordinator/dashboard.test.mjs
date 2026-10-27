@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { sha256 } from './journal.mjs';
 import { DASHBOARD_ORIGIN, assertDashboardAccountScope, assertIsolationResponse, completeOptionalOnboarding,
-  dashboardRequestAllowed, observeDashboardAccount, projectNoteDetail, validateSavedReceipt } from './dashboard.mjs';
+  dashboardRequestAllowed, observeDashboardAccount, projectNoteDetail, validateSavedReceipt, verifyDashboard } from './dashboard.mjs';
 
 const id = '01m5q661ryetaa28yxe7vbqrex', uuid = '11111111-1111-4111-8111-111111111111';
 const fields = { Assessment: 'Invented headache.', Plan: 'Synthetic saved correction.' };
@@ -54,6 +57,19 @@ test('only an exact visit request is allowed; list searches and a wrong API orig
     assert.equal(dashboardRequestAllowed(url, 'GET', scope), false);
   }
   assert.equal(dashboardRequestAllowed(`${api}/notes/${r.appointmentRef}`, 'POST', scope), false);
+});
+test('verified synthetic account enables only the exact ordinary doctor-owned list read', () => {
+  const r = receipt(), scope = { apiOrigin: 'https://staging-api.cosmaneura.com', appointmentRef: r.appointmentRef,
+    noteRef: r.note_ref, allowOwnedNotesList: true }, api = scope.apiOrigin + '/internal/v1';
+  assert.equal(dashboardRequestAllowed(`${api}/notes`, 'GET', scope), true);
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'])
+    assert.equal(dashboardRequestAllowed(`${api}/notes`, method, scope), false);
+  for (const url of [`${api}/notes?search=synthetic`, `${api}/notes?appointment_id=${r.appointmentRef}`,
+    `${api}/notes#section`, `${api}/notes/`, `${api}/notes/appointment_other`, `${api}/patients`,
+    'https://staging-other.cosmaneura.com/internal/v1/notes', 'https://someone@staging-api.cosmaneura.com/internal/v1/notes'])
+    assert.equal(dashboardRequestAllowed(url, 'GET', scope), false);
+  for (const allowOwnedNotesList of [undefined, false, 'true', 1])
+    assert.equal(dashboardRequestAllowed(`${api}/notes`, 'GET', { ...scope, allowOwnedNotesList }), false);
 });
 test('optional onboarding submits only after the distinct Go to Cosmas control', async () => {
   const events = [];
@@ -128,6 +144,50 @@ class ScopePage extends EventEmitter {
     this.response(this.request('view-as/status'), inactive());
   }
 }
+test('normal account verification precedes list allowance and a render failure retains its screenshot', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'scribe-dashboard-boundary-'));
+  const key = 'dashboardBoundaryFixture' + Date.now();
+  try {
+    const statePath = join(folder, 'state.json'), playwrightPath = join(folder, 'playwright.mjs');
+    await writeFile(statePath, '{}');
+    await writeFile(playwrightPath, `export const chromium = { launch: async () => globalThis[${JSON.stringify(key)}] };`);
+    for (const wrongAccount of [false, true]) {
+      const page = new ScopePage();
+      if (wrongAccount) page.userId = 'other_synthetic_user';
+      let handler, closed = false, noteNavigations = 0, listReads = 0;
+      page.setDefaultTimeout = () => {};
+      page.isClosed = () => closed;
+      page.screenshot = async ({ path, timeout }) => {
+        assert.equal(timeout, 1500);
+        const bytes = Buffer.from('synthetic screenshot fixture'); await writeFile(path, bytes); return bytes;
+      };
+      page.locator = () => ({ waitFor: async () => { throw Error('test_render_failure'); } });
+      page.goto = async url => {
+        if (url.endsWith('/settings')) return ScopePage.prototype.goto.call(page, url);
+        noteNavigations++;
+        await handler({ request: () => ({ url: () => `${DASHBOARD_ORIGIN}/internal/v1/notes`, method: () => 'GET' }),
+          continue: async () => { listReads++; }, abort: async () => { throw Error('required_list_blocked'); } });
+      };
+      globalThis[key] = { close: async () => { closed = true; },
+        newContext: async () => ({ newPage: async () => page, route: async (_pattern, route) => { handler = route; } }) };
+      const result = await verifyDashboard({
+        config: { syntheticOnly: true, identitySHA256: sha256('user_a'), storageStateSHA256: sha256('{}'),
+          storageState: statePath, playwrightPath, apiOrigin: DASHBOARD_ORIGIN, expectedVisiblePhrases: ['Synthetic saved correction.'] },
+        scenario: { executionKind: 'live', targetId: 'synthetic', admissionBinding: { runId: uuid } },
+        savedReceipt: receipt(), output: join(folder, String(wrongAccount)), signal: new AbortController().signal,
+      });
+      assert.equal(result.cleanup.ownedResourcesSettled, true);
+      assert.equal(result.failureCode, wrongAccount ? 'dashboard_actor_scope_mismatch' : 'test_render_failure');
+      assert.equal(listReads, wrongAccount ? 0 : 1); assert.equal(noteNavigations, wrongAccount ? 0 : 1);
+      if (!wrongAccount) {
+        assert.equal(result.failureScreenshot.sha256,
+          sha256(await readFile(join(folder, String(wrongAccount), result.failureScreenshot.file))));
+        assert.equal(result.notesListScope.doctorRef, 'doctor_' + id);
+        assert.equal(result.uiStage, 'open_saved_note');
+      } else assert.equal(result.failureScreenshot, undefined);
+    }
+  } finally { delete globalThis[key]; await rm(folder, { recursive: true, force: true }); }
+});
 test('account priming performs only normal Settings navigation and obtains a new response pair on reopen', async () => {
   const page = new ScopePage(), observer = observeDashboardAccount(page, DASHBOARD_ORIGIN);
   const first = await observer.prime(options()), second = await observer.prime(options());
