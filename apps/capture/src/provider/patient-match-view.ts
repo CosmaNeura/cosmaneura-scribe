@@ -14,7 +14,7 @@ export function mountPatientMatch(container: HTMLElement, options: {
 }): () => void {
   const pending = options.local();
   const invalidPending = pending?.selection.kind === "confirm_new" && !validPatientDateOfBirth(pending.selection.dateOfBirth);
-  container.innerHTML = `<dialog class="provider-unsaved-dialog" aria-labelledby="patient-match-title"><h2 id="patient-match-title">Match this patient</h2>
+  container.innerHTML = `<dialog class="provider-unsaved-dialog provider-patient-match-dialog" aria-labelledby="patient-match-title"><h2 id="patient-match-title" tabindex="-1" autofocus>Match this patient</h2>
     <p>${options.purpose === "new-visit" ? "Confirm the patient’s details before starting a separate visit. The earlier visit and recording stay unchanged." : "You can save and review the note before matching. Confirm the patient’s details before linking a record."}</p>
     <form data-match-search><label>Patient name or identifying details<input name="match-query" value="${escapeText(options.encounter.identity?.name ?? options.encounter.patientName ?? options.encounter.title)}" maxlength="200" autocomplete="off"></label><label>Date of birth (optional)<input name="match-dob" type="date" min="1900-01-01" max="${new Date().toISOString().slice(0, 10)}"></label><button type="submit">Find patient</button></form>
     <div data-match-results></div><p data-match-status role="status">${invalidPending ? "The saved request has an invalid date of birth. Review the date before matching." : pending ? "A previous match isn’t confirmed yet. Try again to check the same request." : ""}</p>
@@ -31,7 +31,24 @@ export function mountPatientMatch(container: HTMLElement, options: {
   let identity = options.encounter.identity, closed = false, working = false;
   const active = (): boolean => !closed && !options.signal.aborted;
   const disabled = (busy: boolean): void => { working = busy; for (const button of dialog.querySelectorAll<HTMLButtonElement>("button")) button.disabled = busy; };
-  const finish = (): void => { closed = true; dialog.close(); container.replaceChildren(); };
+  // iOS keeps the layout viewport tall while the keyboard covers part of it.
+  // Constrain this scrollable dialog to the viewport the user can actually see.
+  const viewport = container.ownerDocument.defaultView?.visualViewport;
+  const fitViewport = (): void => {
+    if (!viewport) return;
+    dialog.style.setProperty("--patient-match-width", `${viewport.width}px`);
+    dialog.style.setProperty("--patient-match-height", `${viewport.height}px`);
+    dialog.style.setProperty("--patient-match-left", `${viewport.offsetLeft}px`);
+    dialog.style.setProperty("--patient-match-top", `${viewport.offsetTop}px`);
+  };
+  const releaseViewport = (): void => {
+    viewport?.removeEventListener("resize", fitViewport);
+    viewport?.removeEventListener("scroll", fitViewport);
+  };
+  viewport?.addEventListener("resize", fitViewport);
+  viewport?.addEventListener("scroll", fitViewport);
+  fitViewport();
+  const finish = (): void => { closed = true; releaseViewport(); dialog.close(); container.replaceChildren(); };
   const showCurrentMatch = async (): Promise<void> => {
     const pending = options.local();
     if (!pending || !options.setup.patientCandidates) return;
@@ -115,5 +132,5 @@ export function mountPatientMatch(container: HTMLElement, options: {
   dialog.addEventListener("cancel", event => { event.preventDefault(); if (!working) finish(); });
   dialog.showModal();
   if (!pending) void search();
-  return () => { closed = true; form.removeEventListener("submit", onSubmit); dialog.removeEventListener("click", click); dialog.close(); };
+  return () => { closed = true; releaseViewport(); form.removeEventListener("submit", onSubmit); dialog.removeEventListener("click", click); dialog.close(); };
 }

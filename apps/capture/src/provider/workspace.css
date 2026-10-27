@@ -80,6 +80,9 @@
 .provider-unsaved-dialog::backdrop,.provider-audio-dialog::backdrop { background:#10282066; }
 .provider-unsaved-dialog h2 { margin-top:0; }
 .provider-unsaved-dialog button { display:block; width:100%; margin-top:12px; }
+.provider-patient-match-dialog { position:fixed; inset:auto; top:calc(var(--patient-match-top,0px) + var(--patient-match-height,100dvh) / 2); left:calc(var(--patient-match-left,0px) + var(--patient-match-width,100vw) / 2); transform:translate(-50%,-50%); margin:0; width:min(480px,calc(var(--patient-match-width,100vw) - 32px)); max-height:calc(var(--patient-match-height,100dvh) - 32px); overscroll-behavior:contain; }
+.provider-patient-match-dialog :is(form,label,input) { min-width:0; max-width:100%; }
+.provider-patient-match-dialog input[type=date] { display:block; min-inline-size:0; }
 .provider-workspace cosmaneura-capture .shell { padding:0; font:inherit; }
 .provider-workspace cosmaneura-capture main { padding:0; gap:16px; }
 .provider-workspace cosmaneura-capture .eyebrow { display:none; }
