@@ -600,6 +600,14 @@ class ProviderCoreTransport:
                     value.get("action") == payload["action"]
                     and receipt.get("session_id") == payload["expected_session_id"]
                 )
+                if payload["action"] == "template_preference":
+                    _require(
+                        set(receipt) == {"session_id", "default_schema_ref"}
+                        and (
+                            receipt["default_schema_ref"] is None
+                            or _reference(receipt["default_schema_ref"], "doctor_note_schema")
+                        )
+                    )
         return value
 
     async def _context(self, expected: CoreProviderSelection | None) -> AuthorizedCoreProvider:
@@ -806,6 +814,18 @@ class ProviderCoreTransport:
                         raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
                     if response.status_code != status:
                         if (
+                            path == _ROOT + "capture-notes"
+                            and isinstance(payload, dict)
+                            and payload.get("action") == "template_preference"
+                            and response.status_code == 422
+                        ):
+                            # A legacy Core receiver does not recognize this optional
+                            # action. Recheck current access before the UI may fall back.
+                            await self._context(selection)
+                            raise ProviderCoreUnavailable(
+                                "core_provider_template_preference_unsupported", 422
+                            )
+                        if (
                             path == _ROOT + "capture-admissions"
                             and response.status_code == 409
                             and response.headers.get("X-Cosmaneura-Capture-Version") == "1"
@@ -963,6 +983,9 @@ def _validate_intent(
     else:
         _require(keys <= {"expected_session_id", "schema_ref", "action", "edit"})
         _uuid(body.get("expected_session_id"))
+        if body.get("action") == "template_preference":
+            _require(keys == {"expected_session_id", "action"})
+            return
         _require(
             body.get("action") in ("templates", "read", "prepare", "save", "resolve", "save_status")
         )

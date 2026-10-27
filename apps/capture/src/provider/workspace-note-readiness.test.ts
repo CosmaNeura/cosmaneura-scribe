@@ -77,6 +77,37 @@ const noteValue = async (draft = false, view = ready()) => ({
   field_order: draft ? ["Plan"] : null, note_sha256: draft ? await sha256(JSON.stringify([["Plan", "No plan discussed."]])) : null,
   created_at: draft ? new Date().toISOString() : null, review_required: true, reviewed_source: reviewedSource(view),
 });
+
+it("preselects the current owner default but does not open or generate until the normal Open note action", async () => {
+  const other = schema.slice(0, -1) + "1";
+  const f = mount({ request: async (_path, body) => {
+    const receipt = body.operation ? ready() : body.action === "templates"
+      ? { session_id: id(2), templates: [schema, other].map(schema_ref => ({ schema_ref, note_type: "Synthetic SOAP", field_names: ["Plan"] })) }
+      : body.action === "template_preference" ? { session_id: id(2), default_schema_ref: other }
+        : { ...await noteValue(), schema_ref: body.schema_ref };
+    return Response.json({ ...body, contract_version: "1", checked_at: new Date().toISOString(),
+      ...(body.operation ? { operation: "creator_review" } : { action: body.action }), receipt });
+  } });
+  await f.click("open"); await lastOptions().continueToNote!(ready());
+  expect(f.content.innerHTML).toContain(`<option value="${other}" selected>`);
+  expect(f.request.mock.calls.map(([, body]) => body.action)).toEqual(["templates", "template_preference"]);
+  expect(f.journal.save).not.toHaveBeenCalled(); expect(f.recorder).not.toHaveBeenCalled();
+  f.content.nodes.set('[name="schema"]', Object.assign(new Surface(), { value: schema }));
+  await f.click("read");
+  expect(f.request.mock.calls.some(([, body]) => body.action === "read" && body.schema_ref === schema)).toBe(true);
+  expect(f.request.mock.calls.some(([, body]) => body.action === "prepare")).toBe(false);
+});
+
+it("keeps a retained preparation on its original schema without consulting a new default", async () => {
+  const snapshot: JournalSnapshot = { ...saved(), progress: { ...saved().progress!,
+    notePreparation: { state: "submitted", key: id(6), schema, source: reviewedSource(ready()) } } };
+  const f = mount({ snapshot, request: async (_path, body) => Response.json({ ...body, contract_version: "1", checked_at: new Date().toISOString(),
+    ...(body.operation ? { operation: "creator_review" } : { action: body.action }), receipt: body.operation ? ready() : await noteValue(true) }) });
+  await f.click("open"); await lastOptions().continueToNote!(ready());
+  expect(f.request.mock.calls.some(([, body]) => body.action === "read" && body.schema_ref === schema)).toBe(true);
+  expect(f.request.mock.calls.some(([, body]) => ["templates", "template_preference", "prepare"].includes(String(body.action)))).toBe(false);
+  expect(f.journal.save).not.toHaveBeenCalled();
+});
 type Poll = { readonly body: Readonly<Record<string, unknown>>; readonly signal: AbortSignal; readonly start: number;
   readonly complete: (value?: unknown, status?: number) => Promise<void> };
 async function waiting() {

@@ -2,7 +2,7 @@ import { webcrypto } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpCreatorReviewApi } from "../../../review-ui/src/creator-review-api";
 import { CoreCaptureClient, CoreCaptureBff, type AdmissionIntent, type CoreCaptureScope, type AuthorizedCoreRequest } from "./core-client";
-import { canonical, parseDraft, pendingSave, resolveNote, checkNoteSave, saveNote, sha256, type CoreDraft } from "./core-notes";
+import { canonical, parseDraft, pendingSave, resolveNote, checkNoteSave, saveNote, sha256, preferredNoteTemplate, type CoreDraft } from "./core-notes";
 import { NativeProviderWorkspaceJournal, assertProgress, type ProviderProgress } from "./workspace-journal";
 
 const uuid = "10000000-0000-4000-8000-000000000001";
@@ -28,6 +28,33 @@ async function base(): Promise<CoreDraft> {
 }
 
 describe("configured Core provider boundary", () => {
+  it("reads the separate owner default with the exact current session without any note mutation", async () => {
+    const send = vi.fn(wire({ session_id: uuid, default_schema_ref: schema }));
+    const client = new CoreCaptureClient(scope, send, new AbortController().signal);
+    const templates = [{ schema_ref: schema, note_type: "Synthetic SOAP", field_names: ["Plan"] }];
+    expect(await preferredNoteTemplate(client, uuid, templates)).toBe(schema);
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]![1]).toMatchObject({ action: "template_preference", expected_session_id: uuid });
+    expect(send.mock.calls[0]![1]).not.toHaveProperty("schema_ref");
+    expect(send.mock.calls[0]![1]).not.toHaveProperty("edit");
+  });
+  it.each([422])("keeps explicit selection with an older Core receiver (%s)", async status => {
+    const client = new CoreCaptureClient(scope, async () => new Response(null, { status }), new AbortController().signal);
+    expect(await preferredNoteTemplate(client, uuid, [])).toBeNull();
+  });
+  it.each([401, 403, 404, 503])("does not turn authority or availability failure into a default (%s)", async status => {
+    const client = new CoreCaptureClient(scope, async () => new Response(null, { status }), new AbortController().signal);
+    await expect(preferredNoteTemplate(client, uuid, [])).rejects.toThrow();
+  });
+  it.each([
+    { session_id: uuid, default_schema_ref: resultRef },
+    { session_id: uuid, default_schema_ref: schema },
+    { session_id: uuid, default_schema_ref: null, extra: true },
+    { session_id: "foreign", default_schema_ref: null },
+  ])("rejects foreign, unavailable or malformed template preferences", async receipt => {
+    const client = new CoreCaptureClient(scope, wire(receipt), new AbortController().signal);
+    await expect(preferredNoteTemplate(client, uuid, [])).rejects.toThrow();
+  });
   it("cancels a background review read without aborting encounter access or sending a mutation", async () => {
     const encounter = new AbortController(), observation = new AbortController();
     let transportSignal!: AbortSignal;

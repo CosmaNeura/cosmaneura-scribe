@@ -1,6 +1,7 @@
 // Actual provider client through the Python server transport; all data is invented.
 import { createInterface } from "node:readline";
 import { CoreCaptureClient } from "../../apps/capture/src/provider/core-client.ts";
+import { preferredNoteTemplate } from "../../apps/capture/src/provider/core-notes.ts";
 
 const { scope, session } = JSON.parse(process.argv[2]);
 const input = createInterface({ input: process.stdin });
@@ -36,6 +37,9 @@ const edit = {
   fields: { Plan: "Invented follow-up plan" },
 };
 await client.note(session, "templates");
+if (await preferredNoteTemplate(client, session, [{ schema_ref: schema, note_type: "Synthetic SOAP", field_names: ["Plan"] }]) !== null) {
+  throw new Error("Wrong default preference");
+}
 for (const action of ["read", "prepare"]) await client.note(session, action, schema);
 for (const action of ["save", "resolve"]) await client.note(session, action, schema, edit, edit.client_key);
 process.stdout.write(JSON.stringify({ done: true }) + "\n");

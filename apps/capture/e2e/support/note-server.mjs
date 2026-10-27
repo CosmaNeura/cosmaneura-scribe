@@ -10,7 +10,7 @@ const canonical = value => Array.isArray(value) ? `[${value.map(canonical).join(
       .map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);
 
 export async function installNoteServer(context, { loseSaveResponse, origin = "http://127.0.0.1:5173", saveDelayMs = 0,
-  statusPending = false, draftPending = false, fields, visitTitle = "Synthetic saved visit", clockNow = () => new Date().toISOString() }) {
+  statusPending = false, draftPending = false, fields, withDefaultTemplate = false, visitTitle = "Synthetic saved visit", clockNow = () => new Date().toISOString() }) {
   const scope = { workspaceId: randomUUID(), appointmentRef: ref("appointment"), bindingRef: ref("scribe_capture_binding") };
   const session = randomUUID(), working = randomUUID(), segment = randomUUID();
   const source = { kind: "reviewed_english", source_version: 1, working_transcript_id: working, working_version: 1 };
@@ -23,6 +23,7 @@ export async function installNoteServer(context, { loseSaveResponse, origin = "h
     review_queue: { schema_version: "1.0", session_id: session, source_transcript_version: 1,
       working_transcript_id: working, working_transcript_version: 1, status: "complete", items: [] } };
   const template = { schema_ref: ref("doctor_note_schema"), note_type: "Synthetic SOAP", field_names: fields ? Object.keys(fields) : ["Patient", "Plan"] };
+  const preferred = { schema_ref: ref("doctor_note_schema", "1"), note_type: "My focused template", field_names: ["Summary"] };
   const initialFields = fields ?? { Patient: "Invented patient — no real patient.", Plan: "No treatment plan discussed." };
   let note = { session_id: session, scribe_source_id: working, source_sha256: "a".repeat(64),
     schema_ref: template.schema_ref, transcript_ref: ref("ai_visit_transcript"), note_ref: ref("visit_note"),
@@ -55,7 +56,7 @@ export async function installNoteServer(context, { loseSaveResponse, origin = "h
       if (action === "note-opening") {
         expect(body.expected_session_id).toBe(session);
         await route.fulfill({ json: { ...envelope, operation: "note_opening", receipt: {
-          session_id: session, review, templates: [template], note: visibleNote(),
+          session_id: session, review, templates: withDefaultTemplate ? [template, preferred] : [template], note: withDefaultTemplate ? null : visibleNote(),
         } } }); return;
       }
       if (action === "capture-operations") {
@@ -63,6 +64,13 @@ export async function installNoteServer(context, { loseSaveResponse, origin = "h
         await route.fulfill({ json: { ...envelope, operation: "creator_review", receipt: review } }); return;
       }
       expect(action).toBe("capture-notes"); expect(body.expected_session_id).toBe(session);
+      if (body.action === "template_preference") {
+        expect(withDefaultTemplate).toBe(true); expect(body.schema_ref).toBeUndefined();
+        expect(body.edit).toBeUndefined(); expect(body.scratch_notes).toBeUndefined();
+        await route.fulfill({ json: { ...envelope, action: body.action, receipt: {
+          session_id: session, default_schema_ref: preferred.schema_ref,
+        } } }); return;
+      }
       expect(body.schema_ref).toBe(template.schema_ref);
       let receipt;
       if (body.action === "save") {
@@ -88,7 +96,7 @@ export async function installNoteServer(context, { loseSaveResponse, origin = "h
       await route.fulfill({ json: { ...envelope, action: body.action, receipt } });
     } catch (error) { failures.push(error); await route.abort(); }
   });
-  return { scope, calls, original, current: () => note, releaseStatus: () => { pendingStatus = false; },
+  return { scope, calls, original, template, preferred, current: () => note, releaseStatus: () => { pendingStatus = false; },
     releaseDraft: () => { pendingDraft = false; },
     assertHealthy: () => { expect(failures).toEqual([]); expect(rejectedOrigins).toEqual([]); } };
 }
