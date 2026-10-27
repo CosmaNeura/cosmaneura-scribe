@@ -5,6 +5,46 @@ import { describe, expect, it, vi } from "vitest";
 import { runtimeDiagnostics, type RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 describe("local runtime diagnostics", () => {
+  it.each(["provider_start_requested", "provider_resume_requested"] as const)("retains pre-native stages after exhausted budgets at %s", async boundary => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-pre-native-")));
+    try {
+      const record = runtimeDiagnostics(directory), path = join(directory, "runtime-diagnostics-v1.jsonl");
+      for (let i = 0; i < 128; i++) record("connect_begin");
+      for (let i = 0; i < 32; i++) record("audio_stop_confirmed");
+      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(160));
+      // H6's native constructor was reached only after its old budget had
+      // discarded the entire setup-renewal interval. These durations are synthetic.
+      record(boundary); record("provider_preparation_metadata", 123.456); record("provider_source_prepare", 456.789);
+      record("audio_start_pending"); record("audio_ready"); record("audio_stop_confirmed");
+      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(166));
+      const rows = (await readFile(path, "utf8")).trim().split("\n")
+        .map(line => JSON.parse(line) as { event: string; capture_attempt: number; duration_ms?: number });
+      expect(rows.slice(-6).map(row => row.event)).toEqual([boundary, "provider_preparation_metadata", "provider_source_prepare",
+        "audio_start_pending", "audio_ready", "audio_stop_confirmed"]);
+      expect(rows.slice(-6).map(row => row.capture_attempt)).toEqual([0, 0, 0, 1, 1, 1]);
+      expect(rows.slice(-5, -3).map(row => row.duration_ms)).toEqual([123.456, 456.789]);
+      expect((await stat(path)).size).toBeLessThanOrEqual(65_536);
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  it("restores pre-native coverage with a full write queue without growing it or advancing the native attempt", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-pre-native-queue-")));
+    try {
+      const record = runtimeDiagnostics(directory), path = join(directory, "runtime-diagnostics-v1.jsonl");
+      for (let i = 0; i < 128; i++) record("connect_begin");
+      for (let i = 0; i < 32; i++) record("audio_stop_confirmed");
+      record("provider_resume_requested"); record("provider_source_prepare", 999);
+      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(160));
+      record("provider_source_prepare", 12); record("audio_start_pending"); record("audio_ready");
+      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(163));
+      const rows = (await readFile(path, "utf8")).trim().split("\n")
+        .map(line => JSON.parse(line) as { event: string; capture_attempt: number; duration_ms?: number });
+      expect(rows.slice(-3).map(row => [row.event, row.capture_attempt])).toEqual([
+        ["provider_source_prepare", 0], ["audio_start_pending", 1], ["audio_ready", 1],
+      ]);
+      expect(rows.some(row => row.duration_ms === 999)).toBe(false);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
   it("retains only closed Store bridge error categories through fourteen", async () => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-store-bridge-")));
     try {
