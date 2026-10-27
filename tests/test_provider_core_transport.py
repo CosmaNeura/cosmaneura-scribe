@@ -151,6 +151,8 @@ class Wire:
                         )
                     elif path.endswith("capture-notes"):
                         result.update(action=data["action"], receipt={"session_id": SESSION})
+                        if data["action"] == "template_preference":
+                            result["receipt"]["default_schema_ref"] = None
                     else:
                         pytest.fail("unlisted route reached")
         self.after(path)
@@ -1735,7 +1737,9 @@ async def test_actual_typescript_provider_client_uses_server_transport(connectio
                 await process.stdin.drain()
             await process.wait()
             assert process.returncode == 0
-        assert len(wire.effects) == 8
+        assert len(wire.effects) == 9
+        assert wire.effects[4][1]["action"] == "template_preference"
+        assert "schema_ref" not in wire.effects[4][1]
         assert wire.effects[0][1]["configured_capture"]["language_mode"] == "en-US+es-US"
         assert wire.effects[-2][1]["edit"] == wire.effects[-1][1]["edit"]
         assert wire.effects[-2][2] == wire.effects[-1][2]
@@ -2026,3 +2030,94 @@ async def test_capture_adjacent_checks_are_consumed_and_cannot_authorize_later_r
             mount, ROOT + "capture-operations", payload, "offline-reused", _negotiated=negotiated
         )
     assert len(wire.calls) == count
+
+
+@pytest.mark.parametrize("selected", [None, "doctor_note_schema_" + SUFFIX])
+async def test_template_preference_traverses_real_negotiation_and_closed_reply(
+    connection, selected
+):
+    wire, client = connection
+    mount = await client.open()
+    expected = {"session_id": SESSION, "default_schema_ref": selected}
+    wire.alter = lambda path, value: (
+        {**value, "receipt": expected} if path.endswith("capture-notes") else value
+    )
+    payload = body(action="template_preference", expected_session_id=SESSION)
+    result = await client.request(mount, ROOT + "capture-notes", payload, "offline-preference")
+    assert result["receipt"] == expected
+    assert len(wire.effects) == 1 and wire.effects[0][1] == payload
+    assert wire.counter == 2  # New request requires fresh negotiation, not a cached mount.
+
+
+@pytest.mark.parametrize("extra", [
+    {"schema_ref": "doctor_note_schema_" + SUFFIX},
+    {"edit": {}}, {"scratch_notes": {}}, {"doctor_id": "foreign"},
+])
+async def test_template_preference_rejects_extra_intent_before_any_io(connection, extra):
+    wire, client = connection
+    mount = await client.open()
+    before = list(wire.calls)
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.request(
+            mount, ROOT + "capture-notes",
+            body(action="template_preference", expected_session_id=SESSION, **extra),
+            "offline-preference",
+        )
+    assert wire.calls == before and not wire.effects
+
+
+@pytest.mark.parametrize("receipt", [
+    {"session_id": SESSION},
+    {"session_id": SESSION, "default_schema_ref": 1},
+    {"session_id": SESSION, "default_schema_ref": "appointment_" + SUFFIX},
+    {"session_id": SESSION, "default_schema_ref": None, "unexpected": True},
+    {"session_id": str(uuid4()), "default_schema_ref": None},
+])
+async def test_template_preference_rejects_non_closed_or_foreign_receipt(connection, receipt):
+    wire, client = connection
+    mount = await client.open()
+    wire.alter = lambda path, value: (
+        {**value, "receipt": receipt} if path.endswith("capture-notes") else value
+    )
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.request(
+            mount, ROOT + "capture-notes",
+            body(action="template_preference", expected_session_id=SESSION), "offline-preference",
+        )
+    assert len(wire.effects) == 1
+
+
+@pytest.mark.parametrize("status, published", [(422, 422), (404, 403), (401, 403),
+                                              (403, 403), (410, 403), (503, 503)])
+async def test_template_preference_old_receiver_only_preserves_unsupported_status(
+    connection, status, published
+):
+    wire, client = connection
+    mount = await client.open()
+    wire.alter = lambda path, value: (
+        httpx.Response(status, json={"detail": "private-error-sentinel"})
+        if path.endswith("capture-notes") else value
+    )
+    with pytest.raises(ProviderCoreUnavailable) as caught:
+        await client.request(
+            mount, ROOT + "capture-notes",
+            body(action="template_preference", expected_session_id=SESSION), "offline-preference",
+        )
+    assert caught.value.status == published
+    assert "private-error-sentinel" not in str(caught.value)
+    assert len(wire.effects) == 1  # No retry or fallback Core operation.
+
+
+async def test_unsupported_preference_does_not_hide_current_revocation(connection):
+    wire, client = connection
+    mount = await client.open()
+    wire.alter = lambda path, value: (
+        httpx.Response(422) if path.endswith("capture-notes") else value
+    )
+    wire.after = lambda path: setattr(wire, "denied", path.endswith("capture-notes"))
+    with pytest.raises(ProviderCoreUnavailable) as caught:
+        await client.request(
+            mount, ROOT + "capture-notes",
+            body(action="template_preference", expected_session_id=SESSION), "offline-preference",
+        )
+    assert caught.value.status == 403 and len(wire.effects) == 1

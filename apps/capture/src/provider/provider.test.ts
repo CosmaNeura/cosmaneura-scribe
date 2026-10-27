@@ -38,11 +38,11 @@ describe("configured Core provider boundary", () => {
     expect(send.mock.calls[0]![1]).not.toHaveProperty("schema_ref");
     expect(send.mock.calls[0]![1]).not.toHaveProperty("edit");
   });
-  it.each([404, 422])("keeps explicit selection with an older Core receiver (%s)", async status => {
+  it.each([422])("keeps explicit selection with an older Core receiver (%s)", async status => {
     const client = new CoreCaptureClient(scope, async () => new Response(null, { status }), new AbortController().signal);
     expect(await preferredNoteTemplate(client, uuid, [])).toBeNull();
   });
-  it.each([401, 403, 503])("does not turn authority or availability failure into a default (%s)", async status => {
+  it.each([401, 403, 404, 503])("does not turn authority or availability failure into a default (%s)", async status => {
     const client = new CoreCaptureClient(scope, async () => new Response(null, { status }), new AbortController().signal);
     await expect(preferredNoteTemplate(client, uuid, [])).rejects.toThrow();
   });

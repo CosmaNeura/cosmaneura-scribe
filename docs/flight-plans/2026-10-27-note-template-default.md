@@ -6,7 +6,9 @@ note-save contract changes are included. Core owns the persisted preference;
 Scribe only presents it.
 
 Deploy the Core `template_preference` receiver and its generated additive
-preference table before this consumer. The Core flight plan is
+preference table, then this Scribe BFF receiver, before the frontend consumer.
+The BFF accepts only the closed read intent and same-session closed receipt;
+no template choice, edit or scratch text may accompany this read. The Core flight plan is
 `docs/flight-plans/2026-10-27-note-template-default.md`. Its owner-scoped Settings
 control is opt-in and permits clearing the default.
 
@@ -19,7 +21,7 @@ note without the existing explicit Open note action. Existing retained drafts,
 pending preparations/saves and successor operations keep their original schema;
 the preference does not reinterpret their fields or overwrite generated text.
 
-An older receiver's 404/422 retains the original picker. Authorization/service
+An older receiver's unsupported-action 422 retains the original picker only after the BFF rechecks current access. Access-denial 404 responses remain failures. Authorization/service
 failures and malformed, foreign or unavailable template references remain errors.
 The old `templates` receipt is unchanged, so old Scribe clients remain compatible.
 

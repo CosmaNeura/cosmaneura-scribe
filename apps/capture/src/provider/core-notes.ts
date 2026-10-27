@@ -61,7 +61,7 @@ export async function preferredNoteTemplate(client: CoreCaptureClient, session: 
   try { value = await client.note(session, "template_preference"); }
   catch (error) {
     // Older Core receivers keep their original, explicit template picker.
-    if (error instanceof BffResponseError && [404, 422].includes(error.status)) return null;
+    if (error instanceof BffResponseError && error.status === 422) return null;
     throw error;
   }
   requireValue(closed(value, "session_id,default_schema_ref") && value.session_id === session
