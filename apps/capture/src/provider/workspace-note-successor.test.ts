@@ -658,3 +658,80 @@ it("access loss during the current pair cannot clear an older terminal request",
   expect((await f.journal.load()).progress).toEqual(t.progress); expect(f.journal.save).not.toHaveBeenCalled();
   expect(t.calls).not.toContain("save"); expect(t.calls).not.toContain("prepare");
 });
+
+it("opens current transcript review from a saved note without editing or preparing, then preserves the prior note for an explicit successor", async () => {
+  const w = wire(); w.setDraft();
+  const prior = { ...original(), source: reviewedSource(ready()) };
+  const f = mount({ snapshot: { revision: "1", progress: { ...saved().progress!, notePreparation: prior } }, request: w.request });
+  await f.click("open-draft"); await lastOptions().continueToNote!(ready());
+  const link = f.content.querySelector('[data-workspace-action="review"]');
+  expect(link).not.toBeNull();
+  expect(f.content.innerHTML).toContain("Review transcript and speakers");
+  const before = f.journal.snapshot();
+  const mountCount = mounted.mock.calls.length;
+  await f.click("review");
+  expect(mounted.mock.calls.length).toBe(mountCount + 1);
+  expect(f.journal.snapshot()).toEqual(before);
+  expect(w.preparations).toEqual([]);
+  expect(f.recorder).not.toHaveBeenCalled();
+  const current = ready(5); w.advance(current);
+  await lastOptions().continueToNote!(current);
+  expect(f.content.innerHTML).toContain("Transcript updated");
+  expect(f.content.innerHTML).toContain("Previous drafts and saved notes are retained.");
+  expect(w.preparations).toEqual([]);
+  await f.click("prepare-updated-note");
+  expect(w.preparations).toHaveLength(1);
+  const after = f.journal.snapshot().progress!;
+  expect(after.notePreparation).toEqual(prior);
+  expect(after.notePreparationSuccessors).toHaveLength(1);
+  expect(after.notePreparationSuccessors![0]!.source).toEqual(reviewedSource(current));
+});
+
+it("does not navigate the new saved-note review action after the encounter is revoked", async () => {
+  const w = wire(); w.setDraft();
+  const f = mount({ request: w.request });
+  await f.click("open-draft"); await lastOptions().continueToNote!(ready());
+  expect(f.content.innerHTML).toContain("Review transcript and speakers");
+  const mountCount = mounted.mock.calls.length;
+  f.abort.abort();
+  await f.click("review");
+  expect(mounted.mock.calls.length).toBe(mountCount);
+  expect(w.preparations).toEqual([]);
+  expect(f.recorder).not.toHaveBeenCalled();
+});
+
+it.each(["unknown", "patient"] as const)("uses current working speaker roles for the saved-note %s guidance", async role => {
+  const old = ready();
+  const current = parseCreatorReview({ ...old, working: { ...old.working,
+    segments: old.working!.segments.map(segment => ({ ...segment, speaker_role: role })) } }, id(2));
+  const w = wire(); w.setDraft(); w.advance(current);
+  const f = mount({ request: w.request, view: current });
+  await f.click("open-draft"); await lastOptions().continueToNote!(current);
+  // The immutable original remains unknown even after a working role correction.
+  expect(current.source!.segments[0]!.speaker_role).toBe("unknown");
+  expect(f.content.innerHTML.includes("Identify the patient and clinician to improve this draft.")).toBe(role === "unknown");
+  expect(w.preparations).toEqual([]);
+});
+
+it("keeps unsaved note words behind the existing navigation confirmation before transcript review", async () => {
+  const w = wire(); w.setDraft();
+  const f = mount({ request: w.request });
+  await f.click("open-draft"); await lastOptions().continueToNote!(ready());
+  const field = new HTMLTextAreaElement() as unknown as Surface & { value: string; defaultValue: string };
+  field.value = "Synthetic unsaved note edit."; field.defaultValue = "No plan discussed.";
+  const originalQueryAll = f.content.querySelectorAll.bind(f.content);
+  f.content.querySelectorAll = selector => selector === "textarea[data-note-field]" ? [field] : originalQueryAll(selector);
+  f.content.nodes.set('[name="note-0"]', field);
+  const navigation = f.root.querySelector('[data-workspace-navigation]')!;
+  const dialog = Object.assign(new Surface(), { showModal: vi.fn() });
+  const originalQuery = navigation.querySelector.bind(navigation);
+  navigation.querySelector = selector => selector === "dialog" ? dialog : originalQuery(selector);
+  const before = f.journal.snapshot(), mountCount = mounted.mock.calls.length;
+  await f.click("review");
+  expect(dialog.showModal).toHaveBeenCalledOnce();
+  expect(navigation.innerHTML).toContain("Keep your note edits?");
+  expect(mounted.mock.calls.length).toBe(mountCount);
+  expect(field.value).toBe("Synthetic unsaved note edit.");
+  expect(f.journal.snapshot()).toEqual(before);
+  expect(w.preparations).toEqual([]);
+});
