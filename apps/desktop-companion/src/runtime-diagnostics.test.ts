@@ -5,6 +5,23 @@ import { describe, expect, it, vi } from "vitest";
 import { runtimeDiagnostics, type RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 describe("local runtime diagnostics", () => {
+  it("records accepted PCM on the existing attempt and clock, without accepting payload or duration", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-first-pcm-")));
+    try {
+      const record = runtimeDiagnostics(directory), path = join(directory, "runtime-diagnostics-v1.jsonl");
+      record("provider_start_requested"); record("audio_start_pending"); record("audio_ready");
+      record("audio_first_pcm_accepted", 42); record("audio_first_pcm_accepted", undefined, 1);
+      record("audio_first_pcm_accepted");
+      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(4));
+      const rows = (await readFile(path, "utf8")).trim().split("\n")
+        .map(line => JSON.parse(line) as { event: string; capture_attempt: number; monotonic_ns: string });
+      expect(rows.at(-1)).toEqual({ utc: expect.any(String), pid: process.pid, monotonic_ns: expect.any(String),
+        capture_attempt: 1, event: "audio_first_pcm_accepted" });
+      expect(rows.map(row => row.capture_attempt)).toEqual([0, 1, 1, 1]);
+      expect(rows.every((row, index) => index === 0 || BigInt(row.monotonic_ns) >= BigInt(rows[index - 1]!.monotonic_ns))).toBe(true);
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
   it.each(["provider_start_requested", "provider_resume_requested"] as const)("retains pre-native stages after exhausted budgets at %s", async boundary => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-pre-native-")));
     try {

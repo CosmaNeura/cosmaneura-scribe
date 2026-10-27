@@ -25,7 +25,7 @@ const TERMINAL_EVENTS = ["audio_stop_confirmed", "audio_permission_required", "a
 const EVENTS = ["host_open", "window_ready", "connect_begin", "backend_ready", "presentation_ready", "connect_ready", "connect_failed",
   "before_quit", "window_close", "renderer_gone", "renderer_navigation", "close_begin", "boundary_closed", "owner_closed", "close_failed", "quit_ready",
   "provider_start_requested", "provider_resume_requested",
-  "audio_start_pending", "audio_helper_spawned", "audio_ready", "audio_start_timeout",
+  "audio_start_pending", "audio_helper_spawned", "audio_ready", "audio_first_pcm_accepted", "audio_start_timeout",
   ...TERMINAL_EVENTS,
   "meeting_windows_ready", "meeting_windows_empty", "meeting_windows_screen_access_denied", "meeting_windows_lookup_failed",
   "meeting_windows_limit_exceeded", "meeting_windows_unavailable", "meeting_windows_protocol_failed", "meeting_windows_transport_failed",

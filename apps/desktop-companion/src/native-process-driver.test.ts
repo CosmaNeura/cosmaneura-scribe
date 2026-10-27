@@ -192,13 +192,15 @@ describe("fixed recording failure diagnostics", () => {
   // Explicit invented consent precedes generated PCM. This fixture has no OS
   // audio API; it exercises the actual private-pipe driver and joined cleanup.
   async function fixture(reportedFailure: Record<string, unknown> | undefined,
-    run: (driver: NativeProcessPCMDriver, events: Array<{ event: string; duration: number | undefined; reason: number | undefined }>) => Promise<void>): Promise<void> {
+    run: (driver: NativeProcessPCMDriver, events: Array<{ event: string; duration: number | undefined; reason: number | undefined }>) => Promise<void>,
+    options: { secondPacket?: boolean; diagnosticThrows?: boolean } = {}): Promise<void> {
     expect(consent.allPartiesAgreed).toBe(true);
     const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-recording-diagnostics-")));
     const helperPath = join(directory, "fixture");
     const script = `#!${process.execPath}
 if (!["--capture-v2", "--capture-v3"].includes(process.argv[2])) process.exit(77);
 const reportedFailure = ${JSON.stringify(reportedFailure ?? null)};
+const secondPacket = ${options.secondPacket === true};
 const metadata = value => {
   const body = Buffer.from(JSON.stringify(value)), head = Buffer.alloc(5);
   head.writeUInt32BE(body.length + 1); head[4] = 1; process.stdout.write(Buffer.concat([head, body]));
@@ -212,8 +214,8 @@ process.stdin.on("data", part => {
     if (value.type === "start" || value.type === "startRenewable") {
       metadata(reportedFailure ?? { type: "ready", start: { hostTimeNanoseconds: "1000000000",
         microphonePrerollNanoseconds: "0", systemPrerollNanoseconds: "0" } });
-    } else if (value.type === "activate") {
-      const head = Buffer.alloc(9); head.writeUInt32BE(9); head[4] = 2; head.writeUInt32BE(0, 5);
+    } else if (value.type === "activate" || secondPacket && value.type === "ack" && value.firstFrame === 0) {
+      const head = Buffer.alloc(9); head.writeUInt32BE(9); head[4] = 2; head.writeUInt32BE(value.type === "activate" ? 0 : 2, 5);
       process.stdout.write(Buffer.concat([head, Buffer.from([0, 16, 0, 240])]));
     } else if (value.type === "stop") metadata({ type: "stopped", request: value.request, completion: null });
   }
@@ -229,7 +231,10 @@ process.stdin.on("end", () => process.exit(0));
           captureDevice: "1", captureInode: "3" }),
         isSessionActive: () => true, authorizeSelectedWindow: async () => ({ application: "microphone",
           processID: 0, windowID: 0, captureAuthorizedUntil: Date.now() + 60_000 }),
-        diagnostics: (event, duration, reason) => { events.push({ event, duration, reason }); },
+        diagnostics: (event, duration, reason) => {
+          events.push({ event, duration, reason });
+          if (options.diagnosticThrows) throw new Error("unavailable diagnostic sink");
+        },
       }), events);
     } finally { await rm(directory, { recursive: true, force: true }); }
   }
@@ -341,6 +346,7 @@ process.stdin.on("end", () => process.exit(0));
           { event: "audio_main_failure_reason", duration: undefined, reason: 13 },
         ]);
         expect(events.filter(row => row.event === "audio_stop_confirmed")).toHaveLength(1);
+        expect(events.some(row => row.event === "audio_first_pcm_accepted")).toBe(false);
         expect(JSON.stringify(events)).not.toContain("private callback detail");
       } finally { await session.stop({ mode: "discard" }); }
     });
@@ -356,7 +362,54 @@ process.stdin.on("end", () => process.exit(0));
         await vi.waitFor(() => { expect(references).toHaveLength(1); expect(references[0]!.every(value => value === 0)).toBe(true); });
         expect(await session.stop({ mode: "discard" })).toBeNull(); expect(failures).toEqual([]);
         expect(events.some(row => row.event === "audio_packet_sink")).toBe(false);
+        expect(events.filter(row => row.event === "audio_first_pcm_accepted")).toEqual([
+          { event: "audio_first_pcm_accepted", duration: undefined, reason: undefined },
+        ]);
       } finally { await session.stop({ mode: "discard" }); }
+    });
+  });
+  it("timestamps accepted PCM after the first sink resolves, once across later packets, even when diagnostics throw", async () => {
+    await fixture(undefined, async (native, events) => {
+      const accepted = deferred<void>(), references: Uint8Array[] = [], failures: DesktopPCMFailure[] = [];
+      const session = native.start({ sampleRateHz: 16_000, maximumOutputFrames: 16_000 }, {
+        onPcmPacket: async packet => { references.push(packet.pcmBytes); await accepted.promise; },
+        onFailure: code => { failures.push(code); },
+      });
+      try {
+        await session.ready;
+        expect(events.some(row => row.event === "audio_ready")).toBe(true);
+        expect(events.some(row => row.event === "audio_first_pcm_accepted")).toBe(false);
+        session.activate();
+        await vi.waitFor(() => expect(references).toHaveLength(1));
+        expect(events.some(row => row.event === "audio_first_pcm_accepted")).toBe(false);
+        accepted.resolve();
+        await vi.waitFor(() => {
+          expect(references).toHaveLength(2);
+          expect(references.every(bytes => bytes.every(value => value === 0))).toBe(true);
+        });
+        expect(events.filter(row => row.event === "audio_first_pcm_accepted")).toEqual([
+          { event: "audio_first_pcm_accepted", duration: undefined, reason: undefined },
+        ]);
+        expect(await session.stop({ mode: "discard" })).toBeNull(); expect(failures).toEqual([]);
+        expect(events.filter(row => row.event === "audio_stop_confirmed")).toHaveLength(1);
+      } finally { accepted.resolve(); await session.stop({ mode: "discard" }); }
+    }, { secondPacket: true, diagnosticThrows: true });
+  });
+  it("does not report accepted PCM when the first sink finishes after cancellation", async () => {
+    await fixture(undefined, async (native, events) => {
+      const accepted = deferred<void>(), references: Uint8Array[] = [];
+      const session = native.start({ sampleRateHz: 16_000, maximumOutputFrames: 16_000 }, {
+        onPcmPacket: async packet => { references.push(packet.pcmBytes); await accepted.promise; }, onFailure: vi.fn(),
+      });
+      try {
+        await session.ready; session.activate();
+        await vi.waitFor(() => expect(references).toHaveLength(1));
+        const stopped = session.stop({ mode: "discard" });
+        accepted.resolve(); await stopped;
+        expect(events.some(row => row.event === "audio_first_pcm_accepted")).toBe(false);
+        expect(references[0]!.every(value => value === 0)).toBe(true);
+        expect(events.filter(row => row.event === "audio_stop_confirmed")).toHaveLength(1);
+      } finally { accepted.resolve(); await session.stop({ mode: "discard" }); }
     });
   });
 });

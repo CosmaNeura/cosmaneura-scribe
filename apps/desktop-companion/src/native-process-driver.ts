@@ -238,6 +238,9 @@ class ProcessSession implements DesktopPCMDriverSession {
         try {
           if (!this.cancelled) await timed(this.options, "audio_packet_sink",
             () => this.sink.onPcmPacket({ firstFrame, pcmBytes: bytes }), 100);
+          // This is accepted converted PCM, not helper readiness or the later
+          // integer-second UI counter. The existing attempt uses the same clock.
+          if (firstFrame === 0 && !this.cancelled && !this.failed) this.diagnose("audio_first_pcm_accepted");
           if (!this.cancelled) this.send({ type: "ack", firstFrame });
         } catch { this.fail("failed", FAILURE_ORIGIN.sinkRejected); }
         finally { bytes.fill(0); this.receiving = false; }
