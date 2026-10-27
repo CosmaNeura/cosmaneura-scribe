@@ -4,6 +4,7 @@ import { isUuid } from "../../../review-ui/src/contracts";
 import { record, reference } from "./core-client";
 import type { ProviderEncounter } from "./workspace-contracts";
 import { createVisitFeatures, type VisitFeatures } from "./visit-features";
+import { openPatientMatchJournal, type PatientMatchJournal } from "./patient-match-journal";
 
 export interface ProviderPatient { patientRef: string; name: string; dateOfBirth: string | null }
 export interface EncounterDraft {
@@ -21,6 +22,7 @@ export interface EncounterSetupState {
   pending: EncounterDraft | null;
 }
 export interface ProviderEncounterSetup extends Partial<VisitFeatures> {
+  patientMatchJournal?(encounter: ProviderEncounter, signal: AbortSignal): Promise<PatientMatchJournal>;
   state(signal: AbortSignal): Promise<EncounterSetupState>;
   search(query: string, signal: AbortSignal): Promise<Omit<EncounterSetupState, "pending">>;
   submit(draft: EncounterDraft | null, signal: AbortSignal): Promise<ProviderEncounter>;
@@ -210,6 +212,13 @@ export function createEncounterSetup(options: {
       },
     } : {}),
     search,
+    patientMatchJournal: async (encounter, signal) => {
+      options.current(signal);
+      if (!recovery) await search("", signal);
+      if (!recovery || !reference(encounter.appointmentRef, "appointment") || !reference(encounter.patientRef, "patient")) throw fail();
+      const { records } = await journal(signal);
+      return openPatientMatchJournal(records, { recoveryScope: recovery, appointmentRef: encounter.appointmentRef, patientRef: encounter.patientRef }, () => options.current(signal));
+    },
     state: async signal => ({ ...(recovery && account ? { account, patients: [], moreResults: false } : await search("", signal)), pending: (await load(signal)).pending }),
     submit: async (input, signal) => {
       options.current(signal);

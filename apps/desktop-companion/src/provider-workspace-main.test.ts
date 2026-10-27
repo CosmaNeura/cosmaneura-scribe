@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import type { ProviderSignInPreparation } from "../../capture/src/provider/signin-preparation";
 import { describe, expect, it, vi } from "vitest";
 import { DesktopProviderWorkspaceMain, type DesktopProviderMainHost } from "./provider-workspace-main.js";
@@ -9,6 +10,8 @@ import type { PendingReviewDecision } from "../../review-ui/src/creator-review-j
 import type { RuntimeDiagnostic } from "./runtime-diagnostics.js";
 import type { ProviderRecorderSnapshot } from "../../capture/src/provider-binding";
 import type { AudioPreflightSnapshot, ProviderAudioPreflight } from "../../capture/src/provider/audio-preflight";
+import type { PendingPatientMatch } from "../../capture/src/provider/patient-match-view";
+import { createDesktopProviderApplicationHost } from "../../capture/src/provider/desktop-application";
 
 const sessionId = "10000000-0000-4000-8000-000000000001", workspaceId = "20000000-0000-4000-8000-000000000002";
 const scope = { workspaceId, bindingRef: "scribe_capture_binding_01j00000000000000000000000", appointmentRef: "appointment_01j00000000000000000000000" };
@@ -44,7 +47,9 @@ async function fixture(openingReview?: { scope: typeof scope; receivedAt: number
   const backend = vi.fn(async () => { if (coreGate) await coreGate; return Response.json({ allowed: "invented-result" }); });
   const navigation = vi.fn(async () => undefined), create = vi.fn(async () => undefined);
   const signOut = vi.fn(async () => { changed("signedOut"); return state; });
+  let matching: PendingPatientMatch | null = null;
   const setup = {
+    patientMatchJournal: vi.fn(async () => ({ local: () => matching, retain: vi.fn(async (value: PendingPatientMatch | null) => { matching = value; }) })),
     state: vi.fn(async () => ({ account: "provider@synthetic.invalid", patients: [], moreResults: false, pending: null })),
     search: vi.fn(async () => ({ account: "provider@synthetic.invalid", patients: [], moreResults: false })),
     submit: vi.fn(async () => ({ appointmentRef: scope.appointmentRef, title: "Synthetic Patient", detail: "Visit" })),
@@ -102,6 +107,30 @@ const core = (kind: string) => ({ path: "/service/v1/agent/scribe/capture-operat
   body: { binding_ref: scope.bindingRef, workspace_id: workspaceId, request_nonce: crypto.randomUUID(), operation: { kind } } });
 
 describe("trusted desktop provider workspace", () => {
+  it("round-trips pending identity confirmation through the actual renderer/main bridge without capture writes", async () => {
+    const f = await fixture(undefined, false, true);
+    const app = createDesktopProviderApplicationHost({ request: value => f.main.request(value), subscribe: listener => f.main.subscribe(listener) }, {
+      request: async () => { throw Error("No capture requested"); }, subscribe: () => () => undefined,
+    });
+    try {
+      await app.host.session.getState();
+      const controller = new AbortController(), connection = await app.host.connect(controller.signal);
+      const workspace = connection.workspace; await workspace.listEncounters(controller.signal);
+      const selected = await workspace.openEncounter(scope.appointmentRef, controller.signal);
+      const journal = await workspace.encounterSetup!.patientMatchJournal!(selected.encounter, controller.signal);
+      expect(journal.local()).toBeNull();
+      const intent: PendingPatientMatch = { key: crypto.randomUUID(), expectedVersion: 0, selection: { kind: "confirm_new", dateOfBirth: null } };
+      await journal.retain(intent); expect(journal.local()).toEqual(intent);
+      expect(f.setup.patientMatchJournal).toHaveBeenCalledOnce();
+      expect(f.saved).toEqual({ revision: null, progress: null }); expect(f.acquireRecorder).not.toHaveBeenCalled();
+      await expect(workspace.encounterSetup!.patientMatchJournal!({ ...selected.encounter, appointmentRef: scope.appointmentRef.slice(0, -1) + "1" }, controller.signal)).rejects.toThrow();
+      await workspace.openEncounter(scope.appointmentRef, controller.signal);
+      await expect(journal.retain(null)).rejects.toThrow();
+      const current = await workspace.encounterSetup!.patientMatchJournal!(selected.encounter, controller.signal);
+      expect(current.local()).toEqual(intent); f.changed("signedOut");
+      await expect(current.retain(null)).rejects.toThrow(); expect(f.saved.progress).toBeNull();
+    } finally { await app.dispose(); await f.main.dispose(); }
+  });
   it("accepts only one bounded Ready duration for the current confirmed native recorder", async () => {
     const f = await fixture(); await f.connect(); await f.open();
     try {

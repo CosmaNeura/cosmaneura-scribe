@@ -130,6 +130,20 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     pendingNavigation = null; closePatientMatch?.(); closePatientMatch = null; navigation.querySelector<HTMLDialogElement>("dialog")?.close(); navigation.replaceChildren();
   };
   const show = (markup: string): void => { stopSaveCheck?.(); stopSaveCheck = null; clearNavigation(); consentAction = null; disposeContent?.(); disposeContent = null; content.innerHTML = markup; };
+  const separatePatient = (): string | null => {
+    if (!separateVisitPatientRef || context?.encounter.patientRef !== separateVisitPatientRef) return null;
+    const identity = identityOverride ?? context.encounter.identity;
+    return identity?.state === "provisional" ? null : identity?.canonicalPatientRef ?? separateVisitPatientRef;
+  };
+  const showSeparateVisitRecovery = (): void => {
+    const setup = host.encounterSetup;
+    const eligible = separateVisitPatientRef !== null && context?.encounter.patientRef === separateVisitPatientRef && setup;
+    const canConfirm = eligible && !separatePatient() && setup.patientMatchJournal && setup.patientCandidates && setup.matchPatient;
+    show(`<h1>Recording access needed on this device</h1><p>If this recording was prepared on another device, continue on that device. Moving an unfinished recording between devices is not supported. If this is the original device, contact support before retrying. Do not remove Scribe or reset its data.</p>
+      ${eligible ? '<p>You can start a separate visit here for the same patient. The earlier visit and its saved work will stay unchanged. A new recording starts only after you confirm consent.</p>' : ''}
+      ${eligible && separatePatient() ? '<button data-workspace-action="new-visit-same-patient">Start a new visit for this patient</button>' : canConfirm ? '<p>Confirm this patient’s identity before starting another visit.</p><button data-workspace-action="confirm-patient-for-new-visit">Confirm patient details</button>' : ''}
+      <button data-workspace-action="encounters">Your encounters</button>`);
+  };
   const persist = (next: ProviderProgress | ((previous: ProviderProgress) => ProviderProgress)): Promise<void> => {
     requireValue(context && !client?.signal.aborted);
     const activeContext = context, activeClient = client;
@@ -232,11 +246,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
               ? "This visit could not be opened. Your saved work is retained. Retry opening the visit."
               : `The ${step} could not be confirmed. Your saved work is retained. Return to Your encounters and reopen this encounter to recover.`;
         if (error instanceof CaptureDeviceCustodyError) {
-          const canStartSeparateVisit = separateVisitPatientRef !== null && host.encounterSetup
-            && context?.encounter.patientRef === separateVisitPatientRef;
-          show(`<h1>Recording access needed on this device</h1><p>If this recording was prepared on another device, continue on that device. Moving an unfinished recording between devices is not supported. If this is the original device, contact support before retrying. Do not remove Scribe or reset its data.</p>
-            ${canStartSeparateVisit ? '<p>You can start a separate visit here for the same patient. The earlier visit and its saved work will stay unchanged. A new recording starts only after you confirm consent.</p><button data-workspace-action="new-visit-same-patient">Start a new visit for this patient</button>' : ''}
-            <button data-workspace-action="encounters">Your encounters</button>`);
+          showSeparateVisitRecovery();
         } else if (context && journal.progress?.pendingSave) {
           showSaveRecovery();
         } else if (step === "encounter setup" || step === "encounter creation") {
@@ -1548,9 +1558,27 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         case "new-encounter": await setup(); break;
         case "new-visit-same-patient": {
           if (button.disabled || button !== content.querySelector('[data-workspace-action="new-visit-same-patient"]')) return;
-          const patientRef = separateVisitPatientRef;
-          requireValue(patientRef && context?.encounter.patientRef === patientRef && host.encounterSetup);
+          const patientRef = separatePatient();
+          requireValue(patientRef && host.encounterSetup);
           await setup(false, patientRef); break;
+        }
+        case "confirm-patient-for-new-visit": {
+          if (button.disabled || button !== content.querySelector('[data-workspace-action="confirm-patient-for-new-visit"]')) return;
+          requireValue(context && client && separateVisitPatientRef === context.encounter.patientRef && !separatePatient()
+            && host.encounterSetup?.patientMatchJournal && host.encounterSetup.patientCandidates && host.encounterSetup.matchPatient);
+          const selected = context, activeClient = client, n = generation;
+          const matchJournal = await host.encounterSetup.patientMatchJournal(selected.encounter, activeClient.signal);
+          if (!authorized(n) || context !== selected || client !== activeClient) return;
+          clearNavigation();
+          closePatientMatch = mountPatientMatch(navigation, { encounter: selected.encounter, setup: host.encounterSetup, signal: activeClient.signal,
+            purpose: "new-visit",
+            local: () => matchJournal.local(), retain: value => matchJournal.retain(value),
+            updated: identity => { if (authorized(n) && context === selected) {
+              identityOverride = identity;
+              queueMicrotask(() => { if (authorized(n) && context === selected) showSeparateVisitRecovery(); });
+            } },
+          });
+          break;
         }
         case "add-dob": addDateOfBirth(); break;
         case "new-patient": {
