@@ -43,6 +43,46 @@ function fixture(capacitorProxy = false, hiding = false) {
   return { ...disk, scope, request, created, abort, openStore, newOwner, assimilated, signal: abort.signal };
 }
 describe("shared mobile/desktop encounter creation", () => {
+  it("confirms a provisional identity and retries the retained creation key after a denied first submission", async () => {
+    const f = fixture(), first = f.newOwner(), encounter = { appointmentRef, patientRef, title: "Synthetic patient", detail: "Visit" };
+    const draft: EncounterDraft = { ...initial, patient: { kind: "existing", patientRef } };
+    let confirmed = false;
+    const base = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (body, key, signal) => {
+      if (body.action === "create" && !confirmed) throw Error("synthetic provisional selection denied");
+      if (body.action === "patient_match_save") {
+        confirmed = true;
+        return { action: body.action, recoveryScope: f.scope, account: { email: "provider@synthetic.invalid" }, change_key: key,
+          encounter: { workspace_id: crypto.randomUUID(), appointment_ref: appointmentRef, patient_ref: patientRef,
+            patient_name: "Synthetic Patient", title: "Visit", appointment_at: initial.appointmentAt },
+          identity: { state: "confirmed", version: 1, canonical_patient_ref: patientRef, name: "Synthetic Patient", date_of_birth: null } };
+      }
+      return base(body, key, signal);
+    });
+    await first.state(f.signal); await expect(first.submit(draft, f.signal)).rejects.toThrow("selection denied");
+    const original = [...f.data.values()].find(row => row.key.startsWith("provider-encounter-creation-v1:"))!;
+    const originalBytes = original.data;
+    await first.dispose(); const second = f.newOwner(); await second.state(f.signal);
+    const journal = await second.patientMatchJournal!(encounter, f.signal);
+    const match = { key: crypto.randomUUID(), expectedVersion: 0, selection: { kind: "confirm_new" as const, dateOfBirth: null } };
+    await journal.retain(match);
+    const result = await second.matchPatient!(encounter, match.selection, match.expectedVersion, match.key, f.signal);
+    expect(result.identity.state).toBe("confirmed");
+    expect(original.data).toBe(originalBytes); expect((await second.state(f.signal)).pending).toEqual(draft);
+    // A lost local clear is recovered with the same separately stored match key.
+    await second.dispose(); const third = f.newOwner(); await third.state(f.signal);
+    const recovered = await third.patientMatchJournal!(encounter, f.signal);
+    expect(recovered.local()).toEqual(match);
+    await third.matchPatient!(encounter, match.selection, match.expectedVersion, match.key, f.signal);
+    await recovered.retain(null); await third.submit(null, f.signal);
+    const creations = f.request.mock.calls.filter(([body]) => body.action === "create");
+    expect(creations.map(([, key]) => key)).toEqual([draft.creationKey, draft.creationKey]);
+    expect(creations.map(([body]) => body.patient)).toEqual([{ kind: "existing", patient_ref: patientRef }, { kind: "existing", patient_ref: patientRef }]);
+    expect(f.request.mock.calls.filter(([body]) => body.action === "patient_match_save").map(([, key]) => key)).toEqual([match.key, match.key]);
+    expect((await third.state(f.signal)).pending).toBeNull();
+    expect([...f.data.keys()].every(key => !key.startsWith("provider-workspace-v1:"))).toBe(true);
+    await third.dispose();
+  });
   it("opens the original hidden-visit namespace from catalog scope without a patient search", async () => {
     const f = fixture(false, true), owner = f.newOwner();
     const key = "provider-hidden-visits-v1:" + f.scope;

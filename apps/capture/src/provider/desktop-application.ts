@@ -1,6 +1,7 @@
 import { scopedSignInPreparation } from "./signin-preparation";
 import { parsePendingCreatorEdit } from "../../../review-ui/src/creator-edit";
 import { parsePrivateNote, parsePatientIdentity } from "./visit-features";
+import { assertPendingPatientMatch } from "./patient-match-journal";
 import { parseEncounterDisplay } from "./encounter-display";
 import { openDesktopAudioPreflight } from "./desktop-audio-preflight";
 import { parseProviderAccount, parseSetupState, parseEncounterDraft, type ProviderEncounterSetup, type ProviderAccount } from "./encounter-setup";
@@ -140,6 +141,21 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
       const privateNote = (value: unknown) => { const row = object(value); return parsePrivateNote({ text: row.text, version: row.version, updated_at: row.updatedAt }); };
       const identity = (value: unknown) => { const row = object(value); return parsePatientIdentity({ state: row.state, version: row.version, canonical_patient_ref: row.canonicalPatientRef, name: row.name, date_of_birth: row.dateOfBirth }); };
       const setup: ProviderEncounterSetup = {
+        patientMatchJournal: async (selected, extra) => {
+          if (!currentEncounter || currentEncounter.appointmentRef !== selected.appointmentRef) throw unavailable();
+          const selectedId = currentEncounter.id;
+          const check = (): void => { current(extra); if (currentEncounter?.id !== selectedId) throw unavailable(); };
+          let saved = await visitRequest(selected, { action: "match_pending_load" }, extra);
+          check(); assertPendingPatientMatch(saved);
+          return {
+            local: () => { check(); assertPendingPatientMatch(saved); return saved === null ? null : structuredClone(saved); },
+            retain: async value => {
+              check(); assertPendingPatientMatch(value);
+              await visitRequest(selected, { action: "match_pending_save", pending: value }, extra);
+              check(); saved = value === null ? null : structuredClone(value);
+            },
+          };
+        },
         readPrivateNote: async (selected, extra) => privateNote(await visitRequest(selected, { action: "private_read" }, extra)),
         savePrivateNote: async (selected, text, expectedVersion, key, extra) => privateNote(await visitRequest(selected, { action: "private_save", text, expectedVersion, key }, extra)),
         patientCandidates: async (selected, query, dateOfBirth, extra) => {

@@ -5,9 +5,12 @@ import { parseCreatorReview } from "../../../review-ui/src/creator-review-api";
 import { CaptureDeviceCustodyError } from "../capture/device-custody";
 import type { EncounterDraft, EncounterSetupState, ProviderEncounterSetup } from "./encounter-setup";
 import type { JournalSnapshot } from "./workspace-journal";
+import { mountPatientMatch } from "./patient-match-view";
+import type { PatientIdentity } from "./visit-features";
 
 vi.mock("../capture-app", () => ({}));
 vi.mock("../../../review-ui/src/creator-review-panel", () => ({ mountCreatorReview: vi.fn() }));
+vi.mock("./patient-match-view", () => ({ mountPatientMatch: vi.fn(() => vi.fn()) }));
 // This fixture exercises the real workspace, not the unrelated microphone chooser DOM.
 vi.mock("./preparation-controls", () => ({ bindPreparationControls: () => ({
   ready: () => false, snapshot: () => null, close: async () => undefined,
@@ -24,14 +27,16 @@ const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); vi.unstubAllGlobals(); });
 
 function fixture(options: { status?: "created" | "capturing"; patientRef?: string | null; setup?: boolean;
-  state?: () => Promise<EncounterSetupState>; inaccessibleJournal?: boolean } = {}) {
+  state?: () => Promise<EncounterSetupState>; inaccessibleJournal?: boolean; identity?: PatientIdentity } = {}) {
   vi.stubGlobal("Element", Surface);
   vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "visible" }));
   vi.stubGlobal("ResizeObserver", class { observe(): void {} disconnect(): void {} });
   const root = new Surface(), abort = new AbortController();
   const oldEncounter = { appointmentRef: oldRef, title: "Synthetic patient", detail: "Synthetic visit",
+    ...(options.identity ? { identity: options.identity } : {}),
     ...(options.patientRef === null ? {} : { patientRef: options.patientRef ?? patientRef }) };
-  const newEncounter = { ...oldEncounter, appointmentRef: newRef };
+  const newEncounter = { ...oldEncounter, appointmentRef: newRef,
+    ...(options.identity && options.identity.state !== "provisional" ? { patientRef: options.identity.canonicalPatientRef } : {}) };
   const request = vi.fn(async () => { throw Error("No capture or note request expected"); });
   const recorder = vi.fn(async () => { throw Error("No recorder expected"); });
   const journal = { load: vi.fn(async () => {
@@ -52,7 +57,10 @@ function fixture(options: { status?: "created" | "capturing"; patientRef?: strin
   const setup = { state: vi.fn<ProviderEncounterSetup["state"]>(options.state ?? (async () => ({
     account: account.email, patients: [], moreResults: false, pending: null,
   }))), search: vi.fn<ProviderEncounterSetup["search"]>(),
-    submit: vi.fn<ProviderEncounterSetup["submit"]>(async () => newEncounter) } satisfies ProviderEncounterSetup;
+    submit: vi.fn<ProviderEncounterSetup["submit"]>(async () => newEncounter),
+    patientMatchJournal: vi.fn(async () => ({ local: () => null, retain: vi.fn(async () => undefined) })),
+    patientCandidates: vi.fn(), matchPatient: vi.fn(),
+  } satisfies ProviderEncounterSetup;
   const host: ProviderWorkspaceHost = { signal: abort.signal, account,
     listEncounters: vi.fn(async () => [oldEncounter]), createEncounter: vi.fn(),
     openEncounter: vi.fn(async ref => mounted(ref === newRef)),
@@ -119,4 +127,57 @@ it("does not create after authorization ends during setup", async () => {
   await vi.waitFor(() => expect(f.setup.state).toHaveBeenCalledOnce()); f.abort.abort();
   resolve({ account: account.email, patients: [], moreResults: false, pending: null }); await click;
   expect(f.setup.submit).not.toHaveBeenCalled(); expect(f.journal.save).not.toHaveBeenCalled();
+});
+
+const provisional: PatientIdentity = { state: "provisional", version: 0, canonicalPatientRef: patientRef, name: "Synthetic patient", dateOfBirth: null };
+it("requires explicit provisional confirmation, then creates only after the separate new-visit choice", async () => {
+  const f = fixture({ identity: provisional }); await f.click("open");
+  expect(f.content.innerHTML).toContain('data-workspace-action="confirm-patient-for-new-visit"');
+  expect(f.content.innerHTML).not.toContain('data-workspace-action="new-visit-same-patient"');
+  await f.click("new-visit-same-patient"); expect(f.setup.submit).not.toHaveBeenCalled();
+  await f.click("confirm-patient-for-new-visit");
+  const options = vi.mocked(mountPatientMatch).mock.calls.at(-1)![1];
+  expect(f.setup.patientMatchJournal).toHaveBeenCalledOnce(); expect(f.journal.save).not.toHaveBeenCalled();
+  options.updated({ ...provisional, state: "confirmed", version: 1 });
+  await vi.waitFor(() => expect(f.content.innerHTML).toContain('data-workspace-action="new-visit-same-patient"'));
+  expect(f.setup.submit).not.toHaveBeenCalled();
+  await f.click("new-visit-same-patient");
+  expect(f.setup.submit.mock.calls[0]![0]?.patient).toEqual({ kind: "existing", patientRef });
+  expect(f.content.innerHTML).toContain('name="consent"'); expect(f.recorder).not.toHaveBeenCalled(); expect(f.journal.save).not.toHaveBeenCalled();
+});
+
+it("uses the authorized canonical patient after matching, not the provisional source", async () => {
+  const canonical = patientRef.slice(0, -1) + "2";
+  const f = fixture({ identity: { ...provisional, state: "matched", version: 1, canonicalPatientRef: canonical } });
+  await f.click("open"); await f.click("new-visit-same-patient");
+  expect(f.setup.submit.mock.calls[0]![0]?.patient).toEqual({ kind: "existing", patientRef: canonical });
+  expect(f.content.innerHTML).toContain('name="consent"');
+});
+
+it("retains the original pending creation after confirmation and requires its explicit result check", async () => {
+  const f = fixture({ identity: provisional, state: async () => ({ account: account.email, patients: [], moreResults: false, pending }) });
+  await f.click("open"); await f.click("confirm-patient-for-new-visit");
+  vi.mocked(mountPatientMatch).mock.calls.at(-1)![1].updated({ ...provisional, state: "confirmed", version: 1 });
+  await vi.waitFor(() => expect(f.content.innerHTML).toContain('data-workspace-action="new-visit-same-patient"'));
+  await f.click("new-visit-same-patient"); expect(f.setup.submit).not.toHaveBeenCalled();
+  expect(f.content.innerHTML).toContain('data-workspace-action="retry-creation"');
+  await f.click("retry-creation"); expect(f.setup.submit).toHaveBeenCalledWith(pending, expect.any(AbortSignal));
+  expect(f.journal.save).not.toHaveBeenCalled();
+});
+
+it("ignores confirmation that arrives after account closure", async () => {
+  const f = fixture({ identity: provisional }); await f.click("open"); await f.click("confirm-patient-for-new-visit");
+  const options = vi.mocked(mountPatientMatch).mock.calls.at(-1)![1]; f.abort.abort();
+  options.updated({ ...provisional, state: "confirmed", version: 1 }); await Promise.resolve();
+  expect(f.setup.submit).not.toHaveBeenCalled(); expect(f.journal.save).not.toHaveBeenCalled();
+});
+
+it("does not replace an older pending creation with a different matched canonical patient", async () => {
+  const canonical = patientRef.slice(0, -1) + "2";
+  const f = fixture({ identity: { ...provisional, state: "matched", version: 1, canonicalPatientRef: canonical },
+    state: async () => ({ account: account.email, patients: [], moreResults: false, pending }) });
+  await f.click("open"); await f.click("new-visit-same-patient");
+  expect(f.setup.submit).not.toHaveBeenCalled();
+  expect(f.content.innerHTML).toContain("previous creation request is saved securely");
+  expect(pending.patient).toEqual({ kind: "existing", patientRef });
 });

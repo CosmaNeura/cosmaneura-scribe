@@ -13,6 +13,7 @@ import { parseEncounterDraft } from "../../capture/src/provider/encounter-setup"
 import type { DesktopProviderRecorder } from "./provider-recorder.js";
 import type { ProviderAudioPreflight } from "../../capture/src/provider/audio-preflight";
 import type { PatientSelection } from "../../capture/src/provider/visit-features";
+import { assertPendingPatientMatch, type PatientMatchJournal } from "../../capture/src/provider/patient-match-journal";
 import { NO_DIAGNOSTICS, type RuntimeDiagnostic, type RuntimeTimingEvent } from "./runtime-diagnostics.js";
 import { nativeRecordingConfirmed, validRecordReadyDuration } from "../../capture/src/provider/record-ready-timing";
 
@@ -37,6 +38,7 @@ interface Encounter {
   readonly abort: AbortController;
   readonly work: Set<Promise<unknown>>;
   readonly value: AuthorizedProviderEncounter<DesktopProviderRecorder>;
+  patientMatchJournal?: Promise<PatientMatchJournal>;
   recorder?: { dispose(): Promise<void> };
   recordReadyDiagnostic?: (durationMs: number) => void;
   recorderOpening?: boolean;
@@ -244,7 +246,16 @@ export class DesktopProviderWorkspaceMain {
           const setup = connection.value!.workspace.encounterSetup;
           if (!setup) throw unavailable();
           const selected = encounter.value.encounter, linked = AbortSignal.any([signal, encounter.abort.signal, connection.abort.signal]);
-          if (payload.action === "private_read") {
+          if (payload.action === "match_pending_load" || payload.action === "match_pending_save") {
+            exact(payload, payload.action === "match_pending_load" ? ["action"] : ["action", "pending"]);
+            if (!setup.patientMatchJournal) throw unavailable();
+            if (payload.action === "match_pending_save") assertPendingPatientMatch(payload.pending);
+            encounter.patientMatchJournal ??= setup.patientMatchJournal(selected, AbortSignal.any([encounter.abort.signal, connection.abort.signal]));
+            const journal = await encounter.patientMatchJournal;
+            this.requireConnection(connection, signal);
+            if (payload.action === "match_pending_save") { assertPendingPatientMatch(payload.pending); await journal.retain(payload.pending); result = null; }
+            else result = journal.local();
+          } else if (payload.action === "private_read") {
             exact(payload, ["action"]); if (!setup.readPrivateNote) throw unavailable(); result = await setup.readPrivateNote(selected, linked);
           } else if (payload.action === "private_save") {
             exact(payload, ["action", "text", "expectedVersion", "key"]);

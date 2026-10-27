@@ -10,11 +10,12 @@ export function mountPatientMatch(container: HTMLElement, options: {
   local(): PendingPatientMatch | null;
   retain(value: PendingPatientMatch | null): Promise<void>;
   updated(identity: PatientIdentity): void;
+  purpose?: "new-visit";
 }): () => void {
   const pending = options.local();
   const invalidPending = pending?.selection.kind === "confirm_new" && !validPatientDateOfBirth(pending.selection.dateOfBirth);
   container.innerHTML = `<dialog class="provider-unsaved-dialog" aria-labelledby="patient-match-title"><h2 id="patient-match-title">Match this patient</h2>
-    <p>You can save and review the note before matching. Confirm the patient’s details before linking a record.</p>
+    <p>${options.purpose === "new-visit" ? "Confirm the patient’s details before starting a separate visit. The earlier visit and recording stay unchanged." : "You can save and review the note before matching. Confirm the patient’s details before linking a record."}</p>
     <form data-match-search><label>Patient name or identifying details<input name="match-query" value="${escapeText(options.encounter.identity?.name ?? options.encounter.patientName ?? options.encounter.title)}" maxlength="200" autocomplete="off"></label><label>Date of birth (optional)<input name="match-dob" type="date" min="1900-01-01" max="${new Date().toISOString().slice(0, 10)}"></label><button type="submit">Find patient</button></form>
     <div data-match-results></div><p data-match-status role="status">${invalidPending ? "The saved request has an invalid date of birth. Review the date before matching." : pending ? "A previous match isn’t confirmed yet. Try again to check the same request." : ""}</p>
     ${invalidPending ? '<button data-match-correct>Correct patient details</button>' : pending ? '<button data-match-retry>Try again</button>' : '<button class="provider-text-link" data-match-new>Keep this as a new patient</button>'}
