@@ -49,6 +49,7 @@ from .provider_preparation_handoff import (
     PreparedContext,
     retain_source_window,
 )
+from .provider_unused_continuation import is_unused_continuation, retain_unused_continuation
 
 PATH = "/service/v1/agent/scribe/native-capture"
 
@@ -93,6 +94,7 @@ async def prepare_then_dispatch(
     )
     need(re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", key))
     preparation = "admission" if action == "capture-admissions" else "recording_window"
+    unused_continuation = action == "capture-operations" and is_unused_continuation(payload)
     need(
         (
             action == "capture-admissions"
@@ -108,7 +110,10 @@ async def prepare_then_dispatch(
         or (
             action == "capture-operations"
             and set(payload) == {"workspace_id", "binding_ref", "request_nonce", "operation"}
-            and obj(payload["operation"]).get("kind") == "prepare_recording_window"
+            and (
+                obj(payload["operation"]).get("kind") == "prepare_recording_window"
+                or unused_continuation
+            )
         )
     )
     url = httpx.URL(origin)
@@ -141,7 +146,7 @@ async def prepare_then_dispatch(
                 cast(str, binding),
                 stage=preparation,
             )
-            if handoff is not None
+            if handoff is not None and not unused_continuation
             else None
         )
         # Capabilities come only from the current validated mount, not caller flags.
@@ -565,9 +570,23 @@ async def prepare_then_dispatch(
                         source_start_supported=source_start_supported,
                     ),
                 )
-            return answer
         finally:
             await ordinary.close()
+        if unused_continuation:
+            # The first expired unused setup negotiates a NEW context above.
+            # Retain only after the mutation, account fence and owned close;
+            # its original epoch and exact returned lease remain unchanged.
+            if await fresh() != before:
+                raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise asyncio.CancelledError
+            retain_unused_continuation(
+                handoff, origin, before, revision, workspace, cast(str, binding),
+                PreparedContext(mount, context, cast(str, interaction), turn, issued_at),
+                payload, answer,
+            )
+        return answer
 
 
 def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:

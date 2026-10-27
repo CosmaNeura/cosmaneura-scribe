@@ -311,7 +311,7 @@ class ProviderCoreTransport:
         _require(
             action == "capture-admissions"
             or _object(payload["operation"]).get("kind")
-            in {"prepare_recording_window", "preparation_metadata"}
+            in {"prepare_recording_window", "prepare_continuation_window", "preparation_metadata"}
         )
         _require(
             re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", key)
@@ -352,6 +352,41 @@ class ProviderCoreTransport:
         )
         # Core owns cancellation between its decisions. An ambiguous reply never
         # falls back or retries, and remains covered by original stop custody.
+        await asyncio.sleep(0)
+        return result
+
+    async def prepare_and_authorize_source_prepared(
+        self,
+        mount: CoreProviderMount,
+        body: Mapping[str, object],
+        key: str,
+        *,
+        token: SecretStr,
+        interaction_ref: str,
+        turn: UUID,
+        workload: SecretStr,
+    ) -> dict[str, object]:
+        """Consume the exact unused-continuation context; Core rechecks both decisions."""
+        sequence, intent, authorize_nonce = source_start_sequence(mount, body, key)
+        _require(
+            intent.source == "desktop_companion"
+            and intent.first_sequence_number == 0
+            and intent.lease_generation == 2
+            and re.fullmatch(r"[A-Za-z0-9._~-]{16,160}", interaction_ref)
+        )
+        _secret(token)
+        _secret(workload)
+        _checked(turn, UUID)
+        opening = _OpeningSequence()
+        opening.workload_headers = {"Authorization": "Bearer " + _secret(workload)}
+        opening.context = await self._context(mount.selection)
+        combined = await self._dispatch(
+            mount, "capture-operations", sequence, key,
+            _NegotiatedMount(mount, token, interaction_ref, turn, opening),
+        )
+        result = source_start_reply(
+            mount, sequence, combined, intent, authorize_nonce, self._clock()
+        )
         await asyncio.sleep(0)
         return result
 

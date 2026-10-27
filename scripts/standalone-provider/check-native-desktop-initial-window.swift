@@ -65,6 +65,7 @@ private func encoded(_ value: [String: Any]) throws -> Data {
     var nativeCapability = false
     var holdAction: ProviderNativeAction?, wait: CheckedContinuation<Void, Never>?
     var loseWindowReply = false, windowStatus = 200
+    var continuation = false
     var completeWindow = false, windowFault = "none", sourceFault = "none", sourceStatus = 200
     var onWindow: (() -> Void)?
     var windowDeadline = ""
@@ -140,7 +141,7 @@ private func encoded(_ value: [String: Any]) throws -> Data {
                     "attempt_id": payload["attempt_id"]!, "source_start_id": sourceID,
                     "creator_actor_id": "synthetic-provider", "consent_record_id": sourceFault == "consent" ? UUID().uuidString.lowercased() : consent,
                     "source": "desktop_companion", "lease_id": lease, "lease_receipt_id": leaseReceipt,
-                    "lease_generation": 1, "state": issued ? "issued" : "prepared",
+                    "lease_generation": payload["lease_generation"]!, "state": issued ? "issued" : "prepared",
                     "preparation_expires_at": date.string(from: clock.wall.addingTimeInterval(10)),
                     "capture_authorized_until": windowDeadline,
                     // Formatting rounds milliseconds; keep the synthetic issue
@@ -166,10 +167,10 @@ private func encoded(_ value: [String: Any]) throws -> Data {
                 "created_at": date.string(from: clock.wall)]
             let leaseReceipt: [String: Any] = ["protocol_version": "1.0", "receipt_id": self.leaseReceipt, "lease_id": lease,
                 "session_id": windowFault == "session" ? UUID().uuidString.lowercased() : session,
-                "generation": windowFault == "generation" ? 2 as Any : windowFault == "generation-bool" ? true : 1,
+                "generation": windowFault == "generation" ? (continuation ? 3 : 2) as Any : windowFault == "generation-bool" ? true : continuation ? 2 : 1,
                 "issued_at": date.string(from: clock.wall), "expires_at": windowDeadline]
-            let objectIDs = (0..<30).map { _ in UUID().uuidString.lowercased() }
-            let rows: [[String: Any]] = try (0..<30).map { index in
+            let objectIDs = (0..<(continuation ? 90 : 30)).map { _ in UUID().uuidString.lowercased() }
+            let rows: [[String: Any]] = try (0..<(continuation ? 90 : 30)).map { index in
                 let aad = try encoded(["tenant_id": recovery, "session_id": session, "object_id": objectIDs[index],
                     "channel": "mixed", "sequence_number": index]).base64EncodedString()
                     .replacingOccurrences(of: "=", with: "").replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
@@ -182,11 +183,12 @@ private func encoded(_ value: [String: Any]) throws -> Data {
                 "reservations": ["protocol_version": "1.0", "batch_id": UUID().uuidString.lowercased(), "session_id": session,
                     "capture_authorized_until": windowFault == "deadline" ? date.string(from: clock.wall) : windowDeadline,
                     "reservations": windowFault == "count" ? [] : rows]]
+            if continuation { receipt.removeValue(forKey: "binding") }
             if windowFault == "extra" { receipt["invented"] = true }
         }
         return ProviderNativeReply(status: 200, body: try encoded(["contract_version": "1", "workspace_id": workspace,
             "binding_ref": binding, "request_nonce": body["request_nonce"] ?? UUID().uuidString.lowercased(),
-            "checked_at": date.string(from: clock.wall), "operation": "prepare_recording_window", "receipt": receipt]))
+            "checked_at": date.string(from: clock.wall), "operation": continuation ? "prepare_continuation_window" : "prepare_recording_window", "receipt": receipt]))
     }
 }
 @MainActor private final class Fixture {
@@ -249,6 +251,20 @@ private func encoded(_ value: [String: Any]) throws -> Data {
             "workspace_id": wire.workspace, "binding_ref": wire.binding, "request_nonce": UUID().uuidString.lowercased(),
             "operation": ["kind": fault == "kind" ? "creator_review" : "prepare_recording_window", "payload": payload]])
     }
+    func unusedContinuation(fault: String = "none") throws -> ProviderNativeRequest {
+        var payload: [String: Any] = ["schema_version": "1.0", "channel": "mixed",
+            "first_sequence_number": 0, "previous_lease_id": wire.lease, "previous_lease_generation": 1,
+            "renew_idempotency_key": "renew:" + UUID().uuidString.lowercased(),
+            "reservation_idempotency_key": "reserve:" + UUID().uuidString.lowercased()]
+        if fault == "recorded" { payload["first_sequence_number"] = 1 }
+        if fault == "prior-generation" { payload["previous_lease_generation"] = 2 }
+        if fault == "prior-bool" { payload["previous_lease_generation"] = true }
+        if fault == "prior-lease" { payload["previous_lease_id"] = UUID().uuidString.lowercased() }
+        if fault == "extra" { payload["invented"] = true }
+        return try request(action: "capture-operations", key: "continue-window:" + UUID().uuidString.lowercased(), body: [
+            "workspace_id": wire.workspace, "binding_ref": wire.binding, "request_nonce": UUID().uuidString.lowercased(),
+            "operation": ["kind": "prepare_continuation_window", "payload": payload]])
+    }
     func claim(_ request: ProviderNativeRequest? = nil, receipt: Data? = nil, nonce: String? = nil,
                beforeDispatch: @MainActor () async throws -> Void = {}) async throws -> ProviderNativeReply {
         try await connection.sendFreshDesktopInitialWindow(request ?? window(), admissionKey: admissionKey,
@@ -259,7 +275,7 @@ private func encoded(_ value: [String: Any]) throws -> Data {
             bindingRef: wire.binding, sessionID: fault == "session" ? UUID() : UUID(uuidString: wire.session)!,
             leaseID: fault == "lease" ? UUID() : UUID(uuidString: wire.lease)!,
             leaseReceiptID: fault == "receipt" ? UUID() : UUID(uuidString: wire.leaseReceipt)!,
-            leaseGeneration: fault == "generation" ? 2 : 1,
+            leaseGeneration: fault == "generation" ? (wire.continuation ? 3 : 2) : wire.continuation ? 2 : 1,
             captureAuthorizedUntil: fault == "deadline" ? "2099-01-01T00:00:00Z" : wire.windowDeadline,
             source: fault == "ios" ? .ios : .desktop, firstSequenceNumber: fault == "position" ? 1 : 0)
     }
@@ -400,6 +416,61 @@ private func encoded(_ value: [String: Any]) throws -> Data {
             }
             f.connection.close(); checks += 1
         }
+        var continuationChecks = 0
+        do {
+            let f = try Fixture(); f.wire.completeWindow = true; f.wire.continuation = true
+            try await f.mount(); _ = try await f.connection.send(f.unusedContinuation())
+            let memory = SourceJournal(), journal = try NativeSourceProofJournal(platform: .desktop, backing: memory)
+            try journal.initializeAnchor(NativeFenceAnchor(coordinator: NativeFenceFileIdentity(device: 1, inode: 2),
+                capture: NativeFenceFileIdentity(device: 1, inode: 3)))
+            let owner = try NativeSourceStartOwner(connection: f.connection, revision: f.auth.state().revision,
+                preparation: f.sourcePreparation(), identity: f.auth.state().identity!, journal: journal, now: { f.clock.wall })
+            let grant = try await owner.prepareForDesktopStart(); let decision = try await owner.authorize()
+            try require(grant.consentRecordID == f.wire.consent && decision.grant.consentRecordID == f.wire.consent)
+            try require(f.driver.tokens == 2 && f.wire.calls.count == 3 && f.wire.tokensSeen[1] == f.wire.tokensSeen[2])
+            try require(!String(decoding: memory.data!, as: UTF8.self).contains(f.wire.tokensSeen[1]))
+            _ = try await f.source(); try require(f.driver.tokens == 3 && f.wire.calls.count == 4)
+            owner.close(); f.connection.close(); continuationChecks += 1
+        }
+        for fault in ["disabled", "recorded", "prior-generation", "prior-bool", "prior-lease", "extra", "generation", "generation-bool", "position", "duplicate", "count", "deadline", "aad", "expire", "wall-back", "wall-forward", "abandon", "changed-mount"] {
+            let f = try Fixture(enabled: fault != "disabled"); f.wire.completeWindow = true; f.wire.continuation = true
+            f.wire.windowFault = fault
+            try await f.mount(); _ = try await f.connection.send(f.unusedContinuation(fault: fault))
+            if fault == "expire" { f.clock.advance(5) }
+            if fault == "wall-back" { f.clock.wall = f.clock.wall.addingTimeInterval(-1) }
+            if fault == "wall-forward" { f.clock.wall = f.clock.wall.addingTimeInterval(1) }
+            if fault == "abandon" { f.connection.abandonDesktopInitialWindow() }
+            if fault == "changed-mount" { try await f.mount() }
+            let before = f.driver.tokens
+            _ = try await f.source(); try require(f.driver.tokens == before + 1)
+            f.connection.close(); continuationChecks += 1
+        }
+        for boundary in ["cancel", "abandon", "auth", "lost", "denied", "late"] {
+            let f = try Fixture(); f.wire.completeWindow = true; f.wire.continuation = true
+            try await f.mount()
+            let request = try f.unusedContinuation()
+            if boundary == "lost" { f.wire.loseWindowReply = true }
+            if boundary == "denied" { f.wire.windowStatus = 403 }
+            f.wire.holdAction = .operation
+            let task = Task { try await f.connection.send(request) }
+            try await until { f.wire.wait != nil }
+            if boundary == "cancel" { task.cancel() }
+            if boundary == "abandon" { f.connection.abandonDesktopInitialWindow() }
+            if boundary == "auth" { f.driver.identity = try .init(coreUserID: "user_foreign", sessionID: "sess_foreign"); _ = f.auth.state() }
+            if boundary == "late" { f.clock.advance(6) }
+            f.wire.wait?.resume(); f.wire.wait = nil; f.wire.holdAction = nil
+            if ["cancel", "auth", "lost"].contains(boundary) { try await rejected { _ = try await task.value } }
+            else { _ = try await task.value }
+            try require(f.wire.calls.count == 2 && f.driver.tokens == 2)
+            if boundary != "auth" {
+                if f.wire.windowDeadline.isEmpty { f.wire.windowDeadline = ISO8601DateFormatter().string(from: Date().addingTimeInterval(600)) }
+                f.wire.sourceStatus = 403
+                let before = f.driver.tokens
+                _ = try await f.source(); try require(f.driver.tokens == before + 1)
+            }
+            f.connection.close(); continuationChecks += 1
+        }
+        print("PASS: \(continuationChecks) unused-continuation native credential/ownership cases")
         var sourceChecks = 0
         do {
             let f = try Fixture(); f.wire.completeWindow = true
