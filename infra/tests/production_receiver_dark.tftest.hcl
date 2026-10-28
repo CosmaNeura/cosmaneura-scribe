@@ -39,6 +39,13 @@ mock_provider "azurerm" {
     }
   }
 
+  mock_resource "azurerm_postgresql_flexible_server" {
+    defaults = {
+      id   = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-scribe-production/providers/Microsoft.DBforPostgreSQL/flexibleServers/cosmaneura-scribe-prod-pg"
+      fqdn = "cosmaneura-scribe-prod-pg.postgres.database.azure.com"
+    }
+  }
+
   mock_resource "azurerm_subnet" {
     defaults = {
       id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-scribe-production/providers/Microsoft.Network/virtualNetworks/cosmaneura-scribe-production/subnets/mock"
@@ -114,6 +121,7 @@ run "production_receiver_foundation_is_dark" {
       length(azurerm_container_app_job.database_migrations) == 0 &&
       length(azurerm_container_app_job.transcription) == 0 &&
       length(azurerm_container_app_job.delivery_reconciler) == 0 &&
+      length(azurerm_container_app_job.speech_smoke) == 0 &&
       length(azurerm_container_app_job.private_api_acceptance) == 0 &&
       length(azurerm_container_app_job.private_terraform_runner) == 0
     )
@@ -184,6 +192,35 @@ run "capture_refuses_missing_auth_and_postgres" {
 
   variables {
     enable_capture_protocol = true
+  }
+
+  expect_failures = [
+    var.enable_capture_protocol,
+  ]
+}
+
+run "capture_refuses_auth_without_postgres" {
+  command = plan
+
+  variables {
+    enable_workflow_authentication = true
+    workflow_api_audience          = "33333333-3333-3333-3333-333333333333"
+    trusted_platform_client_id     = "44444444-4444-4444-4444-444444444444"
+    enable_capture_protocol        = true
+  }
+
+  expect_failures = [
+    var.enable_capture_protocol,
+  ]
+}
+
+run "capture_refuses_postgres_without_auth" {
+  command = plan
+
+  variables {
+    deploy_postgres_foundation = true
+    use_postgres_repository    = true
+    enable_capture_protocol    = true
   }
 
   expect_failures = [
