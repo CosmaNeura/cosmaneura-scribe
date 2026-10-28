@@ -42,7 +42,8 @@ extension NativeProviderConnection {
       let records = try NativeRecordingQueueStore()
       guard let archive = try NativeRecordingPassageArchive.open(account: account, recovery: recovery,
         workspace: workspace, session: session, records: records) else { return nil as Data? }
-      return try archive.audio(startMs: range.0, endMs: range.1, current: { try Task.checkCancellation() })
+      return try archive.audio(startMs: range.0, endMs: range.1, restartSequences: range.3,
+        current: { try Task.checkCancellation() })
     }
     try current(); try Task.checkCancellation()
     guard try recordingMount(workspaceID: s.workspaceID, bindingRef: s.bindingRef, revision: s.revision) == mount,
