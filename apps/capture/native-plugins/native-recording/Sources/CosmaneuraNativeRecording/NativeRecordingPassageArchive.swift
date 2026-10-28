@@ -155,13 +155,36 @@ public final class NativeRecordingPassageArchive: Sendable {
   /// the caller owns the returned in-memory WAV and must clear it after playback
   /// preparation. No URL, file path, renderer time range or plaintext disk API.
   public func audio(startMs: Int, endMs: Int, keys: any NativeRecordingKeyStorage = KeychainNativeRecordingStorage(),
-    current: () throws -> Void) throws -> Data? {
+    restartSequences: [Int]? = nil, current: () throws -> Void) throws -> Data? {
     try current()
     guard startMs >= 0, endMs > startMs, endMs <= 12_600_000, endMs - startMs <= 30_000 else {
       throw NativeRecordingFailure.invalidPacket
     }
     let scope = try NativeRecordingScope(tenantID: manifest.tenant, sessionID: manifest.session,
       workspaceID: manifest.workspace, accountDigest: manifest.account)
+    if let restartSequences {
+      guard (2...1000).contains(restartSequences.count), restartSequences.first == 0,
+        restartSequences.allSatisfy({ (0..<2048).contains($0) }),
+        zip(restartSequences, restartSequences.dropFirst()).allSatisfy({ pair in pair.0 <= pair.1 })
+      else { throw NativeRecordingFailure.invalidPacket }
+      // Core concatenates captured PCM; no wall-clock silence is inserted for
+      // Pause/Resume. A restart may seal no new chunk, so a final boundary can
+      // equal the sealed count. Keep the server's unknown-gap warning unchanged.
+      guard manifest.complete, let frameIndex,
+        restartSequences.allSatisfy({ $0 <= manifest.chunks }) else { return nil }
+      // Prove the entire indexed microphone archive, including chunks skipped
+      // by a late passage. Metadata was authenticated during native retention
+      // and is held in the device-encrypted store; selected WAVs are verified
+      // again with the original DEK. No renderer offsets or channel substitution.
+      for sequence in 0..<manifest.chunks {
+        try current()
+        guard let saved = try records.readBinding(key: prefix + "chunk:\(sequence)") else { return nil }
+        let chunk = try Self.decodeChunk(saved, sequence: sequence)
+        guard chunk.frames == frameIndex[sequence],
+          nativeBase64URLDecode(chunk.aad) == (try scope.additionalData(objectID: chunk.object, sequence: sequence))
+        else { throw NativeRecordingFailure.invalidBinding }
+      }
+    }
     let encryption = try NativeRecordingEncryption.reopen(scope: scope,
       expected: NativeRecordingKeyReceipt(keyVersion: manifest.keyVersion, wrappedDEK: manifest.wrappedDEK), storage: keys)
     let from = startMs * 16, until = endMs * 16

@@ -37,8 +37,24 @@ import Foundation
       do { _ = try selected.range(reply: reply(changed), nonce: nonce, now: now);throw Failed(line: #line) }
       catch is Failed { throw Failed(line: #line) } catch { checks += 1 }
     }
-    envelope["receipt"] = ["schema_version": "1.0", "session_id": session, "capture_continuity": [:]]
-    try check(try selected.range(reply: reply(envelope), nonce: nonce, now: now) == nil);checks += 1
+    let sourceID = UUID().uuidString.lowercased()
+    let continuity: [String: Any] = ["schema_version": "1.0", "continuity": "interrupted_or_unconfirmed", "missing_audio": "unknown",
+      "starts": [["source_start_id": sourceID, "first_sequence_number": 0],
+        ["source_start_id": UUID().uuidString.lowercased(), "first_sequence_number": 3]]]
+    var view = envelope["receipt"] as! [String: Any];view["capture_continuity"] = continuity
+    envelope["receipt"] = view
+    let restarted = try selected.range(reply: reply(envelope), nonce: nonce, now: now)
+    try check(restarted?.0 == 100 && restarted?.1 == 30_100 && restarted?.3 == [0, 3]);checks += 1
+    try check((envelope["receipt"] as? [String: Any])?["capture_continuity"] as? NSDictionary == continuity as NSDictionary);checks += 1
+    for bad: [String: Any] in [[:], ["schema_version": "1.0", "continuity": "interrupted_or_unconfirmed", "missing_audio": "unknown",
+      "starts": [["source_start_id": sourceID, "first_sequence_number": 0], ["source_start_id": sourceID, "first_sequence_number": 3]]],
+      ["schema_version": "1.0", "continuity": "interrupted_or_unconfirmed", "missing_audio": "unknown",
+      "starts": [["source_start_id": sourceID, "first_sequence_number": 0], ["source_start_id": UUID().uuidString.lowercased(), "first_sequence_number": true]]]
+    ] {
+      var changed = envelope;var v = view;v["capture_continuity"] = bad;changed["receipt"] = v
+      do { _ = try selected.range(reply: reply(changed), nonce: nonce, now: now);throw Failed(line: #line) }
+      catch is Failed { throw Failed(line: #line) } catch { checks += 1 }
+    }
     for age in [31.0, -6.0] {
       do { try NativeProviderPassageSelection.requireFresh(now.addingTimeInterval(-age), now: now);throw Failed(line: #line) }
       catch is Failed { throw Failed(line: #line) } catch { checks += 1 }

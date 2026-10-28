@@ -49,14 +49,15 @@ final class NativeRecordingPassageArchiveTests: XCTestCase {
   }
   // Synthetic consented capture fixture only. Real RSA/AES, private in-memory
   // key/record stores, no keychain, microphone, provider, filesystem audio or UI.
-  private func fixture(chunks: Int = 2, frames: Int = 320) throws -> Fixture {
+  private func fixture(chunks: Int = 2, frames: Int = 320, frameCounts: [Int]? = nil) throws -> Fixture {
     let key = try XCTUnwrap(SecKeyCreateRandomKey([kSecAttrKeyType: kSecAttrKeyTypeRSA, kSecAttrKeySizeInBits: 3072, kSecAttrIsPermanent: false] as CFDictionary, nil))
     let pub = try XCTUnwrap(SecKeyCopyPublicKey(key));let der = try XCTUnwrap(SecKeyCopyExternalRepresentation(pub, nil)) as Data
     let published = try NativeRecordingPublicKey(version: "synthetic-consented-v1", modulusBase64URL: nativeBase64URL(der.subdata(in: 9..<393)))
     let scope = try NativeRecordingScope(tenantID: UUID(), sessionID: UUID(), workspaceID: UUID(), accountDigest: String(repeating: "a", count: 64))
     let keys = Keys(), records = Records(), recovery = UUID()
     let cipher = try NativeRecordingEncryption.create(scope: scope, published: published, storage: keys)
-    for sequence in 0..<chunks {
+    let counts = frameCounts ?? [Int](repeating: frames, count: chunks)
+    for (sequence, frames) in counts.enumerated() {
       let object = UUID(), aad = nativeBase64URL(try scope.additionalData(objectID: object, sequence: sequence))
       var pcm = Data(repeating: UInt8(truncatingIfNeeded: sequence + 1), count: frames * 2)
       let envelope = try cipher.seal(pcm16: &pcm, objectID: object, sequence: sequence, additionalAuthenticatedData: aad)
@@ -64,7 +65,45 @@ final class NativeRecordingPassageArchiveTests: XCTestCase {
       let row: [String: Any] = ["state": "encrypted", "reservation": ["protocolVersion": "1.0", "sessionId": scope.sessionID.uuidString.lowercased(), "objectId": object.uuidString.lowercased(), "sequenceNumber": sequence, "channel": "microphone", "additionalAuthenticatedData": aad], "envelope": nativeBase64URL(envelope), "byteLength": envelope.count, "sha256": SHA256.hash(data: envelope).map { String(format: "%02x", $0) }.joined()]
       records.rows[scope.queuePrefix(recoveryScope: recovery) + object.uuidString.lowercased()] = NativeRecordingStoredRecord(data: try JSONSerialization.data(withJSONObject: row), revision: 2)
     }
-    return Fixture(keys: keys, records: records, scope: scope, recovery: recovery, cipher: cipher, chunks: chunks)
+    return Fixture(keys: keys, records: records, scope: scope, recovery: recovery, cipher: cipher, chunks: counts.count)
+  }
+  func testAuthorizedPassagesMapBeforeAcrossAndAfterShortPauseFlush() throws {
+    let counts = [16_000, 16_000, 4_000, 16_000], restarts = [0, 3]
+    let f = try fixture(frameCounts: counts);try f.retain()
+    let archive = try XCTUnwrap(f.open())
+    var expected = Data()
+    for (sequence, frames) in counts.enumerated() { expected.append(Data(repeating: UInt8(sequence + 1), count: frames * 2)) }
+    defer { expected.resetBytes(in: 0..<expected.count) }
+    for (start, end) in [(500, 1500), (2000, 2500), (2500, 3000)] {
+      var wav = try XCTUnwrap(archive.audio(startMs: start, endMs: end, keys: f.keys, restartSequences: restarts, current: {}))
+      XCTAssertEqual(wav.dropFirst(44), expected.subdata(in: (start * 32)..<(end * 32)))
+      wav.resetBytes(in: 0..<wav.count)
+    }
+    XCTAssertEqual(restarts, [0, 3])
+  }
+  func testRestartRequiresCompleteIndexAndAllChunksEvenBeforeSelectedRange() throws {
+    for suffix in ["frame-index", "chunk:0", "chunk:3"] {
+      let f = try fixture(frameCounts: [16_000, 16_000, 4_000, 16_000]);try f.retain()
+      let key = try XCTUnwrap(f.records.rows.keys.first { $0.hasSuffix(suffix) })
+      f.records.rows.removeValue(forKey: key)
+      let archive = try XCTUnwrap(f.open())
+      XCTAssertNil(try archive.audio(startMs: 2500, endMs: 3000, keys: f.keys, restartSequences: [0, 3], current: {}))
+    }
+  }
+  func testRestartRejectsForeignAADInChunkBeforeSelectedRange() throws {
+    let f = try fixture(frameCounts: [16_000, 16_000, 4_000, 16_000]);try f.retain()
+    let key = try XCTUnwrap(f.records.rows.keys.first { $0.hasSuffix("chunk:0") })
+    var row = try JSONSerialization.jsonObject(with: f.records.rows[key]!.data) as! [String: Any]
+    row["aad"] = nativeBase64URL(try f.scope.additionalData(objectID: UUID(), sequence: 0))
+    f.records.rows[key] = NativeRecordingStoredRecord(data: try JSONSerialization.data(withJSONObject: row), revision: 1)
+    XCTAssertThrowsError(try f.open()!.audio(startMs: 2500, endMs: 3000, keys: f.keys, restartSequences: [0, 3], current: {}))
+  }
+  func testRestartBoundaryMustBeRepresentedBySealedArchive() throws {
+    let f = try fixture(frameCounts: [16_000, 16_000, 4_000, 16_000]);try f.retain()
+    let archive = try XCTUnwrap(f.open())
+    XCTAssertNil(try archive.audio(startMs: 0, endMs: 500, keys: f.keys, restartSequences: [0, 5], current: {}))
+    XCTAssertNotNil(try archive.audio(startMs: 0, endMs: 500, keys: f.keys, restartSequences: [0, 4], current: {}))
+    XCTAssertThrowsError(try archive.audio(startMs: 0, endMs: 500, keys: f.keys, restartSequences: [0, 3, 2], current: {}))
   }
   func testRetainsExactAudioAfterIndependentQueuePurgeAndKeyReopen() throws {
     let f = try fixture();let original = f.queue.map { f.records.rows[$0]!.data };try f.retain()

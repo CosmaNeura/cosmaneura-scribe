@@ -16,9 +16,9 @@ struct NativeProviderPassageSelection {
     guard let text = value as? String, let id = UUID(uuidString: text), id.uuidString.lowercased() == text else { throw ProviderNativeError.invalidRequest };return id
   }
   /// Parse only fresh, server-selected passage metadata. Transcript content is
-  /// neither logged nor returned to this bridge. Continuity corrections with an
-  /// unproven audio-time mapping remain unavailable, as on Desktop.
-  @MainActor func range(reply: ProviderNativeReply, nonce: String, now: Date = Date()) throws -> (Int, Int, Date)? {
+  /// neither logged nor returned to this bridge. Declared restart boundaries
+  /// must also be proven against the complete native archive before playback.
+  @MainActor func range(reply: ProviderNativeReply, nonce: String, now: Date = Date()) throws -> (Int, Int, Date, [Int]?)? {
     try NativeProviderConnection.requireRecordingResponse(reply.status)
     guard reply.status == 200, reply.body.count <= 32 * 1024 * 1024 + 8192,
       let e = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
@@ -29,7 +29,7 @@ struct NativeProviderPassageSelection {
       let date = Self.date(checked), (-5...30).contains(now.timeIntervalSince(date)),
       let view = e["receipt"] as? [String: Any], view["schema_version"] as? String == "1.0",
       view["session_id"] as? String == sessionID.uuidString.lowercased() else { throw ProviderNativeError.response }
-    if view["capture_continuity"] != nil { return nil }
+    let restarts = try Self.restartSequences(view["capture_continuity"])
     guard let source = view["source"] as? [String: Any] else { return nil }
     guard let segments = source["segments"] as? [[String: Any]], segments.count <= 10_000 else { throw ProviderNativeError.response }
     var seen = Set<UUID>(), selected: (Int, Int)?
@@ -39,7 +39,30 @@ struct NativeProviderPassageSelection {
         start >= 0, end > start, end <= 12_600_000 else { throw ProviderNativeError.response }
       if id == segmentID { selected = (start, min(end, start + 30_000)) }
     }
-    return selected.map { ($0.0, $0.1, date) }
+    return selected.map { ($0.0, $0.1, date, restarts) }
+  }
+  /// This is the closed Core continuity contract, not an assertion that missing
+  /// speech exists or that wall-clock pause time belongs in the mixed PCM track.
+  private static func restartSequences(_ value: Any?) throws -> [Int]? {
+    guard let value, !(value is NSNull) else { return nil }
+    guard let evidence = value as? [String: Any],
+      Set(evidence.keys) == ["schema_version", "continuity", "missing_audio", "starts"],
+      evidence["schema_version"] as? String == "1.0",
+      evidence["continuity"] as? String == "interrupted_or_unconfirmed",
+      evidence["missing_audio"] as? String == "unknown",
+      let starts = evidence["starts"] as? [[String: Any]], (2...1000).contains(starts.count)
+    else { throw ProviderNativeError.response }
+    var seen = Set<UUID>(), positions = [Int]()
+    for start in starts {
+      guard Set(start.keys) == ["source_start_id", "first_sequence_number"],
+        let position = integer(start["first_sequence_number"]), position < 2048,
+        position >= (positions.last ?? 0), !positions.isEmpty || position == 0
+      else { throw ProviderNativeError.response }
+      let id = try uuid(start["source_start_id"])
+      guard seen.insert(id).inserted else { throw ProviderNativeError.response }
+      positions.append(position)
+    }
+    return positions
   }
   static func requireFresh(_ checkedAt: Date, now: Date = Date()) throws {
     guard (-5...30).contains(now.timeIntervalSince(checkedAt)) else { throw ProviderNativeError.response }
