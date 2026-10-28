@@ -30,19 +30,20 @@ async function pinnedFile(path, expected, {privateFile = false, max = 4000000} =
  * verified boolean, inferred consent, or screenshot-content claim is accepted.
  * The independent action record remains reviewable beside the projected DTO. */
 export async function readNormalHostArtifact(binding, expected, kind) {
-  need(keys(binding, ['path', 'sha256', 'files']) && ['consent', 'end'].includes(kind)
+  need(keys(binding, ['path', 'sha256', 'files']) && ['consent', 'recording', 'end'].includes(kind)
     && Array.isArray(binding.files) && binding.files.length >= 1 && binding.files.length <= 4, 'host_artifact_binding_invalid');
   const bytes = await pinnedFile(binding.path, binding.sha256, {privateFile: true, max: 16384});
   const value = JSON.parse(bytes);
-  const fields = kind === 'consent'
+  const fields = kind !== 'end'
     ? ['source', 'action', 'actionId', 'hostIdSHA256', 'meetingIdSHA256', 'occurrenceDigest', 'observedAtEpochMs', 'files']
     : ['source', 'action', 'actionId', 'hostIdSHA256', 'meetingIdSHA256', 'occurrenceDigest', 'actionStartedAtEpochMs', 'observedAtEpochMs', 'files'];
-  need(keys(value, fields) && value.source === (kind === 'consent' ? 'normal-zoom-host-consent-ui' : 'normal-zoom-host-end-ui')
-    && value.action === (kind === 'consent' ? 'approve_recording' : 'end_meeting_for_all') && uuid(value.actionId)
+  const source = kind === 'end' ? 'normal-zoom-host-end-ui' : 'normal-zoom-host-consent-ui';
+  const action = kind === 'consent' ? 'approve_recording' : kind === 'recording' ? 'recording_active' : 'end_meeting_for_all';
+  need(keys(value, fields) && value.source === source && value.action === action && uuid(value.actionId)
     && ['hostIdSHA256', 'meetingIdSHA256', 'occurrenceDigest'].every(key => value[key] === expected[key])
     && Number.isFinite(value.observedAtEpochMs) && value.observedAtEpochMs >= expected.startedAtEpochMs
     && value.observedAtEpochMs <= now() + 50
-    && (kind === 'consent' || Number.isFinite(value.actionStartedAtEpochMs)
+    && (kind !== 'end' || Number.isFinite(value.actionStartedAtEpochMs)
       && value.actionStartedAtEpochMs >= expected.startedAtEpochMs && value.actionStartedAtEpochMs <= value.observedAtEpochMs)
     && Array.isArray(value.files) && value.files.length === binding.files.length, 'normal_host_action_missing');
   for (const [index, pin] of binding.files.entries()) {
@@ -129,7 +130,7 @@ export class LiveBotPipe {
       timer = setTimeout(() => { this.poison('startup_timeout'); reject(this.failure); }, MAX_READY_MS);
     })]); } finally { clearTimeout(timer); }
   }
-  async request(action, requestNonce, consent, hostEnd) {
+  async request(action, requestNonce, consent, recordingEvidence, hostEnd) {
     this.signal.throwIfAborted();
     need(this.ready && !this.failure && !this.closed && (!this.closing || action === 'close') && !this.pending
       && uuid(requestNonce) && !this.used.has(requestNonce) && this.used.size < 4160
@@ -140,7 +141,8 @@ export class LiveBotPipe {
       return await new Promise((resolve, reject) => {
         const sentAtEpochMs = now(); this.pending = {action, nonce: requestNonce, sentAtEpochMs, resolve, reject};
         timer = setTimeout(() => this.poison('request_timeout'), BOT_PROOF_MAX_AGE_MS);
-        this.child.stdin.write(JSON.stringify({version: 1, runId: this.expected.runId, action, requestNonce, consent, hostEnd}) + '\n',
+        this.child.stdin.write(JSON.stringify({version: 1, runId: this.expected.runId, action, requestNonce,
+          consent, recordingEvidence, hostEnd}) + '\n',
           error => { if (error) this.poison('private_pipe_failed'); });
       });
     } finally { clearTimeout(timer); }
@@ -151,7 +153,7 @@ export class LiveBotPipe {
       if (this.pending) this.poison('collection_closed');
       let remoteReaderResourcesSettled = false;
       if (this.ready && !this.failure && !this.closed) {
-        try { remoteReaderResourcesSettled = (await this.request('close', randomUUID(), null, null)).remoteReaderResourcesSettled === true; }
+        try { remoteReaderResourcesSettled = (await this.request('close', randomUUID(), null, null, null)).remoteReaderResourcesSettled === true; }
         catch { /* Keep the cleanup result unqualified; kill only the owned child below. */ }
       }
       this.child.stdin.end();
@@ -175,13 +177,17 @@ export class LiveBotPipe {
  * names one current ready staging replica; no general argv/URL is exposed.
  * The operator establishes the stream once and relays metadata frames only.
  */
-export async function createLiveBotCollector({transport, expected, privateScope, deployment, consentArtifact, signal}) {
+export async function createLiveBotCollector({transport, expected, privateScope, deployment, consentArtifact,
+  recordingEvidenceArtifact, signal}) {
   need(keys(transport, ['executable', 'executableSHA256', 'script', 'scriptSHA256']) && signal instanceof AbortSignal,
     'transport_configuration_invalid');
   new BotCaptureProofGate(expected); signal.throwIfAborted();
   await pinnedFile(transport.executable, transport.executableSHA256, {max: 200000000});
   await pinnedFile(transport.script, transport.scriptSHA256, {privateFile: true, max: 131072});
   const consent = await readNormalHostArtifact(consentArtifact, expected, 'consent');
+  const recordingEvidence = await readNormalHostArtifact(recordingEvidenceArtifact, expected, 'recording');
+  need(consent.actionId !== recordingEvidence.actionId && consent.artifactSHA256 !== recordingEvidence.artifactSHA256
+    && consent.observedAtEpochMs <= recordingEvidence.observedAtEpochMs, 'recording_evidence_not_distinct_or_ordered');
   const child = spawn(transport.executable, ['-I', '-B', transport.script], {
     stdio: ['pipe', 'pipe', 'pipe'], env: {...process.env, PYTHONDONTWRITEBYTECODE: '1'},
   });
@@ -196,8 +202,10 @@ export async function createLiveBotCollector({transport, expected, privateScope,
       observe: async ({requestNonce}) => {
         try {
           const current = await readNormalHostArtifact(consentArtifact, expected, 'consent');
+          const currentRecording = await readNormalHostArtifact(recordingEvidenceArtifact, expected, 'recording');
           need(JSON.stringify(current) === JSON.stringify(consent), 'consent_artifact_changed');
-          return await pipe.request('observe', requestNonce, consent, null);
+          need(JSON.stringify(currentRecording) === JSON.stringify(recordingEvidence), 'recording_evidence_artifact_changed');
+          return await pipe.request('observe', requestNonce, consent, recordingEvidence, null);
         } catch (error) {
           pipe.recordingBlocked = true; pipe.gate.observationFailed(); throw error;
         }
@@ -208,9 +216,13 @@ export async function createLiveBotCollector({transport, expected, privateScope,
       },
       observeStopped: async ({requestNonce}) => {
         need(end !== null, 'normal_end_required');
+        const currentConsent = await readNormalHostArtifact(consentArtifact, expected, 'consent');
+        const currentRecording = await readNormalHostArtifact(recordingEvidenceArtifact, expected, 'recording');
         const current = await readNormalHostArtifact(endBinding, expected, 'end');
+        need(JSON.stringify(currentConsent) === JSON.stringify(consent), 'consent_artifact_changed');
+        need(JSON.stringify(currentRecording) === JSON.stringify(recordingEvidence), 'recording_evidence_artifact_changed');
         need(JSON.stringify(current) === JSON.stringify(end), 'normal_end_artifact_changed');
-        return pipe.request('observeStopped', requestNonce, consent, end);
+        return pipe.request('observeStopped', requestNonce, consent, recordingEvidence, end);
       },
       close: () => pipe.close(),
       launchReceipt: {source: 'owned-resident-live-bot-reader', transportScriptSHA256: transport.scriptSHA256,

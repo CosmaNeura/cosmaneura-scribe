@@ -24,12 +24,14 @@ function fixture() {
     consent: {source: 'normal-zoom-host-consent-ui', action: 'approve_recording', actionId: randomUUID(), artifactSHA256: hash('3'),
       hostIdSHA256: scope.hostIdSHA256, meetingIdSHA256: scope.meetingIdSHA256, occurrenceDigest: scope.occurrenceDigest,
       observedAtEpochMs: start + 12000},
+    recordingEvidence: {source: 'normal-zoom-host-consent-ui', action: 'recording_active', actionId: randomUUID(),
+      artifactSHA256: hash('4'), hostIdSHA256: scope.hostIdSHA256, meetingIdSHA256: scope.meetingIdSHA256,
+      occurrenceDigest: scope.occurrenceDigest, observedAtEpochMs: start + 15000},
     core: {source: 'scoped-staging-zoom-recording-correspondence', before: core, after: {...structuredClone(core), readSequence: 3}},
     provider: {source: 'scoped-recall-get-response', httpStatus: 200, readSequence: 2, botIdSHA256: scope.botIdSHA256,
       meetingIdSHA256: scope.meetingIdSHA256, statusChanges: [
         {code: 'joining_call', subCode: null, createdAt: iso(5000)},
-        {code: 'recording_permission_allowed', subCode: null, createdAt: iso(13000)},
-        {code: 'in_call_recording', subCode: null, createdAt: iso(14000)},
+        {code: 'in_call_not_recording', subCode: null, createdAt: iso(14000)},
       ], recordings: [{idSHA256: scope.recordingIdSHA256, botIdSHA256: scope.botIdSHA256, statusCode: 'processing',
         startedAt: iso(14000), completedAt: null}]}, teardown: null};
   return {expected, observation, hash, typed};
@@ -44,11 +46,11 @@ function stopped(input) {
   Object.assign(value.provider.recordings[0], {statusCode: 'done', completedAt: iso});
   value.teardown = {source: 'scoped-core-canonical-meeting-end-release', botIdSHA256: value.scope.botIdSHA256,
     occurrenceDigest: value.scope.occurrenceDigest, generation: null, inventory: 'UNKNOWN',
-    hostEnd: {source: 'normal-zoom-host-end-ui', action: 'end_meeting_for_all', actionId: randomUUID(), artifactSHA256: input.hash('4'),
+    hostEnd: {source: 'normal-zoom-host-end-ui', action: 'end_meeting_for_all', actionId: randomUUID(), artifactSHA256: input.hash('5'),
       hostIdSHA256: value.scope.hostIdSHA256, meetingIdSHA256: value.scope.meetingIdSHA256, occurrenceDigest: value.scope.occurrenceDigest,
       actionStartedAtEpochMs: at, observedAtEpochMs: at},
     canonicalIntent: {action: 'release', stopRecording: true, cleanupSession: true, markMeetingEnded: true},
-    release: {id: input.typed('webhook_delivery'), eventType: 'internal.zoom_bot_release', providerEventDigest: input.hash('5'),
+    release: {id: input.typed('webhook_delivery'), eventType: 'internal.zoom_bot_release', providerEventDigest: input.hash('6'),
       state: 'completed', receivedAt: iso, processedAt: iso, leaseExpiresAt: null, lastErrorCode: null}};
   return value;
 }

@@ -27,12 +27,14 @@ function fixture() {
     consent: {source: 'normal-zoom-host-consent-ui', action: 'approve_recording', actionId: randomUUID(), artifactSHA256: digest('3'),
       hostIdSHA256: scope.hostIdSHA256, meetingIdSHA256: scope.meetingIdSHA256, occurrenceDigest: scope.occurrenceDigest,
       observedAtEpochMs: start + 12000},
+    recordingEvidence: {source: 'normal-zoom-host-consent-ui', action: 'recording_active', actionId: randomUUID(),
+      artifactSHA256: digest('4'), hostIdSHA256: scope.hostIdSHA256, meetingIdSHA256: scope.meetingIdSHA256,
+      occurrenceDigest: scope.occurrenceDigest, observedAtEpochMs: start + 15000},
     core: {source: 'scoped-staging-zoom-recording-correspondence', before: correspondence, after: {...clone(correspondence), readSequence: 3}},
     provider: {source: 'scoped-recall-get-response', httpStatus: 200, readSequence: 2, botIdSHA256: scope.botIdSHA256,
       meetingIdSHA256: scope.meetingIdSHA256, statusChanges: [
         {code: 'joining_call', subCode: null, createdAt: timestamp(5000)},
-        {code: 'recording_permission_allowed', subCode: null, createdAt: timestamp(13000)},
-        {code: 'in_call_recording', subCode: null, createdAt: timestamp(14000)},
+        {code: 'in_call_not_recording', subCode: null, createdAt: timestamp(14000)},
       ], recordings: [{idSHA256: scope.recordingIdSHA256, botIdSHA256: scope.botIdSHA256, statusCode: 'processing',
         startedAt: timestamp(14000), completedAt: null}]}, teardown: null};
   return {executionKind: 'mock', expected, observation, request, now: start + 60000};
@@ -54,11 +56,11 @@ function stopped(input) {
   observation.provider.recordings[0].statusCode = 'done'; observation.provider.recordings[0].completedAt = timestamp(60000);
   observation.teardown = {source: 'scoped-core-canonical-meeting-end-release', botIdSHA256: observation.scope.botIdSHA256,
     occurrenceDigest: observation.scope.occurrenceDigest, generation: null, inventory: 'UNKNOWN',
-    hostEnd: {source: 'normal-zoom-host-end-ui', action: 'end_meeting_for_all', actionId: randomUUID(), artifactSHA256: digest('4'),
+    hostEnd: {source: 'normal-zoom-host-end-ui', action: 'end_meeting_for_all', actionId: randomUUID(), artifactSHA256: digest('5'),
       hostIdSHA256: observation.scope.hostIdSHA256, meetingIdSHA256: observation.scope.meetingIdSHA256,
       occurrenceDigest: observation.scope.occurrenceDigest, actionStartedAtEpochMs: start + 59995, observedAtEpochMs: start + 60005},
     canonicalIntent: {action: 'release', stopRecording: true, cleanupSession: true, markMeetingEnded: true},
-    release: {id: typed('webhook_delivery'), eventType: 'internal.zoom_bot_release', providerEventDigest: digest('5'),
+    release: {id: typed('webhook_delivery'), eventType: 'internal.zoom_bot_release', providerEventDigest: digest('6'),
       state: 'completed', receivedAt: timestamp(60010), processedAt: timestamp(60020), leaseExpiresAt: null, lastErrorCode: null}};
   return value;
 }
@@ -91,12 +93,13 @@ test('partial early Core recording keys keep the fixture gate closed without bor
   const value = fixture(); value.observation.scope.recordingIdSHA256 = value.observation.scope.botIdSHA256;
   assert.throws(() => check(new BotCaptureProofGate(value.expected), value), /bot_scope_mismatch/);
 });
-test('connected, authorized, joined, permission, POST success and processing alone cannot qualify recording', () => {
+test('R11 regression: advisory in_call_not_recording qualifies with one exact active durable recording', () => {
+  const value = fixture(), gate = new BotCaptureProofGate(value.expected);
+  assert.equal(value.observation.provider.statusChanges.at(-1).code, 'in_call_not_recording');
+  assert.equal(check(gate, value), value.observation);
+});
+test('exact active provider row and current Core authority remain mandatory', () => {
   for (const mutate of [
-    v => {v.provider.statusChanges.pop();},
-    v => {v.provider.statusChanges.at(-1).code = 'in_call_not_recording';},
-    v => {v.provider.statusChanges.at(-1).code = 'in_waiting_room';},
-    v => {v.provider.statusChanges.splice(1, 1);},
     v => {v.provider.recordings[0].startedAt = null;},
     v => {v.provider.recordings[0].completedAt = timestamp(15000);},
     v => {v.provider.recordings[0].statusCode = 'paused';},
@@ -115,6 +118,17 @@ test('normal host consent evidence is required independently of provider recordi
     v => {v.consent.occurrenceDigest = digest('9');}, v => {v.consent.observedAtEpochMs = start - 1;}]) {
     const value = fixture(); mutate(value.observation);
     assert.throws(() => check(new BotCaptureProofGate(value.expected), value), /bot_normal_host_consent_missing/);
+  }
+});
+test('distinct visible REC evidence is required and pinned independently of consent', () => {
+  for (const mutate of [v => {v.recordingEvidence = null;}, v => {v.recordingEvidence.source = 'operator_verified';},
+    v => {v.recordingEvidence.action = 'approve_recording';}, v => {v.recordingEvidence.artifactSHA256 = '';},
+    v => {v.recordingEvidence.actionId = 'yes';}, v => {v.recordingEvidence.actionId = v.consent.actionId;},
+    v => {v.recordingEvidence.artifactSHA256 = v.consent.artifactSHA256;},
+    v => {v.recordingEvidence.hostIdSHA256 = digest('9');}, v => {v.recordingEvidence.meetingIdSHA256 = digest('9');},
+    v => {v.recordingEvidence.occurrenceDigest = digest('9');}, v => {v.recordingEvidence.observedAtEpochMs = start - 1;}]) {
+    const value = fixture(); mutate(value.observation);
+    assert.throws(() => check(new BotCaptureProofGate(value.expected), value), /bot_normal_rec_indicator_missing/);
   }
 });
 test('foreign account, host, doctor, patient, appointment, occurrence or resource is refused', () => {
@@ -139,12 +153,15 @@ test('a late response cannot restamp its nonce or escape the entire local reques
     const value = fixture(); mutate(value); assert.throws(() => check(new BotCaptureProofGate(value.expected), value));
   }
 });
-test('provider order, latest denial, unknown future codes and malformed status history fail closed', () => {
-  for (const mutate of [v => {v.provider.statusChanges[1].code = 'recording_permission_denied';},
-    v => {v.provider.statusChanges.at(-1).code = 'new_unknown_status';},
-    v => {v.provider.statusChanges[1].createdAt = timestamp(20000);},
+test('bot status is only a terminal-negative guard while unknown and malformed history fail closed', () => {
+  for (const advisory of ['recording_permission_denied', 'in_waiting_room']) {
+    const value = fixture(); value.observation.provider.statusChanges.at(-1).code = advisory;
+    assert.equal(check(new BotCaptureProofGate(value.expected), value), value.observation);
+  }
+  for (const mutate of [v => {v.provider.statusChanges.at(-1).code = 'new_unknown_status';},
+    v => {v.provider.statusChanges[0].createdAt = timestamp(20000);},
     v => {v.provider.statusChanges[1].createdAt = 'unknown';},
-    v => {v.provider.statusChanges.splice(2, 0, {code: 'call_ended', subCode: null, createdAt: timestamp(13500)});},
+    v => {v.provider.statusChanges.push({code: 'call_ended', subCode: null, createdAt: timestamp(15000)});},
     v => {v.provider.statusChanges.at(-1).message = 'unprojected body';}]) {
     const value = fixture(); mutate(value.observation); assert.throws(() => check(new BotCaptureProofGate(value.expected), value));
   }
@@ -152,11 +169,11 @@ test('provider order, latest denial, unknown future codes and malformed status h
 test('future provider times or impossible start/consumption/completion chronology cannot qualify', () => {
   for (const mutate of [v => {v.provider.statusChanges.at(-1).createdAt = timestamp(120000);},
     v => {v.provider.recordings[0].startedAt = timestamp(120000);},
-    v => {v.provider.recordings[0].startedAt = timestamp(1000);},
-    v => {v.provider.recordings[0].startedAt = timestamp(20000);},
+    v => {v.provider.recordings[0].startedAt = timestamp(0);},
     v => {v.provider.recordings[0].startedAt = 'invalid';},
     v => {v.core.before.authorization.consumedAt = v.core.after.authorization.consumedAt = timestamp(40000);},
-    v => {v.consent.observedAtEpochMs = start + 40000;}]) {
+    v => {v.consent.observedAtEpochMs = start + 40000;},
+    v => {v.recordingEvidence.observedAtEpochMs = start + 120000;}]) {
     const value = fixture(); mutate(value.observation);
     assert.throws(() => check(new BotCaptureProofGate(value.expected), value));
   }
@@ -171,12 +188,13 @@ test('future provider times or impossible start/consumption/completion chronolog
 test('proof objects reject arbitrary body, URL and native-receipt fields instead of retaining them', () => {
   for (const mutate of [v => {v.sessionId = 'pretend-native';}, v => {v.nativeState = 'recording';},
     v => {v.provider.token = 'secret';}, v => {v.provider.recordings[0].downloadUrl = 'https://example.invalid/private';},
-    v => {v.consent.promptText = 'unprojected';}]) {
+    v => {v.consent.promptText = 'unprojected';}, v => {v.recordingEvidence.promptText = 'unprojected';}]) {
     const value = fixture(); mutate(value.observation); assert.throws(() => check(new BotCaptureProofGate(value.expected), value));
   }
 });
-test('current recording identity and accepted history cannot be rewritten after admission', () => {
+test('current recording identity, UI evidence and accepted history cannot be rewritten after admission', () => {
   for (const mutate of [v => {v.consent.actionId = randomUUID();}, v => {v.provider.statusChanges[0].subCode = 'changed';},
+    v => {v.recordingEvidence.actionId = randomUUID();}, v => {v.recordingEvidence.observedAtEpochMs += 100;},
     v => {v.consent.observedAtEpochMs += 100;}, v => {v.provider.recordings[0].startedAt = timestamp(14001);},
     v => {v.core.before.authorization.expiresAt = v.core.after.authorization.expiresAt = timestamp(400000);},
     v => {v.provider.statusChanges.shift();}]) {
@@ -206,7 +224,7 @@ test('stop needs the admitted recording, terminal provider, normal End and one c
   const gate = new BotCaptureProofGate(value.expected); check(gate, value);
   assert.equal(check(gate, done, 'stopped'), done.observation);
   assert.throws(() => check(gate, later(value)), /bot_recording_restart_forbidden/);
-  for (const mutate of [v => {v.provider.statusChanges = v.provider.statusChanges.slice(0, 3);},
+  for (const mutate of [v => {v.provider.statusChanges = v.provider.statusChanges.slice(0, 2);},
     v => {v.provider.recordings[0].statusCode = 'processing';}, v => {v.provider.recordings[0].completedAt = null;},
     v => {v.core.after.meetingStatus = 'started';}, v => {v.core.after.meetingRuntime.botIdSHA256 = digest('9');},
     v => {v.core.after.recordingMapping = null;}, v => {v.teardown = null;}, v => {v.teardown.release = null;},

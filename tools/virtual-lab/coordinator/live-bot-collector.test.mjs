@@ -26,12 +26,14 @@ function fixture() {
     runId, requestNonce: randomUUID(), collectorSHA256, scope,
     consent: {source: 'normal-zoom-host-consent-ui', action: 'approve_recording', actionId: randomUUID(), artifactSHA256: '3'.repeat(64),
       hostIdSHA256: scope.hostIdSHA256, meetingIdSHA256: scope.meetingIdSHA256, occurrenceDigest: scope.occurrenceDigest, observedAtEpochMs: start + 12000},
+    recordingEvidence: {source: 'normal-zoom-host-consent-ui', action: 'recording_active', actionId: randomUUID(),
+      artifactSHA256: '4'.repeat(64), hostIdSHA256: scope.hostIdSHA256, meetingIdSHA256: scope.meetingIdSHA256,
+      occurrenceDigest: scope.occurrenceDigest, observedAtEpochMs: start + 15000},
     core: {source: 'scoped-staging-zoom-recording-correspondence', before: row, after: {...structuredClone(row), readSequence: 3}},
     provider: {source: 'scoped-recall-get-response', httpStatus: 200, readSequence: 2, botIdSHA256: scope.botIdSHA256,
       meetingIdSHA256: scope.meetingIdSHA256, statusChanges: [
         {code: 'joining_call', subCode: null, createdAt: iso(5000)},
-        {code: 'recording_permission_allowed', subCode: null, createdAt: iso(13000)},
-        {code: 'in_call_recording', subCode: null, createdAt: iso(14000)}],
+        {code: 'in_call_not_recording', subCode: null, createdAt: iso(14000)}],
       recordings: [{idSHA256: scope.recordingIdSHA256, botIdSHA256: scope.botIdSHA256, statusCode: 'processing', startedAt: iso(14000), completedAt: null}]}, teardown: null};
   return {expected, observation};
 }
@@ -64,28 +66,28 @@ for await(const line of readline.createInterface({input:process.stdin})) {
 
 test('actual persistent pipe returns the original DTO and acknowledges remote resource close', async t => {
   const input = await setup(t), nonce = randomUUID();
-  const dto = await input.pipe.request('observe', nonce, input.observation.consent, null);
+  const dto = await input.pipe.request('observe', nonce, input.observation.consent, input.observation.recordingEvidence, null);
   assert.deepEqual(dto, {...input.observation, requestNonce: nonce});
   assert.equal((await input.pipe.close()).remoteReaderResourcesSettled, true);
 });
 test('replayed nonce never dispatches another observation', async t => {
   const input = await setup(t), nonce = randomUUID();
-  await input.pipe.request('observe', nonce, input.observation.consent, null);
-  await assert.rejects(input.pipe.request('observe', nonce, input.observation.consent, null), /request_refused/);
+  await input.pipe.request('observe', nonce, input.observation.consent, input.observation.recordingEvidence, null);
+  await assert.rejects(input.pipe.request('observe', nonce, input.observation.consent, input.observation.recordingEvidence, null), /request_refused/);
 });
 test('concurrent requests are refused before the first response', async t => {
-  const input = await setup(t), pending = input.pipe.request('observe', randomUUID(), input.observation.consent, null);
-  await assert.rejects(input.pipe.request('observe', randomUUID(), input.observation.consent, null), /request_refused/);
+  const input = await setup(t), pending = input.pipe.request('observe', randomUUID(), input.observation.consent, input.observation.recordingEvidence, null);
+  await assert.rejects(input.pipe.request('observe', randomUUID(), input.observation.consent, input.observation.recordingEvidence, null), /request_refused/);
   await pending;
 });
 for (const mode of ['nonce', 'extra', 'changed']) test(`actual child ${mode} response fails and forbids recording restart`, async t => {
   const input = await setup(t, mode);
-  await assert.rejects(input.pipe.request('observe', randomUUID(), input.observation.consent, null));
-  await assert.rejects(input.pipe.request('observe', randomUUID(), input.observation.consent, null), /request_refused/);
+  await assert.rejects(input.pipe.request('observe', randomUUID(), input.observation.consent, input.observation.recordingEvidence, null));
+  await assert.rejects(input.pipe.request('observe', randomUUID(), input.observation.consent, input.observation.recordingEvidence, null), /request_refused/);
 });
 test('unchanged two-second pipe deadline rejects a delayed child', async t => {
   const input = await setup(t, 'delayed'), start = performance.now();
-  await assert.rejects(input.pipe.request('observe', randomUUID(), input.observation.consent, null), /request_timeout/);
+  await assert.rejects(input.pipe.request('observe', randomUUID(), input.observation.consent, input.observation.recordingEvidence, null), /request_timeout/);
   assert.ok(performance.now() - start < 2050);
   assert.equal((await input.pipe.close()).remoteReaderResourcesSettled, false);
 });
@@ -101,6 +103,12 @@ test('host artifact verifies actual bytes and refuses changed or invented files'
   await writeFile(record, JSON.stringify(value), {mode: 0o600});
   const binding = {path: record, sha256: hash(await readFile(record)), files: [{path: screenshot, sha256: pin}]};
   assert.equal((await readNormalHostArtifact(binding, expected, 'consent')).artifactSHA256, binding.sha256);
+  const recording = join(dir, 'recording.json');
+  const recordingValue = {...value, action: 'recording_active', actionId: randomUUID(), observedAtEpochMs: Date.now()};
+  await writeFile(recording, JSON.stringify(recordingValue), {mode: 0o600});
+  const recordingBinding = {path: recording, sha256: hash(await readFile(recording)), files: [{path: screenshot, sha256: pin}]};
+  assert.equal((await readNormalHostArtifact(recordingBinding, expected, 'recording')).artifactSHA256, recordingBinding.sha256);
   await writeFile(screenshot, 'changed bytes');
   await assert.rejects(readNormalHostArtifact(binding, expected, 'consent'), /file_bytes_changed/);
+  await assert.rejects(readNormalHostArtifact(recordingBinding, expected, 'recording'), /file_bytes_changed/);
 });
