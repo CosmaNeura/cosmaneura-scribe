@@ -74,6 +74,9 @@
   launcher, tracked Scribe API/build inputs, twelve hash-verified identity files transformed by the reviewed
   zero-fuzz policy, two manifests, and the disabled sentinel. No secret,
   environment value, certificate, active receipt, or protected data is copied.
+- Before configuration materialization, the launcher rejects duplicate identity
+  manifest keys, requires its exact twelve-file closed world, and re-hashes each
+  packaged identity source byte against that reviewed manifest.
 - Pre-activation recovery: discard the generated context or local image and
   revert this source PR. No running service or data is touched.
 - Post-activation recovery is out of scope: a future runbook must disable the

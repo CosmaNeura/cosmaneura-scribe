@@ -141,9 +141,12 @@ replaces runtime construction with a trap and proves a request receives the fail
 without importing `cosmas_os`. At deployment, the launcher accepts only the
 closed-world configuration JSON and the SHA-256 of the packaged manifest under
 the two recorded provider environment names. It materializes the exact bytes
-with mode 0600, validates them, removes both values from the process environment,
-and execs the fixed server. Missing, extra, changed, or already-materialized
-input fails before a listener starts. The checker uses no network or cloud
+only after rejecting duplicate identity-manifest keys, requiring the exact
+twelve-file identity set, and re-hashing every packaged receiver and identity
+source. It writes with mode 0600, validates the closed-world configuration,
+removes both values from the process environment, and execs the fixed server.
+Missing, extra, changed, or already-materialized input fails before a listener
+starts. The checker uses no network or cloud
 service. A later container build must pass the two recorded digest references
 as build arguments plus the recorded source revision; the resulting image
 digest is the promotion identity. A tag alone is never a deployment input.

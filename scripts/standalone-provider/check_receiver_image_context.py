@@ -180,19 +180,44 @@ def inspect_context(context: Path, expected_revision: str) -> dict[str, object]:
     }:
         raise ValueError("receiver image configuration is not disabled")
     identity = json.loads((context / "identity-source-manifest.json").read_text())
+    identity_files = identity.get("files") if isinstance(identity, dict) else None
     if (
-        identity.get("production_native_policy")
+        not isinstance(identity, dict)
+        or not isinstance(identity_files, dict)
+        or set(identity_files) != set(IDENTITY_FILES)
+        or identity_files.get("api/auth.py") != PRODUCTION_AUTH_SHA256
+        or set(identity)
+        != {
+            "purpose",
+            "source_directory",
+            "files",
+            "configuration_copied",
+            "credentials_copied",
+            "runtime_activated",
+            "production_native_policy",
+            "qualified_runtime_sha256",
+        }
+        or identity.get("configuration_copied") is not False
+        or identity.get("credentials_copied") is not False
+        or identity.get("runtime_activated") is not False
+        or identity.get("production_native_policy")
         != {
             "selected": True,
             "input_sha256": PINNED_AUTH_SHA256,
             "patch_sha256": PRODUCTION_PATCH_SHA256,
             "output_sha256": PRODUCTION_AUTH_SHA256,
         }
-        or identity.get("files", {}).get("api/auth.py") != PRODUCTION_AUTH_SHA256
+        or re.fullmatch(r"[0-9a-f]{64}", identity.get("qualified_runtime_sha256", "")) is None
     ):
         raise ValueError("receiver production identity binding changed")
-    if set(identity.get("files", {})) != set(IDENTITY_FILES):
-        raise ValueError("receiver production identity source set changed")
+    for relative, expected in identity_files.items():
+        source = context / "identity-source/cosmas_os" / relative
+        if (
+            not isinstance(expected, str)
+            or re.fullmatch(r"[0-9a-f]{64}", expected) is None
+            or sha256(source) != expected
+        ):
+            raise ValueError("receiver production identity source hash changed")
     dockerfile = (context / "Dockerfile").read_text()
     required = (
         "ARG UV_BUILDER_IMAGE",

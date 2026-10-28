@@ -123,8 +123,8 @@ def test_image_references_require_reviewed_tag_and_digest() -> None:
         )
 
 
-def test_image_entrypoint_requires_exact_environment_and_materializes_disabled_config(
-    tmp_path: Path,
+def test_image_entrypoint_rejects_identity_tamper_and_materializes_disabled_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider = tmp_path / "provider"
     provider.mkdir()
@@ -133,31 +133,51 @@ def test_image_entrypoint_requires_exact_environment_and_materializes_disabled_c
         data = name.encode() + b"\n"
         provider.joinpath(name).write_bytes(data)
         receiver_sources[name] = sha256(data)
-    identity = b'{"identity":"fixture"}\n'
-    provider.joinpath("identity-source-manifest.json").write_bytes(identity)
+    identity_files: dict[str, str] = {}
+    identity_contents: dict[str, bytes] = {}
+    for name in image_entrypoint.IDENTITY_FILES:
+        data = b"production-auth\n" if name == "api/auth.py" else name.encode() + b"\n"
+        target = provider / "identity-source/cosmas_os" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        identity_files[name] = sha256(data)
+        identity_contents[name] = data
+    monkeypatch.setattr(image_entrypoint, "PRODUCTION_AUTH_SHA256", identity_files["api/auth.py"])
+    identity_value = {
+        "purpose": "Receipt-gated production native policy source preparation",
+        "source_directory": "qualified-receiver/server-source/cosmas_os",
+        "files": identity_files,
+        "configuration_copied": False,
+        "credentials_copied": False,
+        "runtime_activated": False,
+        "production_native_policy": {
+            "selected": True,
+            "input_sha256": image_entrypoint.PINNED_AUTH_SHA256,
+            "patch_sha256": image_entrypoint.PRODUCTION_PATCH_SHA256,
+            "output_sha256": image_entrypoint.PRODUCTION_AUTH_SHA256,
+        },
+        "qualified_runtime_sha256": "3" * 64,
+    }
+    identity_manifest = provider / "identity-source-manifest.json"
+    identity_manifest.write_text(json.dumps(identity_value, sort_keys=True) + "\n")
     manifest = provider / "receiver-image-manifest.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "schema": 1,
-                "entrypoint": ["python", "/app/provider/image_entrypoint.py"],
-                "runtime_target": ["python", "/app/provider/serve.py"],
-                "runtime_user": "10001:10001",
-                "configuration_path": "/app/provider-config/receiver.json",
-                "deployment_environment": [
-                    image_entrypoint.CONFIGURATION_ENV.decode(),
-                    image_entrypoint.CONTRACT_ENV.decode(),
-                ],
-                "configuration_embedded": False,
-                "credentials_included": False,
-                "runtime_activated": False,
-                "receiver_sources": receiver_sources,
-                "identity_source_manifest_sha256": sha256(identity),
-            },
-            sort_keys=True,
-        )
-        + "\n"
-    )
+    manifest_value = {
+        "schema": 1,
+        "entrypoint": ["python", "/app/provider/image_entrypoint.py"],
+        "runtime_target": ["python", "/app/provider/serve.py"],
+        "runtime_user": "10001:10001",
+        "configuration_path": "/app/provider-config/receiver.json",
+        "deployment_environment": [
+            image_entrypoint.CONFIGURATION_ENV.decode(),
+            image_entrypoint.CONTRACT_ENV.decode(),
+        ],
+        "configuration_embedded": False,
+        "credentials_included": False,
+        "runtime_activated": False,
+        "receiver_sources": receiver_sources,
+        "identity_source_manifest_sha256": sha256(identity_manifest.read_bytes()),
+    }
+    manifest.write_text(json.dumps(manifest_value, sort_keys=True) + "\n")
     contract = hashlib.sha256(manifest.read_bytes()).hexdigest().encode()
     disabled = b'{"schema":1,"enabled":false}'
     environment = {
@@ -204,6 +224,40 @@ def test_image_entrypoint_requires_exact_environment_and_materializes_disabled_c
             manifest_path=manifest,
         )
     assert not invalid.exists()
+    # PR481-F1: the outer manifest and identity manifest remain unchanged while
+    # one packaged identity implementation changes. Refuse before config write.
+    identity_source = provider / "identity-source/cosmas_os/api/auth.py"
+    identity_source.write_bytes(b"tampered identity source\n")
+    changed_identity = tmp_path / "changed-identity/receiver.json"
+    changed_identity.parent.mkdir()
+    with pytest.raises(RuntimeError, match="receiver_image_contract_unavailable"):
+        image_entrypoint.materialize_configuration(
+            disabled,
+            contract,
+            configuration_path=changed_identity,
+            manifest_path=manifest,
+        )
+    assert not changed_identity.exists()
+    identity_source.write_bytes(identity_contents["api/auth.py"])
+    valid_identity_manifest = identity_manifest.read_bytes()
+    identity_manifest.write_bytes(b'{"files":{},' + valid_identity_manifest[1:])
+    manifest_value["identity_source_manifest_sha256"] = sha256(identity_manifest.read_bytes())
+    manifest.write_text(json.dumps(manifest_value, sort_keys=True) + "\n")
+    duplicate_contract = hashlib.sha256(manifest.read_bytes()).hexdigest().encode()
+    duplicate_identity = tmp_path / "duplicate-identity/receiver.json"
+    duplicate_identity.parent.mkdir()
+    with pytest.raises(RuntimeError, match="receiver_image_contract_unavailable"):
+        image_entrypoint.materialize_configuration(
+            disabled,
+            duplicate_contract,
+            configuration_path=duplicate_identity,
+            manifest_path=manifest,
+        )
+    assert not duplicate_identity.exists()
+    identity_manifest.write_bytes(valid_identity_manifest)
+    manifest_value["identity_source_manifest_sha256"] = sha256(valid_identity_manifest)
+    manifest.write_text(json.dumps(manifest_value, sort_keys=True) + "\n")
+    contract = hashlib.sha256(manifest.read_bytes()).hexdigest().encode()
     provider.joinpath("serve.py").write_text("tampered\n")
     changed_source = tmp_path / "changed-source/receiver.json"
     changed_source.parent.mkdir()

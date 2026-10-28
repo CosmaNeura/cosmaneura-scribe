@@ -36,6 +36,33 @@ RECEIVER_SOURCES = {
     "receiver_runtime.py",
     "serve.py",
 }
+IDENTITY_FILES = {
+    "__init__.py",
+    "config.py",
+    "db.py",
+    "models.py",
+    "api/__init__.py",
+    "api/auth.py",
+    "application/__init__.py",
+    "application/workspace.py",
+    "domain/__init__.py",
+    "domain/enums.py",
+    "domain/hashing.py",
+    "domain/work_lanes.py",
+}
+IDENTITY_MANIFEST_FIELDS = {
+    "purpose",
+    "source_directory",
+    "files",
+    "configuration_copied",
+    "credentials_copied",
+    "runtime_activated",
+    "production_native_policy",
+    "qualified_runtime_sha256",
+}
+PINNED_AUTH_SHA256 = "7eac6550c8723f80e558f61c34b6c74b3017e2d8f795344eb5ccd62d1c3fae7d"
+PRODUCTION_PATCH_SHA256 = "c86ade8e6e9736f856c1d4a9e5be024eb5ee4a3c0cb8bc96241f1d1e8ed36e41"
+PRODUCTION_AUTH_SHA256 = "f147c31547a1bacc98b211bdb3c791203e8ac204077792b186e691290f473413"
 
 
 def fail() -> RuntimeError:
@@ -103,11 +130,45 @@ def validate_manifest(path: Path, contract: bytes) -> None:
                 raise fail()
             if digest(path.parent / name) != expected.encode("ascii"):
                 raise fail()
-        identity = manifest.get("identity_source_manifest_sha256")
-        if not isinstance(identity, str) or HEX_SHA256_TEXT.fullmatch(identity) is None:
+        identity_digest = manifest.get("identity_source_manifest_sha256")
+        if (
+            not isinstance(identity_digest, str)
+            or HEX_SHA256_TEXT.fullmatch(identity_digest) is None
+        ):
             raise fail()
-        if digest(path.parent / "identity-source-manifest.json") != identity.encode("ascii"):
+        identity_path = path.parent / "identity-source-manifest.json"
+        if digest(identity_path) != identity_digest.encode("ascii"):
             raise fail()
+        identity = json.loads(identity_path.read_bytes(), object_pairs_hook=unique)
+        files = identity.get("files")
+        if (
+            set(identity) != IDENTITY_MANIFEST_FIELDS
+            or identity.get("purpose")
+            != "Receipt-gated production native policy source preparation"
+            or identity.get("source_directory") != "qualified-receiver/server-source/cosmas_os"
+            or identity.get("configuration_copied") is not False
+            or identity.get("credentials_copied") is not False
+            or identity.get("runtime_activated") is not False
+            or identity.get("production_native_policy")
+            != {
+                "selected": True,
+                "input_sha256": PINNED_AUTH_SHA256,
+                "patch_sha256": PRODUCTION_PATCH_SHA256,
+                "output_sha256": PRODUCTION_AUTH_SHA256,
+            }
+            or not isinstance(identity.get("qualified_runtime_sha256"), str)
+            or HEX_SHA256_TEXT.fullmatch(identity["qualified_runtime_sha256"]) is None
+            or not isinstance(files, dict)
+            or set(files) != IDENTITY_FILES
+            or files.get("api/auth.py") != PRODUCTION_AUTH_SHA256
+        ):
+            raise fail()
+        identity_root = path.parent / "identity-source/cosmas_os"
+        for name, expected in files.items():
+            if not isinstance(expected, str) or HEX_SHA256_TEXT.fullmatch(expected) is None:
+                raise fail()
+            if digest(identity_root / name) != expected.encode("ascii"):
+                raise fail()
     except (AttributeError, json.JSONDecodeError, OSError, TypeError, ValueError):
         raise fail() from None
 
