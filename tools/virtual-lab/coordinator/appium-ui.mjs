@@ -891,7 +891,8 @@ export class AppiumUI {
       }
       const receipt = await inspectHALScope({ ...this.config.sources.inputCustody, target: this.config.target,
         signal: active, requireOwnedInput, expectedApplication, nativeRecording,
-        expectedRecording: this.initialMicrophoneObservation, expectedReader: this.inputReader });
+        expectedRecording: this.initialMicrophoneObservation,
+        expectedReader: requireOwnedInput ? this.inputReader : undefined });
       active.throwIfAborted();
       if (requireOwnedInput && Math.abs(Date.now() - nativeRecording.browserTimeOriginMs - nativeRecording.observedAtMonotonicMs) > 2000)
         throw Error('native_input_observation_stale');

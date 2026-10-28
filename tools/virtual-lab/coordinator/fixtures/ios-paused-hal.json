@@ -1,0 +1,1252 @@
+{
+  "source": "metadata-only snapshots from owned synthetic Simulator21 full02",
+  "pausedResultSHA256": "bb1609c303007f18342e37ebfbf88659734c2100828c218541c4ad9d550f038b",
+  "recordingSegmentSHA256": "d20a1cd267d0bd737ecea5c8432d5cbcaa8585d538ad012f5e1d06326d71ee6f",
+  "target": {
+    "role": "owned-ios-simulator",
+    "hostname": "66061.local",
+    "root": "/Users/administrator/ScribeVirtualLab/targets/ios-build21",
+    "marker": "/Users/administrator/ScribeVirtualLab/targets/ios-build21/target.json",
+    "udid": "48F35BC1-AEA4-486C-A79A-23FAFBA3C2FA"
+  },
+  "inputCustody": {
+    "inventoryHelper": "/Users/administrator/ScribeVirtualLab/targets/ios-build21/bin/hal-input-inventory",
+    "helperSHA256": "b5ffc4edbf24aa7d524e34ec1d1117410ffe54d13adea17dd7328586ad68d2c3",
+    "expectedService": {
+      "executablePath": "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/SimAudioProcessorServices.simdeviceio/Contents/XPCServices/SimAudioProcessorService.xpc/Contents/MacOS/SimAudioProcessorService",
+      "executableSHA256": "5f16d73ce2697d47f279746d4becb8918446877c59804695ff459b7157479e5b"
+    }
+  },
+  "paused": {
+    "source": "current-hal-input-scope-observation",
+    "hostname": "66061.local",
+    "targetUDID": "48F35BC1-AEA4-486C-A79A-23FAFBA3C2FA",
+    "deviceUID": "BlackHole2ch_UID",
+    "helperSHA256": "b5ffc4edbf24aa7d524e34ec1d1117410ffe54d13adea17dd7328586ad68d2c3",
+    "startedAtEpochMs": 1793154059793,
+    "halBefore": {
+      "activeTargetInputClients": [],
+      "audioStreamOpened": false,
+      "completedAtEpochMs": 1793154059842.726,
+      "completeSnapshot": true,
+      "defaultInputDeviceUID": "BlackHole2ch_UID",
+      "defaultInputStable": true,
+      "deviceMutationIssued": false,
+      "errors": [],
+      "limitation": "Point-in-time HAL metadata; not an exclusivity guarantee against a client starting after the read.",
+      "observedAtEpochMs": 1793154059798.409,
+      "processes": [
+        {
+          "bundleId": "com.apple.mediaremoted",
+          "inputDevices": [],
+          "pid": 104,
+          "processIdentity": null,
+          "processObjectId": 98,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.audiomxd",
+          "inputDevices": [],
+          "pid": 362,
+          "processIdentity": null,
+          "processObjectId": 99,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "",
+          "inputDevices": [],
+          "pid": 384,
+          "processIdentity": null,
+          "processObjectId": 100,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.universalaccessd",
+          "inputDevices": [],
+          "pid": 549,
+          "processIdentity": null,
+          "processObjectId": 101,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.controlcenter",
+          "inputDevices": [],
+          "pid": 576,
+          "processIdentity": null,
+          "processObjectId": 102,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.CoreSpeech",
+          "inputDevices": [],
+          "pid": 637,
+          "processIdentity": null,
+          "processObjectId": 103,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.cmio.ContinuityCaptureAgent",
+          "inputDevices": [],
+          "pid": 593,
+          "processIdentity": null,
+          "processObjectId": 104,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.accessibility.heard",
+          "inputDevices": [],
+          "pid": 636,
+          "processIdentity": null,
+          "processObjectId": 105,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.avconferenced",
+          "inputDevices": [],
+          "pid": 751,
+          "processIdentity": null,
+          "processObjectId": 106,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.assistantd",
+          "inputDevices": [],
+          "pid": 769,
+          "processIdentity": null,
+          "processObjectId": 107,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.controlstrip",
+          "inputDevices": [],
+          "pid": 1754,
+          "processIdentity": null,
+          "processObjectId": 108,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.CoreSimulator.SimAudioProcessorServices.SimAudioProcessorService",
+          "inputDevices": [],
+          "pid": 5119,
+          "processIdentity": {
+            "executablePath": "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/SimAudioProcessorServices.simdeviceio/Contents/XPCServices/SimAudioProcessorService.xpc/Contents/MacOS/SimAudioProcessorService",
+            "parentPid": 1,
+            "pid": 5119,
+            "startedAtMicroseconds": 933012,
+            "startedAtSeconds": 1792947030
+          },
+          "processObjectId": 109,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.springboard",
+          "inputDevices": [],
+          "pid": 5126,
+          "processIdentity": null,
+          "processObjectId": 110,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.Safari",
+          "inputDevices": [],
+          "pid": 13623,
+          "processIdentity": null,
+          "processObjectId": 111,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "us.zoom.xos",
+          "inputDevices": [],
+          "pid": 26655,
+          "processIdentity": null,
+          "processObjectId": 112,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "us.zoom.caphost",
+          "inputDevices": [],
+          "pid": 26686,
+          "processIdentity": null,
+          "processObjectId": 113,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.WebKit.GPU",
+          "inputDevices": [],
+          "pid": 7162,
+          "processIdentity": null,
+          "processObjectId": 114,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.github.Electron.helper",
+          "inputDevices": [],
+          "pid": 27217,
+          "processIdentity": null,
+          "processObjectId": 115,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "",
+          "inputDevices": [],
+          "pid": 47096,
+          "processIdentity": null,
+          "processObjectId": 116,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.cosmaneura.scribe.beta",
+          "inputDevices": [],
+          "pid": 54014,
+          "processIdentity": null,
+          "processObjectId": 117,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "",
+          "inputDevices": [],
+          "pid": 62240,
+          "processIdentity": null,
+          "processObjectId": 118,
+          "runningInput": false,
+          "usesTargetInput": false
+        }
+      ],
+      "processListNonempty": true,
+      "processListStable": true,
+      "source": "coreaudio-read-only-process-metadata",
+      "targetDeviceUID": "BlackHole2ch_UID"
+    },
+    "bootedBefore": [
+      {
+        "udid": "48F35BC1-AEA4-486C-A79A-23FAFBA3C2FA"
+      }
+    ],
+    "routes": [
+      {
+        "udid": "48F35BC1-AEA4-486C-A79A-23FAFBA3C2FA",
+        "first": {
+          "selected": "explicit",
+          "effectiveDeviceUID": "BlackHole2ch_UID"
+        },
+        "last": {
+          "selected": "explicit",
+          "effectiveDeviceUID": "BlackHole2ch_UID"
+        }
+      }
+    ],
+    "bootedAfter": [
+      {
+        "udid": "48F35BC1-AEA4-486C-A79A-23FAFBA3C2FA"
+      }
+    ],
+    "bootedStable": true,
+    "hal": {
+      "activeTargetInputClients": [],
+      "audioStreamOpened": false,
+      "completedAtEpochMs": 1793154060356.704,
+      "completeSnapshot": true,
+      "defaultInputDeviceUID": "BlackHole2ch_UID",
+      "defaultInputStable": true,
+      "deviceMutationIssued": false,
+      "errors": [],
+      "limitation": "Point-in-time HAL metadata; not an exclusivity guarantee against a client starting after the read.",
+      "observedAtEpochMs": 1793154060317.389,
+      "processes": [
+        {
+          "bundleId": "com.apple.mediaremoted",
+          "inputDevices": [],
+          "pid": 104,
+          "processIdentity": null,
+          "processObjectId": 98,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.audiomxd",
+          "inputDevices": [],
+          "pid": 362,
+          "processIdentity": null,
+          "processObjectId": 99,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "",
+          "inputDevices": [],
+          "pid": 384,
+          "processIdentity": null,
+          "processObjectId": 100,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.universalaccessd",
+          "inputDevices": [],
+          "pid": 549,
+          "processIdentity": null,
+          "processObjectId": 101,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.controlcenter",
+          "inputDevices": [],
+          "pid": 576,
+          "processIdentity": null,
+          "processObjectId": 102,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.CoreSpeech",
+          "inputDevices": [],
+          "pid": 637,
+          "processIdentity": null,
+          "processObjectId": 103,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.cmio.ContinuityCaptureAgent",
+          "inputDevices": [],
+          "pid": 593,
+          "processIdentity": null,
+          "processObjectId": 104,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.accessibility.heard",
+          "inputDevices": [],
+          "pid": 636,
+          "processIdentity": null,
+          "processObjectId": 105,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.avconferenced",
+          "inputDevices": [],
+          "pid": 751,
+          "processIdentity": null,
+          "processObjectId": 106,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.assistantd",
+          "inputDevices": [],
+          "pid": 769,
+          "processIdentity": null,
+          "processObjectId": 107,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.controlstrip",
+          "inputDevices": [],
+          "pid": 1754,
+          "processIdentity": null,
+          "processObjectId": 108,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.CoreSimulator.SimAudioProcessorServices.SimAudioProcessorService",
+          "inputDevices": [],
+          "pid": 5119,
+          "processIdentity": {
+            "executablePath": "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/SimAudioProcessorServices.simdeviceio/Contents/XPCServices/SimAudioProcessorService.xpc/Contents/MacOS/SimAudioProcessorService",
+            "parentPid": 1,
+            "pid": 5119,
+            "startedAtMicroseconds": 933012,
+            "startedAtSeconds": 1792947030
+          },
+          "processObjectId": 109,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.springboard",
+          "inputDevices": [],
+          "pid": 5126,
+          "processIdentity": null,
+          "processObjectId": 110,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.Safari",
+          "inputDevices": [],
+          "pid": 13623,
+          "processIdentity": null,
+          "processObjectId": 111,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "us.zoom.xos",
+          "inputDevices": [],
+          "pid": 26655,
+          "processIdentity": null,
+          "processObjectId": 112,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "us.zoom.caphost",
+          "inputDevices": [],
+          "pid": 26686,
+          "processIdentity": null,
+          "processObjectId": 113,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.WebKit.GPU",
+          "inputDevices": [],
+          "pid": 7162,
+          "processIdentity": null,
+          "processObjectId": 114,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.github.Electron.helper",
+          "inputDevices": [],
+          "pid": 27217,
+          "processIdentity": null,
+          "processObjectId": 115,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "",
+          "inputDevices": [],
+          "pid": 47096,
+          "processIdentity": null,
+          "processObjectId": 116,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.cosmaneura.scribe.beta",
+          "inputDevices": [],
+          "pid": 54014,
+          "processIdentity": null,
+          "processObjectId": 117,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "",
+          "inputDevices": [],
+          "pid": 62281,
+          "processIdentity": null,
+          "processObjectId": 118,
+          "runningInput": false,
+          "usesTargetInput": false
+        }
+      ],
+      "processListNonempty": true,
+      "processListStable": true,
+      "source": "coreaudio-read-only-process-metadata",
+      "targetDeviceUID": "BlackHole2ch_UID"
+    },
+    "serviceExecutableSHA256": "5f16d73ce2697d47f279746d4becb8918446877c59804695ff459b7157479e5b",
+    "observedAtEpochMs": 1793154060359,
+    "assessment": {
+      "status": "BLOCKED",
+      "reasons": [
+        "latched_input_reader_changed"
+      ],
+      "activeOwnedInputClients": 0,
+      "reader": null,
+      "scope": "sampled-hal-input-clients-and-simulator-routes",
+      "screenCaptureKitAbsence": "NOT_ESTABLISHED",
+      "futureReaderExclusion": "NOT_ESTABLISHED"
+    }
+  },
+  "recording": {
+    "source": "current-hal-input-scope-observation",
+    "hostname": "66061.local",
+    "targetUDID": "48F35BC1-AEA4-486C-A79A-23FAFBA3C2FA",
+    "deviceUID": "BlackHole2ch_UID",
+    "helperSHA256": "b5ffc4edbf24aa7d524e34ec1d1117410ffe54d13adea17dd7328586ad68d2c3",
+    "startedAtEpochMs": 1793153684815,
+    "application": {
+      "sourceSHA": "9e76428d230ec4900acc63b693a8212aa980e3db",
+      "bundleId": "com.cosmaneura.scribe.beta",
+      "build": "2026102721",
+      "bundleSHA256": "8cc71d5954ab026e1d6724b2eec78689acd084da015f8eb05717b06ecd4e0c40",
+      "fileCount": 65,
+      "symlinkCount": 0,
+      "installedPath": "/Users/administrator/Library/Developer/CoreSimulator/Devices/48F35BC1-AEA4-486C-A79A-23FAFBA3C2FA/data/Containers/Bundle/Application/F9B6C74D-1A3E-43EB-8438-E40F7601ADC4/Scribe.app",
+      "executablePath": "/Users/administrator/Library/Developer/CoreSimulator/Devices/48F35BC1-AEA4-486C-A79A-23FAFBA3C2FA/data/Containers/Bundle/Application/F9B6C74D-1A3E-43EB-8438-E40F7601ADC4/Scribe.app/App",
+      "executableSHA256": "41fdfcd5a36182f3ffc7d199f1be9b58f3198b5d06f48ff7cb57185e1b743c14"
+    },
+    "nativeRecording": {
+      "source": "normal-native-recording-response",
+      "runId": "e1f28747-8671-4e60-9ab7-4e05577b5273",
+      "workspaceId": "1703120f-6bc1-4b27-82aa-c935b0435c8f",
+      "appointmentRef": "appointment_01m604k21sfe7sgjmaxge85rr1",
+      "sessionId": "f8e30e56-4747-4902-8087-784d5c158413",
+      "recorderId": "adfcdce4-dea6-4b76-a9e7-d87858b0ce20",
+      "nativeRevision": 1523,
+      "phase": "recording",
+      "busy": false,
+      "recordedChunks": 0,
+      "recordedPlaintextBytes": 0,
+      "input": "built_in",
+      "capturedAudioFrames": 30400,
+      "signal": {
+        "version": 2,
+        "inputBuffers": 19,
+        "convertedBuffers": 19,
+        "inputEverNonzero": false,
+        "convertedEverNonzero": false,
+        "inputLevel": 0,
+        "convertedLevel": 0,
+        "inputAgeMs": 84,
+        "convertedAgeMs": 72,
+        "zeroInputMs": 1900,
+        "route": "built_in",
+        "inputMuted": false
+      },
+      "nativeTiming": {
+        "version": 1,
+        "clock": "dispatch-uptime-ns",
+        "monotonicNs": "213338066691583",
+        "captureAttempt": 2,
+        "droppedEvents": 0
+      },
+      "timingObservation": {
+        "source": "normal-native-timing-response",
+        "runId": "e1f28747-8671-4e60-9ab7-4e05577b5273",
+        "workspaceId": "1703120f-6bc1-4b27-82aa-c935b0435c8f",
+        "appointmentRef": "appointment_01m604k21sfe7sgjmaxge85rr1",
+        "sessionId": "f8e30e56-4747-4902-8087-784d5c158413",
+        "recorderId": "adfcdce4-dea6-4b76-a9e7-d87858b0ce20",
+        "authRevision": "53db3bdc-3ab1-4a80-b29c-1d6548de5577",
+        "nativeRevision": 1523,
+        "requestId": "2eb13e81-996c-4a2d-9d48-366388b8d46f",
+        "method": "providerRecordingCommand",
+        "kind": "read",
+        "sample": {
+          "version": 1,
+          "clock": "dispatch-uptime-ns",
+          "monotonicNs": "213338066691583",
+          "captureAttempt": 2,
+          "droppedEvents": 0
+        },
+        "transport": {
+          "clock": "performance-now-ms",
+          "sentAtMonotonicMs": 7022490,
+          "receivedAtMonotonicMs": 7022497,
+          "browserTimeOriginMs": 1793146661834,
+          "roundTripMs": 7,
+          "browserTimestampPrecision": "UNKNOWN",
+          "browserTimestampResolutionMs": null,
+          "totalUncertaintyMs": null,
+          "qualification": "NOT_ESTABLISHED"
+        }
+      },
+      "observedAtMonotonicMs": 7022497,
+      "browserTimeOriginMs": 1793146661834
+    },
+    "halBefore": {
+      "activeTargetInputClients": [
+        {
+          "bundleId": "com.cosmaneura.scribe.beta",
+          "inputDevices": [
+            {
+              "isAggregate": false,
+              "objectId": 74,
+              "transportType": 1986622068,
+              "uid": "BlackHole2ch_UID"
+            }
+          ],
+          "pid": 54014,
+          "processIdentity": {
+            "executablePath": "/Users/administrator/Library/Developer/CoreSimulator/Devices/48F35BC1-AEA4-486C-A79A-23FAFBA3C2FA/data/Containers/Bundle/Application/F9B6C74D-1A3E-43EB-8438-E40F7601ADC4/Scribe.app/App",
+            "parentPid": 5123,
+            "pid": 54014,
+            "startedAtMicroseconds": 960651,
+            "startedAtSeconds": 1793146653
+          },
+          "processObjectId": 118,
+          "runningInput": true,
+          "usesTargetInput": true
+        }
+      ],
+      "audioStreamOpened": false,
+      "completedAtEpochMs": 1793153684861.914,
+      "completeSnapshot": true,
+      "defaultInputDeviceUID": "BlackHole2ch_UID",
+      "defaultInputStable": true,
+      "deviceMutationIssued": false,
+      "errors": [],
+      "limitation": "Point-in-time HAL metadata; not an exclusivity guarantee against a client starting after the read.",
+      "observedAtEpochMs": 1793153684818.808,
+      "processes": [
+        {
+          "bundleId": "com.apple.mediaremoted",
+          "inputDevices": [],
+          "pid": 104,
+          "processIdentity": null,
+          "processObjectId": 98,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.audiomxd",
+          "inputDevices": [],
+          "pid": 362,
+          "processIdentity": null,
+          "processObjectId": 99,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "",
+          "inputDevices": [],
+          "pid": 384,
+          "processIdentity": null,
+          "processObjectId": 100,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.universalaccessd",
+          "inputDevices": [],
+          "pid": 549,
+          "processIdentity": null,
+          "processObjectId": 101,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.controlcenter",
+          "inputDevices": [],
+          "pid": 576,
+          "processIdentity": null,
+          "processObjectId": 102,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.CoreSpeech",
+          "inputDevices": [],
+          "pid": 637,
+          "processIdentity": null,
+          "processObjectId": 103,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.cmio.ContinuityCaptureAgent",
+          "inputDevices": [],
+          "pid": 593,
+          "processIdentity": null,
+          "processObjectId": 104,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.accessibility.heard",
+          "inputDevices": [],
+          "pid": 636,
+          "processIdentity": null,
+          "processObjectId": 105,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.avconferenced",
+          "inputDevices": [],
+          "pid": 751,
+          "processIdentity": null,
+          "processObjectId": 106,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.assistantd",
+          "inputDevices": [],
+          "pid": 769,
+          "processIdentity": null,
+          "processObjectId": 107,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.controlstrip",
+          "inputDevices": [],
+          "pid": 1754,
+          "processIdentity": null,
+          "processObjectId": 108,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.CoreSimulator.SimAudioProcessorServices.SimAudioProcessorService",
+          "inputDevices": [],
+          "pid": 5119,
+          "processIdentity": {
+            "executablePath": "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/SimAudioProcessorServices.simdeviceio/Contents/XPCServices/SimAudioProcessorService.xpc/Contents/MacOS/SimAudioProcessorService",
+            "parentPid": 1,
+            "pid": 5119,
+            "startedAtMicroseconds": 933012,
+            "startedAtSeconds": 1792947030
+          },
+          "processObjectId": 109,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.springboard",
+          "inputDevices": [],
+          "pid": 5126,
+          "processIdentity": null,
+          "processObjectId": 110,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.Safari",
+          "inputDevices": [],
+          "pid": 13623,
+          "processIdentity": null,
+          "processObjectId": 111,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "us.zoom.xos",
+          "inputDevices": [],
+          "pid": 26655,
+          "processIdentity": null,
+          "processObjectId": 112,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "us.zoom.caphost",
+          "inputDevices": [],
+          "pid": 26686,
+          "processIdentity": null,
+          "processObjectId": 113,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.WebKit.GPU",
+          "inputDevices": [],
+          "pid": 7162,
+          "processIdentity": null,
+          "processObjectId": 114,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.github.Electron.helper",
+          "inputDevices": [],
+          "pid": 27217,
+          "processIdentity": null,
+          "processObjectId": 115,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "",
+          "inputDevices": [],
+          "pid": 47096,
+          "processIdentity": null,
+          "processObjectId": 116,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.TelephonyUtilities",
+          "inputDevices": [],
+          "pid": 48916,
+          "processIdentity": null,
+          "processObjectId": 117,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.cosmaneura.scribe.beta",
+          "inputDevices": [
+            {
+              "isAggregate": false,
+              "objectId": 74,
+              "transportType": 1986622068,
+              "uid": "BlackHole2ch_UID"
+            }
+          ],
+          "pid": 54014,
+          "processIdentity": {
+            "executablePath": "/Users/administrator/Library/Developer/CoreSimulator/Devices/48F35BC1-AEA4-486C-A79A-23FAFBA3C2FA/data/Containers/Bundle/Application/F9B6C74D-1A3E-43EB-8438-E40F7601ADC4/Scribe.app/App",
+            "parentPid": 5123,
+            "pid": 54014,
+            "startedAtMicroseconds": 960651,
+            "startedAtSeconds": 1793146653
+          },
+          "processObjectId": 118,
+          "runningInput": true,
+          "usesTargetInput": true
+        },
+        {
+          "bundleId": "",
+          "inputDevices": [
+            {
+              "isAggregate": false,
+              "objectId": 74,
+              "transportType": 1986622068,
+              "uid": "BlackHole2ch_UID"
+            }
+          ],
+          "pid": 60730,
+          "processIdentity": null,
+          "processObjectId": 119,
+          "runningInput": false,
+          "usesTargetInput": true
+        },
+        {
+          "bundleId": "",
+          "inputDevices": [],
+          "pid": 60904,
+          "processIdentity": null,
+          "processObjectId": 120,
+          "runningInput": false,
+          "usesTargetInput": false
+        }
+      ],
+      "processListNonempty": true,
+      "processListStable": true,
+      "source": "coreaudio-read-only-process-metadata",
+      "targetDeviceUID": "BlackHole2ch_UID"
+    },
+    "bootedBefore": [
+      {
+        "udid": "48F35BC1-AEA4-486C-A79A-23FAFBA3C2FA"
+      }
+    ],
+    "routes": [
+      {
+        "udid": "48F35BC1-AEA4-486C-A79A-23FAFBA3C2FA",
+        "first": {
+          "selected": "explicit",
+          "effectiveDeviceUID": "BlackHole2ch_UID"
+        },
+        "last": {
+          "selected": "explicit",
+          "effectiveDeviceUID": "BlackHole2ch_UID"
+        }
+      }
+    ],
+    "bootedAfter": [
+      {
+        "udid": "48F35BC1-AEA4-486C-A79A-23FAFBA3C2FA"
+      }
+    ],
+    "bootedStable": true,
+    "hal": {
+      "activeTargetInputClients": [
+        {
+          "bundleId": "com.cosmaneura.scribe.beta",
+          "inputDevices": [
+            {
+              "isAggregate": false,
+              "objectId": 74,
+              "transportType": 1986622068,
+              "uid": "BlackHole2ch_UID"
+            }
+          ],
+          "pid": 54014,
+          "processIdentity": {
+            "executablePath": "/Users/administrator/Library/Developer/CoreSimulator/Devices/48F35BC1-AEA4-486C-A79A-23FAFBA3C2FA/data/Containers/Bundle/Application/F9B6C74D-1A3E-43EB-8438-E40F7601ADC4/Scribe.app/App",
+            "parentPid": 5123,
+            "pid": 54014,
+            "startedAtMicroseconds": 960651,
+            "startedAtSeconds": 1793146653
+          },
+          "processObjectId": 118,
+          "runningInput": true,
+          "usesTargetInput": true
+        }
+      ],
+      "audioStreamOpened": false,
+      "completedAtEpochMs": 1793153685378.2092,
+      "completeSnapshot": true,
+      "defaultInputDeviceUID": "BlackHole2ch_UID",
+      "defaultInputStable": true,
+      "deviceMutationIssued": false,
+      "errors": [],
+      "limitation": "Point-in-time HAL metadata; not an exclusivity guarantee against a client starting after the read.",
+      "observedAtEpochMs": 1793153685336.417,
+      "processes": [
+        {
+          "bundleId": "com.apple.mediaremoted",
+          "inputDevices": [],
+          "pid": 104,
+          "processIdentity": null,
+          "processObjectId": 98,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.audiomxd",
+          "inputDevices": [],
+          "pid": 362,
+          "processIdentity": null,
+          "processObjectId": 99,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "",
+          "inputDevices": [],
+          "pid": 384,
+          "processIdentity": null,
+          "processObjectId": 100,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.universalaccessd",
+          "inputDevices": [],
+          "pid": 549,
+          "processIdentity": null,
+          "processObjectId": 101,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.controlcenter",
+          "inputDevices": [],
+          "pid": 576,
+          "processIdentity": null,
+          "processObjectId": 102,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.CoreSpeech",
+          "inputDevices": [],
+          "pid": 637,
+          "processIdentity": null,
+          "processObjectId": 103,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.cmio.ContinuityCaptureAgent",
+          "inputDevices": [],
+          "pid": 593,
+          "processIdentity": null,
+          "processObjectId": 104,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.accessibility.heard",
+          "inputDevices": [],
+          "pid": 636,
+          "processIdentity": null,
+          "processObjectId": 105,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.avconferenced",
+          "inputDevices": [],
+          "pid": 751,
+          "processIdentity": null,
+          "processObjectId": 106,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.assistantd",
+          "inputDevices": [],
+          "pid": 769,
+          "processIdentity": null,
+          "processObjectId": 107,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.controlstrip",
+          "inputDevices": [],
+          "pid": 1754,
+          "processIdentity": null,
+          "processObjectId": 108,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.CoreSimulator.SimAudioProcessorServices.SimAudioProcessorService",
+          "inputDevices": [],
+          "pid": 5119,
+          "processIdentity": {
+            "executablePath": "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/SimAudioProcessorServices.simdeviceio/Contents/XPCServices/SimAudioProcessorService.xpc/Contents/MacOS/SimAudioProcessorService",
+            "parentPid": 1,
+            "pid": 5119,
+            "startedAtMicroseconds": 933012,
+            "startedAtSeconds": 1792947030
+          },
+          "processObjectId": 109,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.springboard",
+          "inputDevices": [],
+          "pid": 5126,
+          "processIdentity": null,
+          "processObjectId": 110,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.Safari",
+          "inputDevices": [],
+          "pid": 13623,
+          "processIdentity": null,
+          "processObjectId": 111,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "us.zoom.xos",
+          "inputDevices": [],
+          "pid": 26655,
+          "processIdentity": null,
+          "processObjectId": 112,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "us.zoom.caphost",
+          "inputDevices": [],
+          "pid": 26686,
+          "processIdentity": null,
+          "processObjectId": 113,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.WebKit.GPU",
+          "inputDevices": [],
+          "pid": 7162,
+          "processIdentity": null,
+          "processObjectId": 114,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.github.Electron.helper",
+          "inputDevices": [],
+          "pid": 27217,
+          "processIdentity": null,
+          "processObjectId": 115,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "",
+          "inputDevices": [],
+          "pid": 47096,
+          "processIdentity": null,
+          "processObjectId": 116,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.apple.TelephonyUtilities",
+          "inputDevices": [],
+          "pid": 48916,
+          "processIdentity": null,
+          "processObjectId": 117,
+          "runningInput": false,
+          "usesTargetInput": false
+        },
+        {
+          "bundleId": "com.cosmaneura.scribe.beta",
+          "inputDevices": [
+            {
+              "isAggregate": false,
+              "objectId": 74,
+              "transportType": 1986622068,
+              "uid": "BlackHole2ch_UID"
+            }
+          ],
+          "pid": 54014,
+          "processIdentity": {
+            "executablePath": "/Users/administrator/Library/Developer/CoreSimulator/Devices/48F35BC1-AEA4-486C-A79A-23FAFBA3C2FA/data/Containers/Bundle/Application/F9B6C74D-1A3E-43EB-8438-E40F7601ADC4/Scribe.app/App",
+            "parentPid": 5123,
+            "pid": 54014,
+            "startedAtMicroseconds": 960651,
+            "startedAtSeconds": 1793146653
+          },
+          "processObjectId": 118,
+          "runningInput": true,
+          "usesTargetInput": true
+        },
+        {
+          "bundleId": "",
+          "inputDevices": [
+            {
+              "isAggregate": false,
+              "objectId": 74,
+              "transportType": 1986622068,
+              "uid": "BlackHole2ch_UID"
+            }
+          ],
+          "pid": 60730,
+          "processIdentity": null,
+          "processObjectId": 119,
+          "runningInput": false,
+          "usesTargetInput": true
+        },
+        {
+          "bundleId": "",
+          "inputDevices": [],
+          "pid": 60945,
+          "processIdentity": null,
+          "processObjectId": 120,
+          "runningInput": false,
+          "usesTargetInput": false
+        }
+      ],
+      "processListNonempty": true,
+      "processListStable": true,
+      "source": "coreaudio-read-only-process-metadata",
+      "targetDeviceUID": "BlackHole2ch_UID"
+    },
+    "serviceExecutableSHA256": "5f16d73ce2697d47f279746d4becb8918446877c59804695ff459b7157479e5b",
+    "observedAtEpochMs": 1793153685380,
+    "assessment": {
+      "status": "OBSERVED_ALLOWED",
+      "reasons": [],
+      "activeOwnedInputClients": 1,
+      "reader": {
+        "kind": "owned-application",
+        "processIdentity": {
+          "executablePath": "/Users/administrator/Library/Developer/CoreSimulator/Devices/48F35BC1-AEA4-486C-A79A-23FAFBA3C2FA/data/Containers/Bundle/Application/F9B6C74D-1A3E-43EB-8438-E40F7601ADC4/Scribe.app/App",
+          "parentPid": 5123,
+          "pid": 54014,
+          "startedAtMicroseconds": 960651,
+          "startedAtSeconds": 1793146653
+        }
+      },
+      "scope": "sampled-hal-input-clients-and-simulator-routes",
+      "screenCaptureKitAbsence": "NOT_ESTABLISHED",
+      "futureReaderExclusion": "NOT_ESTABLISHED"
+    },
+    "fullProofDurationMs": 820.6341669999965,
+    "fullProofLimitMs": 2000
+  },
+  "expectedReader": {
+    "kind": "owned-application",
+    "processIdentity": {
+      "executablePath": "/Users/administrator/Library/Developer/CoreSimulator/Devices/48F35BC1-AEA4-486C-A79A-23FAFBA3C2FA/data/Containers/Bundle/Application/F9B6C74D-1A3E-43EB-8438-E40F7601ADC4/Scribe.app/App",
+      "parentPid": 5123,
+      "pid": 54014,
+      "startedAtMicroseconds": 960651,
+      "startedAtSeconds": 1793146653
+    }
+  },
+  "initialRecording": {
+    "source": "normal-native-recording-response",
+    "runId": "e1f28747-8671-4e60-9ab7-4e05577b5273",
+    "workspaceId": "1703120f-6bc1-4b27-82aa-c935b0435c8f",
+    "appointmentRef": "appointment_01m604k21sfe7sgjmaxge85rr1",
+    "sessionId": "f8e30e56-4747-4902-8087-784d5c158413",
+    "recorderId": "adfcdce4-dea6-4b76-a9e7-d87858b0ce20",
+    "nativeRevision": 1519,
+    "phase": "recording",
+    "busy": false,
+    "recordedChunks": 0,
+    "recordedPlaintextBytes": 0,
+    "input": "built_in",
+    "capturedAudioFrames": 14400,
+    "signal": {
+      "version": 2,
+      "inputBuffers": 9,
+      "convertedBuffers": 9,
+      "inputEverNonzero": false,
+      "convertedEverNonzero": false,
+      "inputLevel": 0,
+      "convertedLevel": 0,
+      "inputAgeMs": 78,
+      "convertedAgeMs": 73,
+      "zeroInputMs": 900,
+      "route": "built_in",
+      "inputMuted": false
+    },
+    "nativeTiming": {
+      "version": 1,
+      "clock": "dispatch-uptime-ns",
+      "monotonicNs": "213337057653500",
+      "captureAttempt": 2,
+      "droppedEvents": 0
+    },
+    "timingObservation": {
+      "source": "normal-native-timing-response",
+      "runId": "e1f28747-8671-4e60-9ab7-4e05577b5273",
+      "workspaceId": "1703120f-6bc1-4b27-82aa-c935b0435c8f",
+      "appointmentRef": "appointment_01m604k21sfe7sgjmaxge85rr1",
+      "sessionId": "f8e30e56-4747-4902-8087-784d5c158413",
+      "recorderId": "adfcdce4-dea6-4b76-a9e7-d87858b0ce20",
+      "authRevision": "53db3bdc-3ab1-4a80-b29c-1d6548de5577",
+      "nativeRevision": 1519,
+      "requestId": "3e78d9d0-730a-4d69-acd2-8547b9d06cc3",
+      "method": "providerRecordingCommand",
+      "kind": "read",
+      "sample": {
+        "version": 1,
+        "clock": "dispatch-uptime-ns",
+        "monotonicNs": "213337057653500",
+        "captureAttempt": 2,
+        "droppedEvents": 0
+      },
+      "transport": {
+        "clock": "performance-now-ms",
+        "sentAtMonotonicMs": 7021483,
+        "receivedAtMonotonicMs": 7021488,
+        "browserTimeOriginMs": 1793146661834,
+        "roundTripMs": 5,
+        "browserTimestampPrecision": "UNKNOWN",
+        "browserTimestampResolutionMs": null,
+        "totalUncertaintyMs": null,
+        "qualification": "NOT_ESTABLISHED"
+      }
+    },
+    "observedAtMonotonicMs": 7021488,
+    "browserTimeOriginMs": 1793146661834
+  }
+}
