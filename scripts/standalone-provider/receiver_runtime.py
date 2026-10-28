@@ -1,4 +1,4 @@
-"""Inactive-by-default standalone receiver composition for the selected staging Core.
+"""Inactive-by-default standalone receiver composition for a sealed Core profile.
 
 Reads one packaged/mounted configuration file. No environment fallback, account
 provisioning, schema initialization, synthetic authentication, or deployment.
@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from time import time
 from typing import Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from fastapi import FastAPI
@@ -27,6 +28,45 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 CORE_ORIGIN = "https://staging-app.cosmaneura.com"
 ISSUER = "https://resolved-emu-53.clerk.accounts.dev"
 ORIGINS = {"ios": "capacitor://localhost", "desktop": "app://cosmas"}
+
+
+class ProductionReceiverBinding(BaseModel):
+    """Owner-supplied deployment inputs, never environment/request fallbacks.
+
+    A receipt reference is not approval or evidence by itself. The deployment
+    flight plan requires review of its exact resource/identity/network binding.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+    core_origin: Literal["https://app.cosmaneura.com"]
+    issuer: Literal["https://clerk.cosmaneura.com"]
+    receiver_origin: str
+    audience: str
+    organization_id: str
+    deployment_receipt_sha256: str
+    session_claims_receipt_sha256: str
+    protected_data_receipt_sha256: str
+
+    @model_validator(mode="after")
+    def exact_binding(self) -> ProductionReceiverBinding:
+        origin = urlsplit(self.receiver_origin)
+        host = origin.hostname or ""
+        if (
+            self.receiver_origin != "https://" + host
+            or "staging" in host
+            or host != host.lower()
+            or not (
+                re.fullmatch(r"[a-z0-9][a-z0-9.-]*\.azurecontainerapps\.io", host)
+                or re.fullmatch(r"[a-z0-9][a-z0-9.-]*\.cosmaneura\.com", host)
+            )
+            or not re.fullmatch(r"[!-~]{1,255}", self.audience)
+            or not re.fullmatch(r"org_[A-Za-z0-9_]{1,251}", self.organization_id)
+            or not re.fullmatch(r"[0-9a-f]{64}", self.deployment_receipt_sha256)
+            or not re.fullmatch(r"[0-9a-f]{64}", self.session_claims_receipt_sha256)
+            or not re.fullmatch(r"[0-9a-f]{64}", self.protected_data_receipt_sha256)
+        ):
+            raise ValueError("receiver_production_binding_invalid")
+        return self
 
 
 class ReceiverConfiguration(BaseModel):
@@ -44,13 +84,25 @@ class ReceiverConfiguration(BaseModel):
     database_reader_role: str | None = None
     core_scope: str | None = None
     ingress_isolation_receipt: str | None = None
+    profile: Literal["core-staging-personal-v1", "core-production-organization-v1"] = (
+        "core-staging-personal-v1"
+    )
+    production: ProductionReceiverBinding | None = None
 
     @model_validator(mode="after")
     def require_bindings(self) -> ReceiverConfiguration:
+        if self.profile == "core-staging-personal-v1" and self.production is not None:
+            raise ValueError("receiver_configuration_invalid")
+        if (
+            self.profile == "core-production-organization-v1"
+            and self.desktop_native_session_without_origin
+        ):
+            raise ValueError("receiver_configuration_invalid")
         if not self.enabled:
             return self
         if (
-            not self.platforms
+            (self.profile == "core-production-organization-v1" and self.production is None)
+            or not self.platforms
             or len(set(self.platforms)) != len(self.platforms)
             or (self.desktop_native_session_without_origin and "desktop" not in self.platforms)
             or any(
@@ -94,6 +146,47 @@ def load_configuration(path: Path) -> ReceiverConfiguration:
     except (OSError, ValueError, TypeError):
         pass
     raise RuntimeError("receiver_configuration_unavailable") from None
+
+
+def identity_arguments(config: ReceiverConfiguration, platform: str) -> tuple[dict, dict]:
+    """Pure composition projection, including the unchanged strict verifier flags."""
+    # These Settings are the standalone adapter's identity projection, not a
+    # full OS application activation. Mode/receipt text grants no patient access;
+    # the reviewed protected-data deployment and fresh Core authority are needed.
+    origin = ORIGINS[platform]
+    production = config.production if config.profile == "core-production-organization-v1" else None
+    if config.profile == "core-production-organization-v1" and production is None:
+        raise RuntimeError("receiver_configuration_unavailable")
+    issuer = production.issuer if production else ISSUER
+    settings = dict(
+        auth_mode="clerk_jwt",
+        cosmas_env="synth_os",
+        data_mode="authorized_beta" if production else "synthetic",
+        synth_seed=False,
+        beta_box_id=str(config.beta_box_id),
+        clerk_issuer=issuer,
+        clerk_jwks_url=issuer + "/.well-known/jwks.json",
+        clerk_audience=production.audience if production else None,
+        clerk_organization_id=production.organization_id if production else None,
+        workspace_native_synthetic_enabled=False,
+        clerk_authorized_parties=origin,
+        cors_allowed_origins=origin,
+    )
+    if production:
+        # Existing OS settings permit these local transport origins only when
+        # explicitly selected. Neither flag changes JWT or Core authority.
+        settings["workspace_apple_local_transport_enabled"] = platform == "ios"
+        settings["workspace_desktop_local_transport_enabled"] = platform == "desktop"
+    verifier = dict(
+        core_provider_session=production is None,
+        allow_native_session_without_origin=production is None and platform == "ios",
+        allow_staging_desktop_session_without_origin=(
+            production is None
+            and platform == "desktop"
+            and config.desktop_native_session_without_origin
+        ),
+    )
+    return settings, verifier
 
 
 async def unavailable(scope: Scope, receive: Receive, send: Send) -> None:
@@ -141,7 +234,7 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
     # Lazy imports preserve the disabled path before any identity or provider
     # module initialization. These package locations are fixed in the image.
     from azure.identity.aio import ManagedIdentityCredential
-    from azure_ingress import ACA_PROFILE, STAGING_ORIGIN, AzureIngress
+    from azure_ingress import ACA_PROFILE, PRODUCTION_ACA_PROFILE, STAGING_ORIGIN, AzureIngress
     from cosmaneura_scribe.provider_core_connections import ProviderCoreConnections
     from cosmas_os.api.auth import CORE_STAGING_PERSONAL, ClerkTokenVerifier
     from cosmas_os.config import Settings
@@ -154,6 +247,9 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
 
     if not config.enabled:
         raise RuntimeError("receiver_disabled")
+    production = config.production if config.profile == "core-production-organization-v1" else None
+    core_origin = production.core_origin if production else CORE_ORIGIN
+    receiver_origin = production.receiver_origin if production else STAGING_ORIGIN
     credential = ManagedIdentityCredential(client_id=str(config.managed_identity_client_id))
     verifiers: list[ClerkTokenVerifier] = []
     engine = None
@@ -186,7 +282,7 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
             raise RuntimeError("receiver_shutdown_unavailable") from None
 
     try:
-        core_connections = ProviderCoreConnections(CORE_ORIGIN)
+        core_connections = ProviderCoreConnections(core_origin)
 
         async def database_password() -> str:
             token = await credential.get_token("https://ossrdbms-aad.database.windows.net/.default")
@@ -271,43 +367,25 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
 
         for platform in config.platforms:
             origin = ORIGINS[platform]
-            settings = ReceiverIdentitySettings(
-                auth_mode="clerk_jwt",
-                cosmas_env="synth_os",
-                data_mode="synthetic",
-                synth_seed=False,
-                beta_box_id=str(config.beta_box_id),
-                clerk_issuer=ISSUER,
-                clerk_jwks_url=ISSUER + "/.well-known/jwks.json",
-                clerk_audience=None,
-                clerk_organization_id=None,
-                workspace_native_synthetic_enabled=False,
-                clerk_authorized_parties=origin,
-                cors_allowed_origins=origin,
-            )
+            settings_arguments, verifier_arguments = identity_arguments(config, platform)
+            settings = ReceiverIdentitySettings(**settings_arguments)
             # Explicit clients give each verifier an owned, closable refresh loop.
             verifier = await run_in_threadpool(
                 ClerkTokenVerifier,
                 settings,
-                jwks_client=PyJWKClient(
-                    ISSUER + "/.well-known/jwks.json", cache_jwk_set=True, timeout=5
-                ),
+                jwks_client=PyJWKClient(settings.clerk_jwks_url, cache_jwk_set=True, timeout=5),
                 start_background_refresh=True,
-                core_provider_session=True,
-                allow_native_session_without_origin=platform == "ios",
-                allow_staging_desktop_session_without_origin=(
-                    platform == "desktop" and config.desktop_native_session_without_origin
-                ),
+                **verifier_arguments,
             )
             verifiers.append(verifier)
             if config.environment_id is None:
                 raise RuntimeError("receiver_configuration_unavailable")
             profile = ReceiverProfile(
-                STAGING_ORIGIN,
-                CORE_ORIGIN,
+                receiver_origin,
+                core_origin,
                 config.environment_id,
                 frozenset({origin}),
-                CORE_STAGING_PERSONAL,
+                "clerk-organization-v1" if production else CORE_STAGING_PERSONAL,
             )
             apps[origin] = ProviderReceiver(
                 profile,
@@ -318,9 +396,16 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
                 enabled=True,
                 core_connections=core_connections,
                 encounter_creation_enabled=config.encounter_creation_enabled,
-                provider_trace_enabled=True,
+                provider_trace_enabled=production is None,
             ).app()
-        return ReceiverResources(AzureIngress(OriginReceivers(apps), profile=ACA_PROFILE), close)
+        return ReceiverResources(
+            AzureIngress(
+                OriginReceivers(apps),
+                profile=PRODUCTION_ACA_PROFILE if production else ACA_PROFILE,
+                production_origin=receiver_origin if production else None,
+            ),
+            close,
+        )
     except asyncio.CancelledError:
         await finish_close(close)
         raise

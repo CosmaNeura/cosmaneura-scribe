@@ -65,6 +65,8 @@ import Foundation
         return try await NativeTokenRequestObservation.$current.withValue(timing) {
             var completed = false
             defer { timing.finish(completed: completed).log() }
+            // Keep the actual session-bound JWT. Named JWT templates omit sid,
+            // so they cannot replace this token for the strict provider path.
             let token = try await clerk.auth.getToken(.init(skipCache: true))
             completed = token != nil
             return token

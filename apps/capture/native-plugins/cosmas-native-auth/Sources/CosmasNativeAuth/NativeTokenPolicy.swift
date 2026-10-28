@@ -40,6 +40,7 @@ public struct NativeTokenPolicy: Sendable {
         guard !nativeSessionWithoutOrigin || authorizedParty == NativeWorkspaceOrigin.appleWebView.rawValue
             || (identityProfile == .coreStagingPersonal
                 && authorizedParty == NativeWorkspaceOrigin.desktopApp.rawValue)
+            || (issuer == "https://clerk.cosmaneura.com" && identityProfile == .clerkOrganization)
         else { throw NativeAuthError.tokenUnavailable }
         guard token.utf8.count <= 8192 else { throw NativeAuthError.tokenUnavailable }
         let pieces = token.split(separator: ".", omittingEmptySubsequences: false)
@@ -49,7 +50,7 @@ public struct NativeTokenPolicy: Sendable {
               !kid.isEmpty, kid.utf8.count <= 255,
               claims["iss"] as? String == issuer,
               (claims["azp"] as? String == authorizedParty ||
-               (nativeSessionWithoutOrigin && claims["azp"] == nil)),
+               (nativeSessionWithoutOrigin && issuer != "https://clerk.cosmaneura.com" && claims["azp"] == nil)),
               claims["sub"] as? String == identity.userID,
               claims["sid"] as? String == identity.sessionID else { throw NativeAuthError.tokenUnavailable }
         switch identityProfile {
@@ -77,7 +78,10 @@ public struct NativeTokenPolicy: Sendable {
 
     public func initialWindowExpiration(_ token: String, identity: NativeAuthIdentity,
                                         now: Date = Date()) throws -> Date {
-        try validate(token, identity: identity, now: now, nativeSessionWithoutOrigin: true)
+        try validate(token, identity: identity, now: now,
+                     nativeSessionWithoutOrigin: issuer != "https://clerk.cosmaneura.com"
+                       && (identityProfile == .coreStagingPersonal
+                           || authorizedParty == NativeWorkspaceOrigin.appleWebView.rawValue))
         let pieces = token.split(separator: ".", omittingEmptySubsequences: false)
         guard pieces.count == 3, let claims = object(pieces[1]), let expiration = time(claims["exp"])
         else { throw NativeAuthError.tokenUnavailable }

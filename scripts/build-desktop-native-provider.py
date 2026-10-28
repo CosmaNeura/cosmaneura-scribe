@@ -16,7 +16,12 @@ from pathlib import Path
 
 
 def build(
-    output: Path, native_auth: Path, *, mac_app_store: bool = False, mac_app_store_xpc: bool = False
+    output: Path,
+    native_auth: Path,
+    *,
+    mac_app_store: bool = False,
+    mac_app_store_xpc: bool = False,
+    production_organization: bool = False,
 ) -> None:
     if mac_app_store and mac_app_store_xpc:
         raise ValueError("Select one explicit store topology")
@@ -147,6 +152,8 @@ let package = Package(name: "ScribeDesktopProvider", defaultLocalization: "en",
     ]
     if store:
         command += ["-Xswiftc", "-DSCRIBE_MAC_APP_STORE"]
+    if production_organization:
+        command += ["-Xswiftc", "-DSCRIBE_PRODUCTION_ORGANIZATION"]
     if mac_app_store_xpc:
         command += [
             "-Xswiftc",
@@ -184,6 +191,8 @@ let package = Package(name: "ScribeDesktopProvider", defaultLocalization: "en",
                 ),
                 "signed": False,
                 "launched": False,
+                "production_organization_compiled": production_organization,
+                "production_qualified": False,
             },
             indent=2,
         )
@@ -198,10 +207,12 @@ if __name__ == "__main__":
     parser.add_argument("--native-auth-source", type=Path, required=True)
     parser.add_argument("--mac-app-store", action="store_true")
     parser.add_argument("--mac-app-store-xpc", action="store_true")
+    parser.add_argument("--production-organization", action="store_true")
     options = parser.parse_args()
     build(
         options.output,
         options.native_auth_source,
         mac_app_store=options.mac_app_store,
         mac_app_store_xpc=options.mac_app_store_xpc,
+        production_organization=options.production_organization,
     )

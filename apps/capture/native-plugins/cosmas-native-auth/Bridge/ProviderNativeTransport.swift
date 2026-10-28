@@ -16,6 +16,7 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
   private let port: Int
   private let anchor: SecCertificate?
   private let leafSHA256: String?
+  private let usesSystemTrust: Bool
   private let workspaceOrigin: NativeWorkspaceOrigin
   private let sessionFactory: (URLSessionConfiguration, URLSessionDelegate) -> URLSession
   private let sessionLock = NSLock()
@@ -48,19 +49,42 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
     }
     self.workspaceOrigin = workspaceOrigin
     self.sessionFactory = sessionFactory
+    if let auth = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any],
+       auth["frontendOrigin"] as? String == "https://clerk.cosmaneura.com",
+       settings["profile"] as? String != "core-production-organization-https-v1" {
+      throw ProviderNativeError.unavailable
+    }
     if settings["profile"] != nil {
       guard Set(settings.keys) == ["profile", "endpoint"],
-        settings["profile"] as? String == "core-staging-https-v1",
         let value = settings["endpoint"] as? String,
-        value == "https://" + Self.stagingHost, let endpoint = URL(string: value)
+        let endpoint = URL(string: value)
       else {
         throw ProviderNativeError.unavailable
       }
+      let profile = settings["profile"] as? String
+      if profile == "core-staging-https-v1" {
+        guard value == "https://" + Self.stagingHost else { throw ProviderNativeError.unavailable }
+      } else {
+#if SCRIBE_PRODUCTION_ORGANIZATION && !SCRIBE_VIRTUAL_LAB_NETWORK
+        guard profile == "core-production-organization-https-v1",
+          let components = URLComponents(string: value), let host = components.host,
+          value == "https://" + host, !host.contains("staging"),
+          host.range(of: "^[a-z0-9][a-z0-9.-]*\\.(azurecontainerapps\\.io|cosmaneura\\.com)$",
+                     options: .regularExpression) != nil,
+          let auth = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any],
+          auth["identityProfile"] as? String == NativeIdentityProfile.clerkOrganization.rawValue,
+          auth["frontendOrigin"] as? String == "https://clerk.cosmaneura.com"
+        else { throw ProviderNativeError.unavailable }
+#else
+        throw ProviderNativeError.unavailable
+#endif
+      }
       self.endpoint = endpoint
-      self.host = Self.stagingHost
+      self.host = endpoint.host!
       self.port = 443
       self.anchor = nil
       self.leafSHA256 = nil
+      self.usesSystemTrust = true
       super.init()
       return
     }
@@ -84,6 +108,7 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
     self.port = port
     self.anchor = anchor
     self.leafSHA256 = leaf
+    self.usesSystemTrust = false
     super.init()
   }
 
@@ -245,7 +270,7 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
         completionHandler(.cancelAuthenticationChallenge, nil)
         return
       }
-    } else if anchor != nil || leafSHA256 != nil || host != Self.stagingHost || port != 443 {
+    } else if anchor != nil || leafSHA256 != nil || !usesSystemTrust || port != 443 {
       completionHandler(.cancelAuthenticationChallenge, nil)
       return
     }
