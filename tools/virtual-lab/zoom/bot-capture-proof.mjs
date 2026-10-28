@@ -79,7 +79,7 @@ export class BotCaptureProofGate {
       && (runtime.occurrenceDigest === null || runtime.occurrenceDigest === scope.occurrenceDigest), 'bot_meeting_not_ended');
   }
   #history(changes) {
-    need(Array.isArray(changes) && changes.length > 1 && changes.length <= 512, 'bot_status_history_invalid');
+    need(Array.isArray(changes) && changes.length > 0 && changes.length <= 512, 'bot_status_history_invalid');
     let lastAt = -Infinity, ended = false;
     for (const entry of changes) {
       need(keys(entry, ['code', 'subCode', 'createdAt']) && botCodes.has(entry.code) && iso(entry.createdAt)
@@ -90,26 +90,26 @@ export class BotCaptureProofGate {
     }
     // Preserve the observed ordering, including equal provider timestamps; do
     // not sort responses or infer precision from their serialized date strings.
-    const permissions = changes.filter(row => ['recording_permission_allowed', 'recording_permission_denied'].includes(row.code));
-    need(permissions.at(-1)?.code === 'recording_permission_allowed', 'bot_host_permission_not_allowed');
-    const approved = changes.findLastIndex(row => row.code === 'recording_permission_allowed');
-    need(changes.slice(approved + 1).some(row => row.code === 'in_call_recording'), 'bot_recording_not_observed');
+    // Recall's bot status is advisory here. R11 proved that its latest value can
+    // remain `in_call_not_recording` while the exact durable-bound recording is
+    // actively processing. Only malformed, unknown or terminal status is used
+    // to close the live-recording gate; positive authority comes from Core and
+    // the exact provider recording row below.
   }
-  #chronology(provider, core, consent, request) {
+  #chronology(provider, core, consent, recordingEvidence, request) {
     const skew = BOT_CLOCK_SKEW_ALLOWANCE_MS, changes = provider.statusChanges;
     const times = changes.map(row => Date.parse(row.createdAt)), recording = provider.recordings[0];
     const began = Date.parse(recording.startedAt), consumed = Date.parse(core.before.authorization.consumedAt);
-    const allowed = Date.parse(changes.findLast(row => row.code === 'recording_permission_allowed').createdAt);
-    const firstRecording = Date.parse(changes.find(row => row.code === 'in_call_recording').createdAt);
     need(times.every(at => at <= request.receivedAtEpochMs + skew && at >= this.#expected.startedAtEpochMs - skew)
-      && consumed >= this.#expected.startedAtEpochMs - skew && consumed <= allowed + skew
-      && began >= consumed - skew && began >= allowed - skew && began <= firstRecording + skew
-      && began <= request.receivedAtEpochMs + skew && consent.observedAtEpochMs <= began + skew,
+      && consumed >= this.#expected.startedAtEpochMs - skew && consumed <= request.receivedAtEpochMs + skew
+      && began >= consumed - skew && began <= request.receivedAtEpochMs + skew
+      && consent.observedAtEpochMs <= recordingEvidence.observedAtEpochMs
+      && recordingEvidence.observedAtEpochMs <= request.receivedAtEpochMs + 50
+      && began <= recordingEvidence.observedAtEpochMs + skew,
     'bot_recording_chronology_invalid');
     if (recording.completedAt !== null) {
       const completed = Date.parse(recording.completedAt);
-      const lastRecording = Date.parse(changes.findLast(row => row.code === 'in_call_recording').createdAt);
-      need(completed <= request.receivedAtEpochMs + skew && completed >= lastRecording - skew
+      need(completed <= request.receivedAtEpochMs + skew && completed >= began
         && (!terminal.has(changes.at(-1).code) || completed <= times.at(-1) + skew), 'bot_completion_chronology_invalid');
     }
   }
@@ -129,11 +129,12 @@ export class BotCaptureProofGate {
       && request.receivedAtEpochMs <= now + 50 && now - request.sentAtEpochMs <= BOT_PROOF_MAX_AGE_MS,
     'bot_proof_transport_stale');
     need(keys(value, ['schema', 'kind', 'source', 'executionKind', 'runId', 'requestNonce', 'collectorSHA256',
-      'scope', 'consent', 'core', 'provider', 'teardown']) && value.schema === 1 && value.kind === 'zoom-bot'
+      'scope', 'consent', 'recordingEvidence', 'core', 'provider', 'teardown']) && value.schema === 1 && value.kind === 'zoom-bot'
       && value.source === 'normal-zoom-ui-and-scoped-recall-observation' && value.executionKind === 'live'
       && value.runId === expected.runId && value.requestNonce === request.requestNonce
       && value.collectorSHA256 === expected.collectorSHA256, 'bot_observer_identity_invalid');
-    const scope = value.scope, consent = value.consent, core = value.core, provider = value.provider;
+    const scope = value.scope, consent = value.consent, recordingEvidence = value.recordingEvidence;
+    const core = value.core, provider = value.provider;
     this.#scope(scope);
     need(keys(consent, ['source', 'action', 'actionId', 'artifactSHA256', 'hostIdSHA256', 'meetingIdSHA256',
       'occurrenceDigest', 'observedAtEpochMs']) && consent.source === 'normal-zoom-host-consent-ui'
@@ -142,6 +143,18 @@ export class BotCaptureProofGate {
       && consent.occurrenceDigest === scope.occurrenceDigest && Number.isFinite(consent.observedAtEpochMs)
       && consent.observedAtEpochMs >= expected.startedAtEpochMs && consent.observedAtEpochMs <= request.receivedAtEpochMs + 50,
     'bot_normal_host_consent_missing');
+    need(keys(recordingEvidence, ['source', 'action', 'actionId', 'artifactSHA256', 'hostIdSHA256', 'meetingIdSHA256',
+      'occurrenceDigest', 'observedAtEpochMs']) && recordingEvidence.source === 'normal-zoom-host-consent-ui'
+      && recordingEvidence.action === 'recording_active' && uuid(recordingEvidence.actionId)
+      && digest(recordingEvidence.artifactSHA256) && recordingEvidence.actionId !== consent.actionId
+      && recordingEvidence.artifactSHA256 !== consent.artifactSHA256
+      && recordingEvidence.hostIdSHA256 === scope.hostIdSHA256
+      && recordingEvidence.meetingIdSHA256 === scope.meetingIdSHA256
+      && recordingEvidence.occurrenceDigest === scope.occurrenceDigest
+      && Number.isFinite(recordingEvidence.observedAtEpochMs)
+      && recordingEvidence.observedAtEpochMs >= expected.startedAtEpochMs
+      && recordingEvidence.observedAtEpochMs <= request.receivedAtEpochMs + 50,
+    'bot_normal_rec_indicator_missing');
     need(keys(core, ['source', 'before', 'after']) && core.source === 'scoped-staging-zoom-recording-correspondence', 'bot_core_source_invalid');
     this.#correspondence(core.before, scope, state); this.#correspondence(core.after, scope, state);
     need(same(core.before.authorization, core.after.authorization), 'bot_authorization_changed');
@@ -158,19 +171,21 @@ export class BotCaptureProofGate {
       && iso(recordings[0].startedAt) && (recordings[0].completedAt === null || iso(recordings[0].completedAt)
         && Date.parse(recordings[0].completedAt) >= Date.parse(recordings[0].startedAt)), 'bot_recording_missing_or_ambiguous');
     this.#history(provider.statusChanges);
-    this.#chronology(provider, core, consent, request);
+    this.#chronology(provider, core, consent, recordingEvidence, request);
     const identity = hash(canonical([expected.runId, ...scopeKeys.map(key => scope[key]), scope.botIdSHA256,
-      scope.recordingIdSHA256, consent.actionId, consent.artifactSHA256]));
+      scope.recordingIdSHA256, consent.actionId, consent.artifactSHA256,
+      recordingEvidence.actionId, recordingEvidence.artifactSHA256]));
     const previous = this.#accepted;
     if (previous) {
       need(identity === previous.identity && provider.statusChanges.length >= previous.history.length
         && previous.history.every((entry, index) => same(entry, provider.statusChanges[index]))
         && same(consent, previous.consent) && same(core.before.authorization, previous.authorization)
+        && same(recordingEvidence, previous.recordingEvidence)
         && recordings[0].startedAt === previous.startedAt, 'bot_capture_or_history_changed');
     }
     const current = provider.statusChanges.at(-1).code;
     if (state === 'recording') {
-      need(current === 'in_call_recording' && recordings[0].statusCode === 'processing'
+      need(!provider.statusChanges.some(row => terminal.has(row.code)) && recordings[0].statusCode === 'processing'
         && recordings[0].completedAt === null && value.teardown === null, 'bot_not_currently_recording');
     } else {
       need(previous && terminal.has(current) && recordings[0].statusCode === 'done'
@@ -221,6 +236,7 @@ export class BotCaptureProofGate {
     if (state === 'stopped') { this.#closed = true; this.#recordingBlocked = true; }
     if (this.#requestPins.size < 4096) this.#requestPins.set(request.requestNonce, requestPin);
     this.#accepted = {identity, history: structuredClone(provider.statusChanges), consent: structuredClone(consent),
+      recordingEvidence: structuredClone(recordingEvidence),
       authorization: structuredClone(core.before.authorization), startedAt: recordings[0].startedAt,
       lastRecordingReceivedAtEpochMs: state === 'recording' ? Math.max(previous?.lastRecordingReceivedAtEpochMs ?? 0, request.receivedAtEpochMs)
         : previous.lastRecordingReceivedAtEpochMs,

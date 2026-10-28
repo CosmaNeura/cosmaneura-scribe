@@ -131,7 +131,8 @@ def stream(process, master, ack, plan, config, scope, expires):
                     continue
                 need(inputs.count(b'\n') == 1 and inputs.endswith(b'\n') and inflight is None, 'single_request_required')
                 request = json.loads(inputs)
-                need(isinstance(request, dict) and set(request) == {'version', 'runId', 'action', 'requestNonce', 'consent', 'hostEnd'}
+                need(isinstance(request, dict) and set(request) == {'version', 'runId', 'action', 'requestNonce',
+                     'consent', 'recordingEvidence', 'hostEnd'}
                      and request['version'] == 1 and request['runId'] == scope['expected']['runId']
                      and request['action'] in ('observe', 'observeStopped', 'close')
                      and isinstance(request['requestNonce'], str) and re.fullmatch(r'[a-f0-9-]{36}', request['requestNonce'])

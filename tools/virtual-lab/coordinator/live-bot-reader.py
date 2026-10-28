@@ -122,14 +122,19 @@ def project_provider(data, bot, recording, meeting, sequence):
          and meeting_identity(data.get('meeting_url')) == meeting, 'provider_identity_changed')
     changes = data.get('status_changes')
     recordings = data.get('recordings')
-    need(isinstance(changes, list) and 1 < len(changes) <= 512
-         and isinstance(recordings, list) and len(recordings) == 1, 'provider_response_ambiguous')
+    need(isinstance(changes, list) and 0 < len(changes) <= 512
+         and isinstance(recordings, list) and 1 <= len(recordings) <= 100, 'provider_response_ambiguous')
     projected = []
     for row in changes:
         need(isinstance(row, dict) and all(key in row for key in ('code', 'sub_code', 'created_at')), 'provider_status_missing')
         projected.append({'code': row['code'], 'subCode': row['sub_code'], 'createdAt': row['created_at']})
-    row = recordings[0]
-    need(isinstance(row, dict) and row.get('id') == recording and recording != bot
+    matches = [row for row in recordings if isinstance(row, dict) and row.get('id') == recording]
+    # Historical/foreign entries may coexist in Recall's bot response. The
+    # admissible row is the unique raw provider ID already checked against
+    # Core's durable recording digest by Reader.core().
+    need(len(matches) == 1, 'provider_recording_missing_or_ambiguous')
+    row = matches[0]
+    need(recording != bot
          and isinstance(row.get('status'), dict) and 'code' in row['status']
          and all(key in row for key in ('started_at', 'completed_at')), 'provider_recording_changed')
     return {'source': 'scoped-recall-get-response', 'httpStatus': 200, 'readSequence': sequence,
@@ -190,6 +195,7 @@ class Reader:
         self.sequence = 0
         self.nonces = set()
         self.consent = None
+        self.recording_evidence = None
         self.host_end = None
         self.started = time.monotonic()
         self.accepted = False
@@ -212,7 +218,7 @@ class Reader:
                 cur.execute('''SELECT d.clerk_id,d.deleted_at,m.zoom_meeting_id,m.status,
                     m.capture_authorization_occurrence_digest,m.capture_authorization_consumed_at,m.capture_authorization_expires_at,
                     b.bot_digest,b.recording_digest,b.authorization_consumed_at,b.occurrence_digest,
-                    i.provider_user_id
+                    i.provider_user_id,b.terminal_status
                     FROM public.zoom_meeting m JOIN public.doctor d ON d.id=m.doctor_id
                     JOIN public.appointment a ON a.id=m.appointment_id AND a.doctor_id=d.id
                     JOIN public.patient p ON p.id=a.patient_id AND p.doctor_id=d.id
@@ -229,19 +235,22 @@ class Reader:
                      and row[4] == row[10] == self.expected['occurrenceDigest']
                      and row[5] is not None and row[5] == row[9]
                      and row[7] == provider_reference('recall:capture:bot:' + self.private['botId'], self.root)
-                     and row[8] == provider_reference('recall:capture:recording:' + self.private['recordingId'], self.root), 'core_authority_changed')
+                     and row[8] == provider_reference('recall:capture:recording:' + self.private['recordingId'], self.root)
+                     and (stopped or row[12] is None), 'core_authority_changed')
                 cur.execute("SELECT count(*) FROM public.doctor_video_integration WHERE provider='zoom' AND provider_user_id=%s", (row[11],))
                 need(cur.fetchone() == (1,), 'host_owner_ambiguous')
         prefix = 'recall:meeting:' + self.private['meetingId'] + ':'
-        suffixes = ('bot_id', 'occurrence_digest', 'host_id', 'doctor_id', 'recording_active', 'merge_generation')
+        suffixes = ('bot_id', 'occurrence_digest', 'host_id', 'doctor_id', 'recording_active',
+                    'capture_started', 'capture_terminal', 'merge_generation')
         values = self.cache.mget([prefix + name for name in suffixes])
         need(len(values) == len(suffixes), 'runtime_response_invalid')
         values = [value.decode('utf-8') if isinstance(value, bytes) else value for value in values]
-        bot, occurrence, host, doctor, active, generation = values
+        bot, occurrence, host, doctor, active, capture_started, capture_terminal, generation = values
         if not stopped:
             need(row[3] == 'started' and bot == self.private['botId'] and occurrence == self.expected['occurrenceDigest']
                  and sha(host or '') == self.expected['hostIdSHA256'] and doctor == self.expected['doctorRef']
-                 and active is not None, 'core_not_current_recording')
+                 and active == '1' and capture_started == '1' and capture_terminal is None,
+                 'core_not_current_recording')
         else:
             need(row[3] == 'ended' and bot in (None, self.private['botId'])
                  and occurrence in (None, self.expected['occurrenceDigest']) and active is None, 'core_end_unconfirmed')
@@ -284,7 +293,7 @@ class Reader:
                 'lastErrorCode': row[7]}}
 
     def observe(self, request):
-        need(exact(request, ('version', 'runId', 'action', 'requestNonce', 'consent', 'hostEnd'))
+        need(exact(request, ('version', 'runId', 'action', 'requestNonce', 'consent', 'recordingEvidence', 'hostEnd'))
              and request['version'] == 1 and request['runId'] == self.expected['runId']
              and uuid(request['requestNonce']) and request['requestNonce'] not in self.nonces
              and request['action'] in ('observe', 'observeStopped') and not self.closed
@@ -296,6 +305,9 @@ class Reader:
         if self.consent is None:
             self.consent = request['consent']
         need(request['consent'] == self.consent, 'consent_changed')
+        if self.recording_evidence is None:
+            self.recording_evidence = request['recordingEvidence']
+        need(request['recordingEvidence'] == self.recording_evidence, 'recording_evidence_changed')
         if stopped:
             need(request['hostEnd'] is not None, 'normal_host_end_missing')
             if self.host_end is None:
@@ -319,6 +331,7 @@ class Reader:
         result = {'schema': 1, 'kind': 'zoom-bot', 'source': 'normal-zoom-ui-and-scoped-recall-observation',
                   'executionKind': 'live', 'runId': self.expected['runId'], 'requestNonce': request['requestNonce'],
                   'collectorSHA256': self.expected['collectorSHA256'], 'scope': self.scope.copy(), 'consent': self.consent,
+                  'recordingEvidence': self.recording_evidence,
                   'core': {'source': 'scoped-staging-zoom-recording-correspondence', 'before': before, 'after': after},
                   'provider': provider, 'teardown': teardown}
         self.accepted = True
@@ -358,10 +371,10 @@ def main():
             request = read_line(max(.01, LIFETIME_SECONDS - (time.monotonic() - reader.started)))
             nonce = request.get('requestNonce') if isinstance(request, dict) else None
             try:
-                if (exact(request, ('version', 'runId', 'action', 'requestNonce', 'consent', 'hostEnd'))
+                if (exact(request, ('version', 'runId', 'action', 'requestNonce', 'consent', 'recordingEvidence', 'hostEnd'))
                         and request['version'] == 1 and request['runId'] == reader.expected['runId']
                         and request['action'] == 'close' and uuid(nonce) and nonce not in reader.nonces
-                        and request['consent'] is None and request['hostEnd'] is None):
+                        and request['consent'] is None and request['recordingEvidence'] is None and request['hostEnd'] is None):
                     reader.close()
                     send({'version': 1, 'runId': reader.expected['runId'], 'requestNonce': nonce, 'closed': True})
                     break
