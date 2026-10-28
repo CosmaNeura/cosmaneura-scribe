@@ -30,6 +30,57 @@ The proposed globally unique storage, Key Vault, and registry names were availab
 Azure does not reserve names during a check, so availability must be repeated immediately before a
 reviewed apply.
 
+## Automated dark-state contract
+
+`infra/tests/production_receiver_dark.tftest.hcl` uses an OpenTofu mock provider and synthetic
+identifiers, so it does not authenticate to Azure or read remote state. Run it from the repository
+root with:
+
+```bash
+tofu -chdir=infra test -filter=tests/production_receiver_dark.tftest.hcl
+```
+
+The contract proves that the production configuration leaves the API, PostgreSQL, Speech, jobs,
+platform peering, private-DNS platform link, workflow authentication, capture protocol, and
+platform handoff disabled. It also checks that the dormant foundation retains internal-only
+Container Apps ingress, managed-identity-only private storage, and private RBAC-only,
+purge-protected Key Vault custody. Separate negative cases require durable PostgreSQL before a
+production API and require both workflow authentication and PostgreSQL before capture can be
+enabled.
+
+This test is source validation, not evidence that a production receiver is deployable and not an
+Azure plan or deployment approval. Its synthetic global names and VNet ID do not prove that those
+names remain available, a platform VNet or peering target exists, native clients have a reachable
+upload path, Core can reach a private receiver, or any receiver workload exists. A real production
+plan still requires the isolated production backend, current non-secret Azure identifiers,
+refreshed name/capacity checks, and independent review.
+
+## Unresolved live production stop conditions
+
+The 2026-10-28 read-only production inventory does not match the proposed private foundation: the
+existing production Container Apps environment is public and has no VNet attachment, its resource
+group has no VNet, and the existing upload account permits public-network and shared-key access.
+Those resources are observations, not approved substitutes for this isolated Scribe boundary.
+
+Two hard connectivity gates must be implemented and pass live synthetic acceptance before the
+receiver can be called deployable:
+
+1. **Native upload edge.** Private-only Blob storage is not directly reachable from iOS, desktop,
+   or browser clients. Provide the false-by-default Front Door Premium private-origin edge from ADR
+   0016, or the documented API-mediated fallback. The authorized BFF must issue only short-lived,
+   operation-scoped user-delegation SAS grants to that reachable origin. Require a real synthetic
+   `PUT`, private-path read-back and envelope verification while the Blob public endpoint remains
+   denied, plus SAS/query/path log-scrubbing proof. Public Blob access or shared account keys are
+   not an acceptable fallback.
+2. **Core-to-private-receiver path.** Provision the separately owned platform VNet, approve both
+   sides of peering, link the Scribe private Container Apps DNS zone to that VNet, and prove the
+   production Core workload identity can resolve and call the internal receiver without a public
+   ingress fallback. Authentication alone does not create network reachability.
+
+Until both gates and the refreshed receiver plan pass review, a green mock test establishes only
+source invariants. It does not establish a platform VNet, peering target, upload edge, deployed
+receiver, production route, or customer-traffic readiness.
+
 ## Design-plan evidence
 
 An isolated empty-state copy of this production configuration was planned on 2026-08-14 with every
