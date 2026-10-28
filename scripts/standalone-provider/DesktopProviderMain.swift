@@ -37,16 +37,31 @@ import ScribeStorePipe
         if settings["enabled"] as? Bool == true {
             guard let key = settings["publishableKey"] as? String,
                   let origin = settings["frontendOrigin"] as? String,
-                  settings["identityProfile"] as? String == NativeIdentityProfile.coreStagingPersonal.rawValue,
-                  settings["organizationId"] == nil, settings["audience"] == nil else {
+                  let profileName = settings["identityProfile"] as? String,
+                  let profile = NativeIdentityProfile(rawValue: profileName) else {
                 throw ProviderNativeError.unavailable
             }
+            let organization = settings["organizationId"] as? String
+            let audience = settings["audience"] as? String
+            if profile == .coreStagingPersonal {
+                guard settings["organizationId"] == nil, settings["audience"] == nil
+                else { throw ProviderNativeError.unavailable }
+            } else {
+#if SCRIBE_PRODUCTION_ORGANIZATION && !SCRIBE_VIRTUAL_LAB_NETWORK
+                guard origin == "https://clerk.cosmaneura.com", organization != nil, audience != nil,
+                      receiver["profile"] as? String == "core-production-organization-https-v1"
+                else { throw ProviderNativeError.unavailable }
+#else
+                throw ProviderNativeError.unavailable
+#endif
+            }
             let config = try NativeClerkConfiguration(publishableKey: key, frontendOrigin: origin,
-                organizationID: nil, bundleIdentifier: NativeClerkConfiguration.desktopBundleIdentifier,
-                workspaceOrigin: .desktopApp, identityProfile: .coreStagingPersonal)
-            let policy = try NativeTokenPolicy(issuer: origin, audience: nil,
+                organizationID: organization, bundleIdentifier: NativeClerkConfiguration.desktopBundleIdentifier,
+                workspaceOrigin: .desktopApp, identityProfile: profile,
+                sessionClaimsReceiptSHA256: settings["sessionClaimsReceiptSha256"] as? String)
+            let policy = try NativeTokenPolicy(issuer: origin, audience: audience,
                 authorizedParty: NativeWorkspaceOrigin.desktopApp.rawValue,
-                identityProfile: .coreStagingPersonal)
+                identityProfile: profile)
 #if SCRIBE_MAC_APP_STORE_XPC
             // Signed Store membership was checked before this point. Its auth
             // identity, credential group and source container are distinct from
@@ -59,7 +74,7 @@ import ScribeStorePipe
             try storeRecovery.prepareStoreBeforeAuthentication()
             recovery = storeRecovery
 #endif
-            auth = NativeWorkspaceAuth(enabled: true, organizationID: nil, tokenPolicy: policy,
+            auth = NativeWorkspaceAuth(enabled: true, organizationID: organization, tokenPolicy: policy,
                 driver: { try ClerkKitWorkspaceDriver(configuration: config) },
                 accessBlock: { try KeychainAccessBlock(bundleIdentifier: config.bundleIdentifier) })
         } else {

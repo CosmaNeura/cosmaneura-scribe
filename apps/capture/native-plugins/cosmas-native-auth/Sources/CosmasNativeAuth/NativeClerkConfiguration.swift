@@ -51,7 +51,17 @@ public struct NativeClerkConfiguration: Sendable, Equatable {
 
     public init(publishableKey: String, frontendOrigin: String, organizationID: String?,
                 bundleIdentifier: String, workspaceOrigin: NativeWorkspaceOrigin = .appleWebView,
-                identityProfile: NativeIdentityProfile = .clerkOrganization) throws {
+                identityProfile: NativeIdentityProfile = .clerkOrganization,
+                sessionClaimsReceiptSHA256: String? = nil) throws {
+        let production = frontendOrigin == "https://clerk.cosmaneura.com"
+#if !SCRIBE_PRODUCTION_ORGANIZATION
+        guard !production else { throw NativeAuthError.unavailable }
+#endif
+        if production {
+            guard identityProfile == .clerkOrganization, let sessionClaimsReceiptSHA256,
+                  sessionClaimsReceiptSHA256.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
+            else { throw NativeAuthError.unavailable }
+        } else if sessionClaimsReceiptSHA256 != nil { throw NativeAuthError.unavailable }
         switch identityProfile {
         case .clerkOrganization:
             guard let organizationID,
@@ -64,15 +74,17 @@ public struct NativeClerkConfiguration: Sendable, Equatable {
                   frontendOrigin == "https://resolved-emu-53.clerk.accounts.dev"
             else { throw NativeAuthError.unavailable }
         }
-        guard publishableKey.hasPrefix("pk_test_"), publishableKey.utf8.count <= 1024,
+        let keyPrefix = production ? "pk_live_" : "pk_test_"
+        guard publishableKey.hasPrefix(keyPrefix), publishableKey.utf8.count <= 1024,
               workspaceOrigin.accepts(bundleIdentifier: bundleIdentifier),
               let url = URLComponents(string: frontendOrigin), url.scheme == "https",
               let host = url.host, host == host.lowercased(), url.port == nil,
-              host.range(of: "^[a-z0-9][a-z0-9.-]*\\.clerk\\.accounts\\.dev$",
-                         options: .regularExpression) != nil,
+              (production && host == "clerk.cosmaneura.com"
+               || !production && host.range(of: "^[a-z0-9][a-z0-9.-]*\\.clerk\\.accounts\\.dev$",
+                         options: .regularExpression) != nil),
               frontendOrigin == "https://" + host, url.user == nil, url.password == nil,
               url.query == nil, url.fragment == nil else { throw NativeAuthError.unavailable }
-        var encoded = String(publishableKey.dropFirst("pk_test_".count))
+        var encoded = String(publishableKey.dropFirst(keyPrefix.count))
         encoded = encoded.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         encoded += String(repeating: "=", count: (4 - encoded.count % 4) % 4)
         guard let data = Data(base64Encoded: encoded),

@@ -1,0 +1,51 @@
+--- a/cosmas_os/api/auth.py
++++ b/cosmas_os/api/auth.py
+@@ -101,12 +101,40 @@
+         allow_native_session_without_origin: bool = False,
+         allow_staging_desktop_session_without_origin: bool = False,
+         core_provider_session: bool = False,
++        production_native_origin: str | None = None,
++        production_native_policy_receipt_sha256: str | None = None,
+     ) -> None:
+         self._owns_refresh = jwks_client is not None or not start_background_refresh
+         self._refresh_thread: Thread | None = None
+         if core_provider_session and not core_provider_configuration_valid(runtime_settings):
+             raise RuntimeError("Core provider profile configuration is incomplete")
+         self.core_provider_session = core_provider_session
++        # Explicit deployment-owned alternative for native session JWTs whose
++        # documented native FAPI path does not set the browser Origin/azp claim.
++        # This does not identify an executable. The reviewed audience, native
++        # receiver/workload channel and current Core authorization remain required.
++        production_native = production_native_origin is not None
++        if production_native:
++            if (
++                core_provider_session or allow_native_session_without_origin
++                or allow_staging_desktop_session_without_origin
++                or production_native_origin not in {"capacitor://localhost", "app://cosmas"}
++                or set(runtime_settings.authorized_parties) != {production_native_origin}
++                or set(runtime_settings.allowed_origins) != {production_native_origin}
++                or runtime_settings.auth_mode != "clerk_jwt"
++                or runtime_settings.data_mode != "authorized_beta"
++                or runtime_settings.synth_seed
++                or runtime_settings.workspace_native_synthetic_enabled
++                or runtime_settings.clerk_issuer != "https://clerk.cosmaneura.com"
++                or runtime_settings.clerk_jwks_url != "https://clerk.cosmaneura.com/.well-known/jwks.json"
++                or not re.fullmatch(r"[!-~]{1,255}", runtime_settings.clerk_audience or "")
++                or not re.fullmatch(r"org_[A-Za-z0-9_]{1,251}", runtime_settings.clerk_organization_id or "")
++                or runtime_settings.workspace_authentication_errors()
++                or not re.fullmatch(r"[0-9a-f]{64}", production_native_policy_receipt_sha256 or "")
++            ):
++                raise RuntimeError("Production native organization policy is incomplete")
++        elif production_native_policy_receipt_sha256 is not None:
++            raise RuntimeError("Production native organization policy is incomplete")
+         if allow_native_session_without_origin and set(runtime_settings.authorized_parties) != {
+             "capacitor://localhost"
+         }:
+@@ -121,6 +149,7 @@
+             raise RuntimeError("Desktop native session requires the isolated staging personal profile")
+         self._allow_native_session_without_origin = (
+             allow_native_session_without_origin or allow_staging_desktop_session_without_origin
++            or production_native
+         )
+         if (
+             not runtime_settings.clerk_jwks_url

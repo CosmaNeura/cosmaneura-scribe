@@ -118,7 +118,8 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                     throw NativeAuthError.unavailable
                 }
                 let configuration = try NativeClerkConfiguration(publishableKey: key, frontendOrigin: origin,
-                    organizationID: organization, bundleIdentifier: bundle, identityProfile: profile)
+                    organizationID: organization, bundleIdentifier: bundle, identityProfile: profile,
+                    sessionClaimsReceiptSHA256: settings["sessionClaimsReceiptSha256"] as? String)
                 let policy = try NativeTokenPolicy(issuer: origin, audience: audience, identityProfile: profile)
                 auth = NativeWorkspaceAuth(enabled: true, organizationID: organization, tokenPolicy: policy,
                     driver: {
@@ -493,17 +494,8 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             guard call.options.isEmpty, Bundle.main.bundleIdentifier == "com.cosmaneura.scribe.beta" else {
                 return Self.rejectProvider(call)
             }
-            let settings = Bundle.main.object(forInfoDictionaryKey: "ScribeProviderApplication") as? [String: Any] ?? [:]
-            let enabled = settings["enabled"] as? Bool == true
-            let origins = settings["uploadOrigins"] as? [String] ?? []
-            guard Set(settings.keys).isSubset(of: ["enabled", "uploadOrigins"]),
-                  origins.count <= 1, (!enabled || origins.count == 1),
-                  origins.allSatisfy({ $0.range(of: "^https://[a-z0-9]{3,24}\\.blob\\.core\\.windows\\.net$",
-                                                  options: .regularExpression) != nil }) else {
-                return Self.rejectProvider(call)
-            }
-            call.resolve(["enabled": enabled, "coreOrigin": "https://staging-app.cosmaneura.com",
-                          "uploadOrigins": origins])
+            guard let configuration = Self.providerApplicationConfiguration() else { return Self.rejectProvider(call) }
+            call.resolve(configuration)
         }
     }
 
@@ -518,13 +510,44 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             } else if call.options["appointmentRef"] is NSNull { path = "/notes" }
             else { return Self.rejectProvider(call) }
             #if os(iOS)
-            guard let url = URL(string: "https://staging-app.cosmaneura.com" + path),
+            guard let configuration = Self.providerApplicationConfiguration(),
+                  let origin = configuration["coreOrigin"] as? String,
+                  let url = URL(string: origin + path),
                   await UIApplication.shared.open(url) else { return Self.rejectProvider(call) }
             call.resolve()
             #else
             Self.rejectProvider(call)
             #endif
         }
+    }
+
+    @MainActor private static func providerApplicationConfiguration() -> [String: Any]? {
+        let settings = Bundle.main.object(forInfoDictionaryKey: "ScribeProviderApplication") as? [String: Any] ?? [:]
+        let enabled = settings["enabled"] as? Bool == true
+        let origins = settings["uploadOrigins"] as? [String] ?? []
+        var coreOrigin = "https://staging-app.cosmaneura.com"
+        if let auth = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any],
+           auth["frontendOrigin"] as? String == "https://clerk.cosmaneura.com", settings["profile"] == nil { return nil }
+        if settings["profile"] != nil {
+#if SCRIBE_PRODUCTION_ORGANIZATION && !SCRIBE_VIRTUAL_LAB_NETWORK
+            guard Set(settings.keys) == ["profile", "enabled", "coreOrigin", "uploadOrigins"],
+                  settings["profile"] as? String == "core-production-organization-v1",
+                  settings["coreOrigin"] as? String == "https://app.cosmaneura.com",
+                  let auth = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any],
+                  auth["frontendOrigin"] as? String == "https://clerk.cosmaneura.com",
+                  auth["identityProfile"] as? String == NativeIdentityProfile.clerkOrganization.rawValue,
+                  let receiver = Bundle.main.object(forInfoDictionaryKey: "ScribeProviderReceiver") as? [String: Any],
+                  receiver["profile"] as? String == "core-production-organization-https-v1"
+            else { return nil }
+            coreOrigin = "https://app.cosmaneura.com"
+#else
+            return nil
+#endif
+        } else if !Set(settings.keys).isSubset(of: ["enabled", "uploadOrigins"]) { return nil }
+        guard origins.count <= 1, (!enabled || origins.count == 1),
+              origins.allSatisfy({ $0.range(of: "^https://[a-z0-9]{3,24}\\.blob\\.core\\.windows\\.net$",
+                                              options: .regularExpression) != nil }) else { return nil }
+        return ["enabled": enabled, "coreOrigin": coreOrigin, "uploadOrigins": origins]
     }
 
     @objc nonisolated public func prepareProviderSource(_ call: CAPPluginCall) {

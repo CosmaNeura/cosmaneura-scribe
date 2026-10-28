@@ -6,6 +6,9 @@ must disable proxy-header rewriting. No forwarded identity or client IP grants
 authority. Runtime header behavior still needs installed Azure acceptance.
 """
 
+import re
+from urllib.parse import urlsplit
+
 from cosmaneura_scribe.safe_logging import log_event
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -15,6 +18,7 @@ STAGING_HOST = (
 )
 STAGING_ORIGIN = "https://" + STAGING_HOST
 ACA_PROFILE = "core-staging-aca-v1"
+PRODUCTION_ACA_PROFILE = "core-production-aca-v1"
 _FORWARDING = {b"x-forwarded-for", b"x-forwarded-proto", b"x-forwarded-host", b"x-forwarded-port"}
 # Observed on the deployed ACA HTTPS edge. These values are discarded, never
 # used for TLS, routing, identity or authorization; the actual ASGI path wins.
@@ -23,10 +27,27 @@ _EDGE_HEADERS = _FORWARDING | _DISCARDED_EDGE_METADATA
 
 
 class AzureIngress:
-    def __init__(self, app: ASGIApp, *, profile: str | None = None) -> None:
-        if profile not in (None, ACA_PROFILE):
+    def __init__(
+        self, app: ASGIApp, *, profile: str | None = None, production_origin: str | None = None
+    ) -> None:
+        if profile not in (None, ACA_PROFILE, PRODUCTION_ACA_PROFILE):
+            raise ValueError("provider_ingress_profile_invalid")
+        host = STAGING_HOST
+        if profile == PRODUCTION_ACA_PROFILE:
+            host = urlsplit(production_origin or "").hostname or ""
+            if (
+                production_origin != "https://" + host
+                or "staging" in host
+                or not (
+                    re.fullmatch(r"[a-z0-9][a-z0-9.-]*\.azurecontainerapps\.io", host)
+                    or re.fullmatch(r"[a-z0-9][a-z0-9.-]*\.cosmaneura\.com", host)
+                )
+            ):
+                raise ValueError("provider_ingress_profile_invalid")
+        elif production_origin is not None:
             raise ValueError("provider_ingress_profile_invalid")
         self.app, self.profile = app, profile
+        self._host = host
         self._reported_rejections: set[str] = set()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -43,15 +64,15 @@ class AzureIngress:
             return [value for key, value in headers if key.lower() == name]
 
         invalid = (
-            self.profile != ACA_PROFILE
+            self.profile not in (ACA_PROFILE, PRODUCTION_ACA_PROFILE)
             or scope["type"] != "http"
             or scope.get("scheme") != "http"
             or scope.get("root_path", "") != ""
-            or values(b"host") != [STAGING_HOST.encode("ascii")]
+            or values(b"host") != [self._host.encode("ascii")]
             or values(b"x-forwarded-proto") != [b"https"]
             or (
                 b"x-forwarded-host" in names
-                and values(b"x-forwarded-host") != [STAGING_HOST.encode("ascii")]
+                and values(b"x-forwarded-host") != [self._host.encode("ascii")]
             )
             or (b"x-forwarded-port" in names and values(b"x-forwarded-port") != [b"443"])
             or any(names.count(name) > 1 for name in _EDGE_HEADERS)
@@ -67,16 +88,16 @@ class AzureIngress:
             # At most one event per fixed rejection class per process. Never log
             # request values, tokens, URLs, IP addresses or caller-selected names.
             for reason, rejected in (
-                ("IngressProfile", self.profile != ACA_PROFILE),
+                ("IngressProfile", self.profile not in (ACA_PROFILE, PRODUCTION_ACA_PROFILE)),
                 ("IngressScope", scope["type"] != "http"),
                 ("IngressScheme", scope.get("scheme") != "http"),
                 ("IngressRootPath", scope.get("root_path", "") != ""),
-                ("IngressHost", values(b"host") != [STAGING_HOST.encode("ascii")]),
+                ("IngressHost", values(b"host") != [self._host.encode("ascii")]),
                 ("IngressForwardedProto", values(b"x-forwarded-proto") != [b"https"]),
                 (
                     "IngressForwardedHost",
                     b"x-forwarded-host" in names
-                    and values(b"x-forwarded-host") != [STAGING_HOST.encode("ascii")],
+                    and values(b"x-forwarded-host") != [self._host.encode("ascii")],
                 ),
                 (
                     "IngressForwardedPort",
@@ -115,7 +136,7 @@ class AzureIngress:
             return
         # Static external authority after the deployment boundary, never an
         # authority, URL or principal constructed from caller-selected headers.
-        normalized = dict(scope, scheme="https", server=(STAGING_HOST, 443), client=None)
+        normalized = dict(scope, scheme="https", server=(self._host, 443), client=None)
         normalized["headers"] = [
             (key, value) for key, value in headers if key.lower() not in _EDGE_HEADERS
         ]

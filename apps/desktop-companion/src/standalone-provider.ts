@@ -1,7 +1,7 @@
 import type { DesktopRecordingWindow } from "./recording-window.js";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
-import { exact } from "../../capture/src/provider/desktop-host-protocol";
+import { standaloneProviderProfile } from "./standalone-provider-profile.js";
 import { HttpCiphertextUploadTarget } from "../../capture/src/bff/upload-target";
 import type { DesktopProviderOwner } from "./electron-provider-host.js";
 import { NativeProviderClient } from "./native-provider-client.js";
@@ -35,12 +35,7 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
   const root = await realpath(runtime.packageDirectory);
   const profilePath = join(root, "provider-profile.json"), info = await lstat(profilePath);
   if (!info.isFile() || info.isSymbolicLink() || info.size > 8192) throw unavailable();
-  const profile = exact(JSON.parse(await readFile(profilePath, "utf8")),
-    ["schema", "enabled", "coreOrigin", "uploadOrigins", "auth", "audio", "presentation"]);
-  if (profile.schema !== 1 || typeof profile.enabled !== "boolean"
-    || profile.coreOrigin !== "https://staging-app.cosmaneura.com"
-    || !Array.isArray(profile.uploadOrigins) || (profile.enabled ? profile.uploadOrigins.length !== 1 : profile.uploadOrigins.length > 1)
-    || profile.uploadOrigins.some(value => typeof value !== "string" || !/^https:\/\/[a-z0-9]{3,24}\.blob\.core\.windows\.net$/u.test(value))) throw unavailable();
+  const profile = standaloneProviderProfile(JSON.parse(await readFile(profilePath, "utf8")));
   const [authOptions, audioOptions, presentationOptions] = await resolveStandaloneNativeHelpers(root, {
     auth: profile.auth, audio: profile.audio, presentation: profile.presentation,
   });
@@ -61,12 +56,12 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
       const run = (async () => {
         const linked = AbortSignal.any([signal, abort.signal, native.signal]);
         if (profile.enabled !== true || linked.aborted || !native.isReady()) throw unavailable();
-        const uploadTarget = new HttpCiphertextUploadTarget(profile.uploadOrigins as string[], fetch, "azure_block_blob");
+        const uploadTarget = new HttpCiphertextUploadTarget(profile.uploadOrigins, fetch, "azure_block_blob");
         const backend = await connectDesktopNativeBackend(native, { signal: linked, uploadTarget, diagnostics,
           creationRecords: async (recoveryScope, signal) => {
             const directory = join(runtime.userDataDirectory, "provider-creation-v1");
             // A separate encrypted namespace, scoped to Core's reviewed account.
-            const workspaceId = "56f527ab-0caf-459b-bda9-cf7f0ca2f709";
+            const workspaceId = profile.workspaceId;
             const custody = await openDeviceCustody(directory, runtime.protection, { recoveryScope, workspaceId }, signal);
             try {
               const store = await DurableDesktopRecordStore.open({ directory, recoveryScope, workspaceId, key: custody.key });
@@ -78,7 +73,7 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
           openCore: async appointment => {
             if (linked.aborted) throw unavailable();
             const path = appointment === null ? "/notes" : "/notes/" + encodeURIComponent(appointment);
-            await runtime.openExternal("https://staging-app.cosmaneura.com" + path);
+            await runtime.openExternal(profile.coreOrigin + path);
           } });
         diagnostics("backend_ready");
         let presentation: NativeProviderPresentation | undefined;
