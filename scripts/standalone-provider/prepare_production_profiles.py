@@ -76,6 +76,7 @@ def project(value: dict) -> dict:
         "organizationId": config.production.organization_id,
         "audience": config.production.audience,
         "sessionClaimsReceiptSha256": config.production.session_claims_receipt_sha256,
+        "nativePolicyReceiptSha256": config.production.native_policy_receipt_sha256,
     }
     wire = {
         "profile": "core-production-organization-https-v1",

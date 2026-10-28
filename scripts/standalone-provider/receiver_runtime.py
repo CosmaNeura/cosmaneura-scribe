@@ -45,6 +45,7 @@ class ProductionReceiverBinding(BaseModel):
     organization_id: str
     deployment_receipt_sha256: str
     session_claims_receipt_sha256: str
+    native_policy_receipt_sha256: str
     protected_data_receipt_sha256: str
 
     @model_validator(mode="after")
@@ -63,6 +64,7 @@ class ProductionReceiverBinding(BaseModel):
             or not re.fullmatch(r"org_[A-Za-z0-9_]{1,251}", self.organization_id)
             or not re.fullmatch(r"[0-9a-f]{64}", self.deployment_receipt_sha256)
             or not re.fullmatch(r"[0-9a-f]{64}", self.session_claims_receipt_sha256)
+            or not re.fullmatch(r"[0-9a-f]{64}", self.native_policy_receipt_sha256)
             or not re.fullmatch(r"[0-9a-f]{64}", self.protected_data_receipt_sha256)
         ):
             raise ValueError("receiver_production_binding_invalid")
@@ -148,8 +150,10 @@ def load_configuration(path: Path) -> ReceiverConfiguration:
     raise RuntimeError("receiver_configuration_unavailable") from None
 
 
-def identity_arguments(config: ReceiverConfiguration, platform: str) -> tuple[dict, dict]:
-    """Pure composition projection, including the unchanged strict verifier flags."""
+def identity_arguments(
+    config: ReceiverConfiguration, platform: str
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Pure projection of explicit staging or receipt-gated production identity."""
     # These Settings are the standalone adapter's identity projection, not a
     # full OS application activation. Mode/receipt text grants no patient access;
     # the reviewed protected-data deployment and fresh Core authority are needed.
@@ -158,7 +162,7 @@ def identity_arguments(config: ReceiverConfiguration, platform: str) -> tuple[di
     if config.profile == "core-production-organization-v1" and production is None:
         raise RuntimeError("receiver_configuration_unavailable")
     issuer = production.issuer if production else ISSUER
-    settings = dict(
+    settings: dict[str, object] = dict(
         auth_mode="clerk_jwt",
         cosmas_env="synth_os",
         data_mode="authorized_beta" if production else "synthetic",
@@ -177,7 +181,7 @@ def identity_arguments(config: ReceiverConfiguration, platform: str) -> tuple[di
         # explicitly selected. Neither flag changes JWT or Core authority.
         settings["workspace_apple_local_transport_enabled"] = platform == "ios"
         settings["workspace_desktop_local_transport_enabled"] = platform == "desktop"
-    verifier = dict(
+    verifier: dict[str, object] = dict(
         core_provider_session=production is None,
         allow_native_session_without_origin=production is None and platform == "ios",
         allow_staging_desktop_session_without_origin=(
@@ -186,6 +190,11 @@ def identity_arguments(config: ReceiverConfiguration, platform: str) -> tuple[di
             and config.desktop_native_session_without_origin
         ),
     )
+    if production:
+        verifier.update(
+            production_native_origin=origin,
+            production_native_policy_receipt_sha256=production.native_policy_receipt_sha256,
+        )
     return settings, verifier
 
 

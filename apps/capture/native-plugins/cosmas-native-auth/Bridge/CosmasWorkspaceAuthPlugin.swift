@@ -119,8 +119,10 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                 }
                 let configuration = try NativeClerkConfiguration(publishableKey: key, frontendOrigin: origin,
                     organizationID: organization, bundleIdentifier: bundle, identityProfile: profile,
-                    sessionClaimsReceiptSHA256: settings["sessionClaimsReceiptSha256"] as? String)
-                let policy = try NativeTokenPolicy(issuer: origin, audience: audience, identityProfile: profile)
+                    sessionClaimsReceiptSHA256: settings["sessionClaimsReceiptSha256"] as? String,
+                    nativePolicyReceiptSHA256: settings["nativePolicyReceiptSha256"] as? String)
+                let policy = try NativeTokenPolicy(issuer: origin, audience: audience, identityProfile: profile,
+                    productionNativePolicyReceiptSHA256: configuration.nativePolicyReceiptSHA256)
                 auth = NativeWorkspaceAuth(enabled: true, organizationID: organization, tokenPolicy: policy,
                     driver: {
                         let driver = W13ObservedAuthDriver(

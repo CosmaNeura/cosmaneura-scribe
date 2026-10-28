@@ -6,8 +6,11 @@ It is disabled by default, starts no listener and is not registered in the Scrib
 production API. No real Core origin, workload credential, account correspondence,
 standalone native endpoint or release has been configured by this increment.
 
-`prepare_sources.py` copies twelve unchanged, hash-verified identity/model files
-from the qualified W13 build-4 receiver into a new owned source directory. It
+`prepare_sources.py` copies twelve hash-verified identity/model files from the
+qualified W13 build-4 receiver into a new owned source directory. Its default
+path is unchanged. The explicit `--production-native-policy` path applies the
+reviewed production verifier patch only to the exact pinned auth input, with
+zero fuzz and fixed input/patch/output hashes recorded in the manifest. It
 copies no runtime configuration, credentials, database or TLS material. The
 receiver imports this frozen package and the current Scribe Core transport. It
 does not import Core's application/startup or edit the OS/Core checkouts.

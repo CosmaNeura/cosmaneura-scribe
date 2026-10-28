@@ -1,6 +1,6 @@
 # ADR 0091: Explicit dormant production organization composition
 
-Status: proposed; production policy and activation unapproved.
+Status: accepted for dormant source; production activation remains unapproved.
 
 Use explicit sealed production build/runtime inputs to compose the existing Core
 and strict organizational Clerk path. Keep the staging profile backward compatible
@@ -10,10 +10,12 @@ configuration nor environment variables choose a new origin or identity profile.
 Production requires configured audience, actual active organization, current
 session ID and authorized-party binding. Default session tokens support additional
 audience claims; named JWT templates omit session binding and are unsuitable.
-The pinned verifier and current runtime remain strict. The missing native `azp`
-issue requires an explicit security decision, not fabricated claims or a hidden
-exception. An unapplied external native-policy candidate and the stronger PKCE
-alternative are described in the [flight plan](../flight-plans/2026-10-28-production-native-organization.md).
+The approved bounded-beta policy applies a deterministic patch only to the exact
+pinned verifier and selects its missing-`azp` exception only from the production
+compile/profile with an exact evidence-receipt binding. Present wrong/null `azp`
+and every other issuer/audience/organization/session/subject failure remain
+closed. This receipt is not authority or attestation. The stronger PKCE follow-up
+is described in the [flight plan](../flight-plans/2026-10-28-production-native-organization.md).
 
 The profile projector writes disabled unsigned inputs into a new directory. It
 checks matching Box/workspace, key/issuer, Core origin, upload origin and explicit
