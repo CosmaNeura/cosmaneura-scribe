@@ -793,17 +793,40 @@ export class AppiumUI {
       if (!this.sources.participants.length) throw Error('prepared_sources_missing');
       this.assertPauseResumeConfig(scenario);
       const requestedPauseResume = scenario.acceptanceScope?.pauseResume === true, pauseResume = {};
+      const segmentedInput = this.config.target?.role === 'owned-ios-simulator'
+        && this.config.sources?.participants?.some(source => source.kind === 'virtual-microphone');
+      const auditPauseResume = requestedPauseResume || segmentedInput;
       const control = async (action, active) => {
-        if (requestedPauseResume && (pauseResume[action] || action === 'resume' && !pauseResume.pause?.nativeObservation))
+        if (auditPauseResume && (pauseResume[action] || action === 'resume' && !pauseResume.pause?.nativeObservation))
           throw Error('requested_pause_resume_dispatch_order');
-        if (requestedPauseResume) pauseResume[action] = { dispatchCount: 1 };
+        if (auditPauseResume) pauseResume[action] = { dispatchCount: 1 };
+        if (segmentedInput) {
+          const silent = await this.readPausedSource(active);
+          if (action === 'pause') {
+            // SourceGroup has stopped emitting before calling this control.
+            // Drain the recording-only watcher before native Pause changes phase.
+            await this.stopInputWatch();
+            if (this.inputWatchUnsafe) throw Error('virtual_input_scope_changed');
+            this.inputWatch = null; this.inputWatchStop = null;
+            pauseResume.pause.sourceSilence = silent;
+          } else {
+            pauseResume.resume.sourceSilence = silent;
+            pauseResume.resume.inputBeforeResume = await this.inspectPausedInput(pauseResume.pause.nativeObservation, active);
+          }
+        }
         await this.steps(this.config.journey[action], active); await this.check(this.config.journey[action], active);
-        if (requestedPauseResume) {
+        if (auditPauseResume) {
           const native = await this.readRecording(active), expected = action === 'pause' ? 'paused' : 'recording';
           if (native.busy || native.pendingMutation || (this.desktop
             ? native.captureState !== expected || native.phase !== (action === 'pause' ? 'stopped' : 'recording')
             : native.phase !== expected)) throw Error('requested_pause_resume_native_state_missing');
           pauseResume[action].nativeObservation = native;
+        }
+        // A new complete same-recorder/build/HAL proof precedes the source's
+        // resumed scheduling. No source audio runs in the unwatched interval.
+        if (segmentedInput && action === 'resume') {
+          await this.startInputWatch(active);
+          if (this.inputWatchUnsafe) throw Error('virtual_input_scope_changed');
         }
       };
       let result, sourceFailure;
@@ -883,6 +906,48 @@ export class AppiumUI {
     }
   }
   async verifyInputApplication(signal) { return (await verifyBuild(this.config, this.scenario, { signal })).installedApplication; }
+  async readPausedSource(signal) {
+    signal.throwIfAborted();
+    const group = this.sources, prior = group?.evidence?.pause;
+    if (!group?.connected || !group.playing || !Array.isArray(prior) || prior.length !== 1
+        || group.participants?.length !== 1 || group.participants[0].kind !== 'virtual-microphone')
+      throw Error('source_pause_boundary_missing');
+    const states = await group.all(signal, ({ participant }) => participant.status({ signal }));
+    signal.throwIfAborted();
+    const before = prior[0]?.media, current = states[0]?.media, fixture = group.participants[0].fixture;
+    const [from, to] = this.config.sources.quietWindow;
+    if (this.sources !== group || states.length !== 1 || !before || !current
+        || ![before, current].every(value => value.state === 'paused' && value.playing === false && value.completed === false
+          && value.rms === 0 && value.graphKind === 'coreaudio-output' && value.output?.running === true
+          && value.output.deviceUID === 'BlackHole2ch_UID' && value.fixtureSha256 === fixture.sha256
+          && Number.isFinite(value.offsetSeconds) && value.offsetSeconds >= from && value.offsetSeconds <= to)
+        || current.offsetSeconds !== before.offsetSeconds || current.nonzeroOutputFrames !== before.nonzeroOutputFrames
+        || !Number.isFinite(current.observedAtEpochMs) || Math.abs(Date.now() - current.observedAtEpochMs) > 2000)
+      throw Error('source_pause_silence_unconfirmed');
+    return { source: 'current-paused-source-observation', observedAtEpochMs: Date.now(),
+      fixtureSHA256: fixture.sha256, offsetSeconds: current.offsetSeconds, nonzeroOutputFrames: current.nonzeroOutputFrames,
+      sourceObservedAtEpochMs: current.observedAtEpochMs, playing: false, rms: 0 };
+  }
+  async inspectPausedInput(expected, signal) {
+    const active = AbortSignal.any([signal, AbortSignal.timeout(2000)]), started = performance.now();
+    const before = await this.readRecording(active);
+    const unchanged = value => expected && value.phase === 'paused' && value.busy === false
+      && ['runId', 'workspaceId', 'appointmentRef', 'sessionId', 'recorderId'].every(key => value[key] === expected[key])
+      && value.nativeRevision >= expected.nativeRevision
+      && Math.abs(Date.now() - value.browserTimeOriginMs - value.observedAtMonotonicMs) <= 2000;
+    if (!unchanged(before)) throw Error('paused_native_scope_changed');
+    const application = await this.verifyInputApplication(active);
+    if (!application) throw Error('installed_simulator_application_unconfirmed');
+    const input = await this.inspectInputScope(active, false);
+    const after = await this.readRecording(active); active.throwIfAborted();
+    if (!unchanged(after) || after.nativeRevision < before.nativeRevision
+        || input.assessment?.status !== 'OBSERVED_ALLOWED'
+        || ![input.halBefore, input.hal].every(value => Array.isArray(value?.processes)
+          && value.processes.length > 0 && value.processes.every(process => process.runningInput === false)))
+      throw Error('paused_input_not_idle');
+    return { source: 'paused-native-input-observation', before, after, application, input,
+      fullProofDurationMs: performance.now() - started, fullProofLimitMs: 2000 };
+  }
   async assertInputBeforeRecord(signal) {
     if (this.config.target?.role !== 'owned-ios-simulator') return;
     if (!this.output || !this.config.sources?.inputCustody) throw Error('virtual_input_custody_configuration_required');
@@ -915,8 +980,14 @@ export class AppiumUI {
     if (!this.inputWatch) return;
     this.inputWatchStop ??= (async () => {
       const cleanup = await this.inputWatch.stop();
-      const receipt = { source: 'sampled-hal-input-custody', samples: this.inputWatch.samples,
+      const segment = { source: 'sampled-hal-input-custody', samples: this.inputWatch.samples,
         ...(this.inputWatchUnsafeReceipt ? { unsafe: this.inputWatchUnsafeReceipt } : {}), cleanup };
+      this.inputWatchSegments ??= [];
+      const evidenceFile = `hal-input-segment-${this.inputWatchSegments.length + 1}.json`;
+      await atomicJSON(resolve(this.output, evidenceFile), segment);
+      this.inputWatchSegments.push({ evidenceFile, sha256: sha256(JSON.stringify(segment)), receipt: segment });
+      const receipt = { ...segment, samples: this.inputWatchSegments.flatMap(value => value.receipt.samples),
+        segments: this.inputWatchSegments.map(({ evidenceFile, sha256 }) => ({ evidenceFile, sha256 })) };
       await atomicJSON(resolve(this.output, 'hal-input-scope.json'), receipt);
       this.inputWatchSummary = { evidenceFile: 'hal-input-scope.json', sha256: sha256(JSON.stringify(receipt)),
         samples: receipt.samples.length, status: cleanup.status, scope: 'sampled-hal-input-clients-and-simulator-routes',
