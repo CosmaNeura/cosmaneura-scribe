@@ -38,6 +38,8 @@ public struct NativeClerkConfiguration: Sendable, Equatable {
     public let identityProfile: NativeIdentityProfile
     public let bundleIdentifier: String
     public let workspaceOrigin: NativeWorkspaceOrigin
+    public let sessionClaimsReceiptSHA256: String?
+    public let nativePolicyReceiptSHA256: String?
 
     public var callbackURL: String { bundleIdentifier + "://callback" }
 
@@ -52,16 +54,21 @@ public struct NativeClerkConfiguration: Sendable, Equatable {
     public init(publishableKey: String, frontendOrigin: String, organizationID: String?,
                 bundleIdentifier: String, workspaceOrigin: NativeWorkspaceOrigin = .appleWebView,
                 identityProfile: NativeIdentityProfile = .clerkOrganization,
-                sessionClaimsReceiptSHA256: String? = nil) throws {
+                sessionClaimsReceiptSHA256: String? = nil,
+                nativePolicyReceiptSHA256: String? = nil) throws {
         let production = frontendOrigin == "https://clerk.cosmaneura.com"
 #if !SCRIBE_PRODUCTION_ORGANIZATION
         guard !production else { throw NativeAuthError.unavailable }
 #endif
         if production {
-            guard identityProfile == .clerkOrganization, let sessionClaimsReceiptSHA256,
-                  sessionClaimsReceiptSHA256.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
+            guard identityProfile == .clerkOrganization,
+                  let sessionClaimsReceiptSHA256, let nativePolicyReceiptSHA256,
+                  sessionClaimsReceiptSHA256.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+                  nativePolicyReceiptSHA256.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
             else { throw NativeAuthError.unavailable }
-        } else if sessionClaimsReceiptSHA256 != nil { throw NativeAuthError.unavailable }
+        } else if sessionClaimsReceiptSHA256 != nil || nativePolicyReceiptSHA256 != nil {
+            throw NativeAuthError.unavailable
+        }
         switch identityProfile {
         case .clerkOrganization:
             guard let organizationID,
@@ -95,6 +102,8 @@ public struct NativeClerkConfiguration: Sendable, Equatable {
         self.identityProfile = identityProfile
         self.bundleIdentifier = bundleIdentifier
         self.workspaceOrigin = workspaceOrigin
+        self.sessionClaimsReceiptSHA256 = sessionClaimsReceiptSHA256
+        self.nativePolicyReceiptSHA256 = nativePolicyReceiptSHA256
     }
 
     public func prepareFrontendRequest(_ request: inout URLRequest) throws {

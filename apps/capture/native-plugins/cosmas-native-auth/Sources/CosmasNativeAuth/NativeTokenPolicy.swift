@@ -7,10 +7,25 @@ public struct NativeTokenPolicy: Sendable {
     public let audience: String?
     public let identityProfile: NativeIdentityProfile
     public let authorizedParty: String
+    public let productionNativePolicyReceiptSHA256: String?
 
     public init(issuer: String, audience: String?,
                 authorizedParty: String = NativeClerkConfiguration.nativeOrigin,
-                identityProfile: NativeIdentityProfile = .clerkOrganization) throws {
+                identityProfile: NativeIdentityProfile = .clerkOrganization,
+                productionNativePolicyReceiptSHA256: String? = nil) throws {
+        let production = issuer == "https://clerk.cosmaneura.com"
+#if !SCRIBE_PRODUCTION_ORGANIZATION
+        guard !production else { throw NativeAuthError.unavailable }
+#endif
+        if production {
+            guard identityProfile == .clerkOrganization,
+                  let productionNativePolicyReceiptSHA256,
+                  productionNativePolicyReceiptSHA256.range(
+                    of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
+            else { throw NativeAuthError.unavailable }
+        } else if productionNativePolicyReceiptSHA256 != nil {
+            throw NativeAuthError.unavailable
+        }
         switch identityProfile {
         case .clerkOrganization:
             guard let audience, !audience.isEmpty, audience.utf8.count <= 255,
@@ -33,6 +48,7 @@ public struct NativeTokenPolicy: Sendable {
         self.audience = audience
         self.identityProfile = identityProfile
         self.authorizedParty = authorizedParty
+        self.productionNativePolicyReceiptSHA256 = productionNativePolicyReceiptSHA256
     }
 
     public func validate(_ token: String, identity: NativeAuthIdentity, now: Date = Date(),
@@ -40,7 +56,9 @@ public struct NativeTokenPolicy: Sendable {
         guard !nativeSessionWithoutOrigin || authorizedParty == NativeWorkspaceOrigin.appleWebView.rawValue
             || (identityProfile == .coreStagingPersonal
                 && authorizedParty == NativeWorkspaceOrigin.desktopApp.rawValue)
-            || (issuer == "https://clerk.cosmaneura.com" && identityProfile == .clerkOrganization)
+            || (issuer == "https://clerk.cosmaneura.com"
+                && identityProfile == .clerkOrganization
+                && productionNativePolicyReceiptSHA256 != nil)
         else { throw NativeAuthError.tokenUnavailable }
         guard token.utf8.count <= 8192 else { throw NativeAuthError.tokenUnavailable }
         let pieces = token.split(separator: ".", omittingEmptySubsequences: false)
@@ -50,7 +68,9 @@ public struct NativeTokenPolicy: Sendable {
               !kid.isEmpty, kid.utf8.count <= 255,
               claims["iss"] as? String == issuer,
               (claims["azp"] as? String == authorizedParty ||
-               (nativeSessionWithoutOrigin && issuer != "https://clerk.cosmaneura.com" && claims["azp"] == nil)),
+               (nativeSessionWithoutOrigin && claims["azp"] == nil
+                && (issuer != "https://clerk.cosmaneura.com"
+                    || productionNativePolicyReceiptSHA256 != nil))),
               claims["sub"] as? String == identity.userID,
               claims["sid"] as? String == identity.sessionID else { throw NativeAuthError.tokenUnavailable }
         switch identityProfile {
@@ -79,9 +99,11 @@ public struct NativeTokenPolicy: Sendable {
     public func initialWindowExpiration(_ token: String, identity: NativeAuthIdentity,
                                         now: Date = Date()) throws -> Date {
         try validate(token, identity: identity, now: now,
-                     nativeSessionWithoutOrigin: issuer != "https://clerk.cosmaneura.com"
-                       && (identityProfile == .coreStagingPersonal
-                           || authorizedParty == NativeWorkspaceOrigin.appleWebView.rawValue))
+                     nativeSessionWithoutOrigin:
+                       productionNativePolicyReceiptSHA256 != nil
+                       || issuer != "https://clerk.cosmaneura.com"
+                         && (identityProfile == .coreStagingPersonal
+                             || authorizedParty == NativeWorkspaceOrigin.appleWebView.rawValue))
         let pieces = token.split(separator: ".", omittingEmptySubsequences: false)
         guard pieces.count == 3, let claims = object(pieces[1]), let expiration = time(claims["exp"])
         else { throw NativeAuthError.tokenUnavailable }

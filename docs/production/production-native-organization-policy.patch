@@ -1,6 +1,6 @@
 --- a/cosmas_os/api/auth.py
 +++ b/cosmas_os/api/auth.py
-@@ -101,12 +101,40 @@
+@@ -101,12 +101,41 @@
          allow_native_session_without_origin: bool = False,
          allow_staging_desktop_session_without_origin: bool = False,
          core_provider_session: bool = False,
@@ -25,6 +25,7 @@
 +                or set(runtime_settings.authorized_parties) != {production_native_origin}
 +                or set(runtime_settings.allowed_origins) != {production_native_origin}
 +                or runtime_settings.auth_mode != "clerk_jwt"
++                or runtime_settings.cosmas_env != "synth_os"
 +                or runtime_settings.data_mode != "authorized_beta"
 +                or runtime_settings.synth_seed
 +                or runtime_settings.workspace_native_synthetic_enabled
@@ -41,7 +42,7 @@
          if allow_native_session_without_origin and set(runtime_settings.authorized_parties) != {
              "capacitor://localhost"
          }:
-@@ -121,6 +149,7 @@
+@@ -121,6 +150,7 @@
              raise RuntimeError("Desktop native session requires the isolated staging personal profile")
          self._allow_native_session_without_origin = (
              allow_native_session_without_origin or allow_staging_desktop_session_without_origin
@@ -49,3 +50,14 @@
          )
          if (
              not runtime_settings.clerk_jwks_url
+@@ -302,6 +332,9 @@
+         subject = claims.get("sub")
++        session_id = claims.get("sid")
+         authorized_party = claims.get("azp")
+-        if not isinstance(subject, str) or not subject or len(subject) > 255:
++        if (not isinstance(subject, str) or not subject or len(subject) > 255
++                or not isinstance(session_id, str) or not session_id
++                or len(session_id) > 255):
+             raise AuthenticationFailed("invalid bearer token")
+         absent_native_origin = self._allow_native_session_without_origin and "azp" not in claims
+         if not absent_native_origin and (

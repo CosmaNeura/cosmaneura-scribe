@@ -31,35 +31,45 @@ missing native `azp`, and a named template does not solve session binding.
 The pinned `cosmas_os` verifier already permits an explicitly isolated Apple
 session without `azp`, retaining signature/issuer/audience/organization/session
 checks. Its Desktop exception is limited to the staging personal profile. The
-new production runtime deliberately selects **neither exception**. Native tokens
-without `azp` will fail until the separate security decision below is resolved.
+production uses a separate approved exception only when the exact production
+compile/profile and reviewed receipt inputs are selected. Every default and
+staging composition keeps its previous behavior.
 
-## Reviewable native policy alternative — not applied
+## Approved bounded-beta native policy — dormant and receipt-bound
 
-`docs/production/production-native-organization-policy.patch` is a dark candidate
-against pinned external `cosmas_os/api/auth.py` SHA-256
+`docs/production/production-native-organization-policy.patch` is the approved
+bounded-beta source policy against pinned external `cosmas_os/api/auth.py` SHA-256
 `7eac6550c8723f80e558f61c34b6c74b3017e2d8f795344eb5ccd62d1c3fae7d`.
-The production dependency and runtime do not apply or select this patch.
+`prepare_sources.py --production-native-policy` applies it with zero fuzz and
+verifies the patch/input/output hashes. The output verifier SHA-256 is
+`f147c31547a1bacc98b211bdb3c791203e8ac204077792b186e691290f473413`.
+The default preparation path still copies the staging verifier unchanged.
 
-The candidate adds a separate explicit production native-organization selector.
+The patch adds a separate explicit production native-organization selector.
 It accepts missing `azp` only for a deployment-selected singleton Apple or Desktop
 origin, production Clerk issuer/JWKS, authorized-beta data mode, no synthetic
 seeding, a configured audience and real organization, and an explicit reviewed
 policy receipt. A present incorrect/null `azp` still fails. Existing RS256,
-freshness, `sid`, subject and audience/organization verification stay unchanged.
+freshness, subject and audience/organization verification stay unchanged, and a
+non-empty bounded `sid` is required for every accepted production session.
 The default verifier and all staging behavior stay unchanged.
 
 This is a security-policy choice: native session credentials and the configured
 audience identify the signed-in user/session and intended service, not a remotely
 attested executable. The native Origin header is an allowed channel assertion,
-not authority. A stolen bearer remains a bearer. Approving this alternative
-requires reviewing the exact native credential custody, receiver ingress
+not authority. A stolen bearer remains a bearer. Activating this policy requires
+reviewing the exact native credential custody, receiver ingress
 isolation, Entra workload caller/roles, and fresh Core membership/session/consent
 checks as one channel. A receipt string alone grants nothing and proves nothing.
-Core's existing native facade rechecks its Clerk session plus both workload
-policies; this candidate changes no Core authority or practice attestations.
+Any 64-hex value is only a hash binding to separately reviewed build/deployment
+evidence, not authority, executable attestation or replay defense. The exact
+owner-supplied value must survive validated profile projection into both signed
+client settings and receiver configuration. Missing, malformed, staging-profile
+or cross-origin reuse fails closed. Core's existing native facade rechecks its
+Clerk session plus both workload policies; this patch changes no Core authority
+or practice attestations.
 
-The stronger alternative is a Core-issued, single-use, short-lived PKCE handoff
+The stronger follow-up is a Core-issued, single-use, short-lived PKCE handoff
 bound to an actual browser-authenticated session, organization, audience, native
 client and purpose. It needs a new credential protocol, callback replay store and
 receiver admission contract; it is not implemented by this PR and cannot be
@@ -87,10 +97,9 @@ represented as an immediate configuration change.
    requirements. The adapter's data-mode and local-origin fields do not grant
    protected-data permission or declare those general OS gates satisfied. The
    separate adapter deployment review and current Core authority are required.
-3. Independently review the final Scribe source. Merge dormant composition only.
-   If approving the native policy alternative, independently review and merge it
-   in its owning identity repository, pin its exact new digest, add an explicit
-   receiver/client activation contract, and re-review that activation separately.
+3. Independently review the final Scribe source. Merge the dormant source
+   transformation only. Activation, receiver provisioning, signed-client
+   distribution and cohort enrollment remain separate hold points.
 4. Build clients with `SCRIBE_PRODUCTION_ORGANIZATION` in an owned output and
    exact sealed Info/package inputs. Lab-network builds cannot use production
    transport. Desktop's offline builder has an explicit
@@ -114,5 +123,7 @@ production workspace UUID and reject the existing staging namespace.
 
 Focused checks cover unchanged staging composition, missing/mixed production
 bindings, exact edge authority, isolated Desktop namespaces, compile gating and
-strict client claim rejection. Candidate-policy JWT tests must use offline keys
-and a copied pinned source only. Full model/UI matrices are outside this change.
+strict client claim rejection. Patched-policy JWT tests use offline keys and a
+copied pinned source only, including receipt, issuer, audience, organization,
+subject, session, web-origin, expiry/replay and cross-origin cases. Full model/UI
+matrices are outside this change.

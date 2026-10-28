@@ -36,6 +36,7 @@ def production():
         "organization_id": "org_fixture",
         "deployment_receipt_sha256": "1" * 64,
         "session_claims_receipt_sha256": "2" * 64,
+        "native_policy_receipt_sha256": "4" * 64,
         "protected_data_receipt_sha256": "3" * 64,
     }
 
@@ -54,9 +55,14 @@ def test_staging_composition_preserved():
         assert verifier["core_provider_session"] is True
         assert verifier["allow_native_session_without_origin"] is (platform == "ios")
         assert verifier["allow_staging_desktop_session_without_origin"] is (platform == "desktop")
+        assert set(verifier) == {
+            "core_provider_session",
+            "allow_native_session_without_origin",
+            "allow_staging_desktop_session_without_origin",
+        }
 
 
-def test_production_composition_uses_unchanged_strict_organization_verifier():
+def test_production_composition_selects_receipt_gated_native_organization_verifier():
     config = validate(
         configured(profile="core-production-organization-v1", production=production())
     )
@@ -68,7 +74,13 @@ def test_production_composition_uses_unchanged_strict_organization_verifier():
         assert settings["data_mode"] == "authorized_beta"
         assert settings["workspace_apple_local_transport_enabled"] is (platform == "ios")
         assert settings["workspace_desktop_local_transport_enabled"] is (platform == "desktop")
-        assert not any(verifier.values())
+        assert verifier == {
+            "core_provider_session": False,
+            "allow_native_session_without_origin": False,
+            "allow_staging_desktop_session_without_origin": False,
+            "production_native_origin": "capacitor://localhost" if platform == "ios" else "app://cosmas",
+            "production_native_policy_receipt_sha256": "4" * 64,
+        }
 
 
 def test_missing_or_mixed_production_binding_refused(tmp_path):
@@ -91,6 +103,10 @@ def test_missing_or_mixed_production_binding_refused(tmp_path):
         configured(
             profile="core-production-organization-v1",
             production={**production(), "organization_id": ""},
+        ),
+        configured(
+            profile="core-production-organization-v1",
+            production={**production(), "native_policy_receipt_sha256": ""},
         ),
     ]:
         with pytest.raises(ValueError):
@@ -172,6 +188,9 @@ def test_owner_input_projection_stays_disabled_and_preserves_source(tmp_path):
     projected = project(profile_input())
     assert projected["receiver"]["enabled"] is False and projected["desktop"]["enabled"] is False
     assert projected["ios"]["CosmasNativeAuth"]["enabled"] is False
+    assert projected["ios"]["CosmasNativeAuth"]["nativePolicyReceiptSha256"] == "4" * 64
+    assert projected["desktop_auth"]["CosmasNativeAuth"]["nativePolicyReceiptSha256"] == "4" * 64
+    assert projected["receiver"]["production"]["native_policy_receipt_sha256"] == "4" * 64
     assert projected["ios"]["CFBundleIdentifier"] == "com.cosmaneura.scribe.beta"
     assert projected["desktop"]["workspaceId"] == projected["receiver"]["beta_box_id"]
     assert json.loads((output / "status.json").read_text())["production_qualified"] is False
@@ -188,5 +207,9 @@ def test_owner_projection_rejects_staging_key_and_active_input():
         project(value)
     value = profile_input()
     value["receiver"]["enabled"] = True
+    with pytest.raises(ValueError):
+        project(value)
+    value = profile_input()
+    value["receiver"]["production"]["native_policy_receipt_sha256"] = "G" * 64
     with pytest.raises(ValueError):
         project(value)

@@ -58,10 +58,12 @@ import ScribeStorePipe
             let config = try NativeClerkConfiguration(publishableKey: key, frontendOrigin: origin,
                 organizationID: organization, bundleIdentifier: NativeClerkConfiguration.desktopBundleIdentifier,
                 workspaceOrigin: .desktopApp, identityProfile: profile,
-                sessionClaimsReceiptSHA256: settings["sessionClaimsReceiptSha256"] as? String)
+                sessionClaimsReceiptSHA256: settings["sessionClaimsReceiptSha256"] as? String,
+                nativePolicyReceiptSHA256: settings["nativePolicyReceiptSha256"] as? String)
             let policy = try NativeTokenPolicy(issuer: origin, audience: audience,
                 authorizedParty: NativeWorkspaceOrigin.desktopApp.rawValue,
-                identityProfile: profile)
+                identityProfile: profile,
+                productionNativePolicyReceiptSHA256: config.nativePolicyReceiptSHA256)
 #if SCRIBE_MAC_APP_STORE_XPC
             // Signed Store membership was checked before this point. Its auth
             // identity, credential group and source container are distinct from
