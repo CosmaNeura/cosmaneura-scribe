@@ -67,10 +67,11 @@ def selection():
     need(issued.utcoffset() == expires.utcoffset() == UTC.utcoffset(None)
          and issued <= datetime.now(UTC) < expires and 0 < (expires - issued).total_seconds() <= MAX_LIFETIME,
          'root_selection_expired')
-    need(value['webApp'] == value['container'] == 'cosmaneura-staging-app'
+    need(value['webApp'] == 'cosmaneura-staging-app'
+         and value['container'] == 'cosmaneura-staging-app-web'
          and re.fullmatch(r'cosmaneura-staging-app--[a-z0-9-]+', value['revision'])
          and re.fullmatch('[a-z0-9-]{1,160}', value['replica'])
-         and re.fullmatch('sha256:[a-f0-9]{64}', value['image'])
+         and re.fullmatch(r'cosmaneurastagingregistry\.azurecr\.io/cosmaneura/cosmaneura@sha256:[a-f0-9]{64}', value['image'])
          and re.fullmatch('[a-f0-9]{40}', value['coreSource'])
          and re.fullmatch('[a-f0-9]{32}', value['transportNonce']), 'exact_staging_target_required')
     for name in ('worker', 'ack', 'helper', 'boundAzure'):
