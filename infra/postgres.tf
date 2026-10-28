@@ -168,7 +168,7 @@ resource "azurerm_container_app_job" "database_migrations" {
   template {
     container {
       name    = "migrate"
-      image   = "${azurerm_container_registry.scribe.login_server}/${var.container_image_repository}:${var.container_image_tag}"
+      image   = local.application_image
       cpu     = 0.5
       memory  = "1Gi"
       command = ["python"]

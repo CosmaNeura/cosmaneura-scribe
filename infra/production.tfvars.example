@@ -22,6 +22,7 @@ virtual_network_address_space            = ["10.44.0.0/16"]
 private_endpoint_subnet_address_prefixes = ["10.44.1.0/24"]
 container_apps_subnet_address_prefixes   = ["10.44.2.0/23"]
 postgres_subnet_address_prefixes         = ["10.44.4.0/24"]
+production_native_edge_subnet_address_prefixes = ["10.44.6.0/23"]
 
 # Foundation-only review. East US PostgreSQL capacity is still pending and no workload is approved.
 deploy_container_app              = false
@@ -43,6 +44,7 @@ private_terraform_reconciliation_completed = false
 use_postgres_repository           = false
 container_image_repository        = "cosmaneura-scribe-api"
 container_image_tag               = "not-deployed"
+container_image_digest            = "not-deployed"
 postgres_server_name              = "cosmaneura-scribe-prod-pg"
 postgres_database_name            = "cosmaneura_scribe"
 
@@ -55,6 +57,23 @@ enable_workflow_authentication = false
 workflow_api_audience          = "00000000-0000-0000-0000-000000000000"
 trusted_platform_client_id     = "00000000-0000-0000-0000-000000000000"
 enable_capture_protocol        = false
+
+# Native production edge: all controls remain false. The image, existing identity,
+# Core registry database, receipt hashes, and exact binding are founder-supplied
+# only after their separate review. Never place credentials or patient data here.
+deploy_production_native_edge              = false
+enable_production_native_direct_upload     = false
+enable_production_native_receiver          = false
+enable_production_native_encounter_creation = false
+production_native_receiver_image_repository = "cosmaneura-scribe-native-receiver"
+production_native_receiver_image_tag        = "not-deployed"
+production_native_receiver_image_digest     = "not-deployed"
+production_native_receiver_image_contract_sha256 = ""
+production_native_receiver_identity_resource_id   = ""
+production_native_receiver_identity_client_id     = ""
+production_core_registry_postgres_resource_id     = ""
+production_native_upload_policy_receipt_sha256    = ""
+production_native_receiver_binding                = null
 
 connect_parallel_platform_vnet = false
 parallel_platform_vnet_id      = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-prod/providers/Microsoft.Network/virtualNetworks/cosmaneura-prod-parallel-vnet"

@@ -63,11 +63,29 @@ resource "azurerm_storage_account" "audio" {
   infrastructure_encryption_enabled = true
   local_user_enabled                = false
   min_tls_version                   = "TLS1_2"
-  public_network_access_enabled     = false
+  public_network_access_enabled     = var.enable_production_native_direct_upload
   shared_access_key_enabled         = false
 
   blob_properties {
     versioning_enabled = true
+
+    dynamic "cors_rule" {
+      for_each = var.enable_production_native_direct_upload ? [1] : []
+
+      content {
+        allowed_headers = [
+          "content-type",
+          "x-ms-blob-type",
+        ]
+        allowed_methods = ["OPTIONS", "PUT"]
+        allowed_origins = [
+          "app://cosmas",
+          "capacitor://localhost",
+        ]
+        exposed_headers    = ["ETag"]
+        max_age_in_seconds = 300
+      }
+    }
 
     container_delete_retention_policy {
       days = 7

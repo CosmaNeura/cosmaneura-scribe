@@ -146,7 +146,7 @@ resource "azurerm_container_app_job" "speech_smoke" {
   template {
     container {
       name    = "smoke"
-      image   = "${azurerm_container_registry.scribe.login_server}/${var.container_image_repository}:${var.container_image_tag}"
+      image   = local.application_image
       cpu     = 0.5
       memory  = "1Gi"
       command = ["python", "-m", "cosmaneura_scribe.speech_smoke_runner"]

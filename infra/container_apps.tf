@@ -104,12 +104,16 @@ resource "azurerm_private_dns_a_record" "container_apps_wildcard" {
 resource "azurerm_container_app" "api" {
   count = var.deploy_container_app ? 1 : 0
 
-  name                         = local.container_app_name
-  resource_group_name          = local.resource_group_name
-  container_app_environment_id = azurerm_container_app_environment.scribe.id
-  workload_profile_name        = "Consumption"
-  revision_mode                = "Single"
-  max_inactive_revisions       = 3
+  name                = local.container_app_name
+  resource_group_name = local.resource_group_name
+  container_app_environment_id = (
+    var.deploy_production_native_edge
+    ? azurerm_container_app_environment.production_native_edge[0].id
+    : azurerm_container_app_environment.scribe.id
+  )
+  workload_profile_name  = "Consumption"
+  revision_mode          = "Single"
+  max_inactive_revisions = 3
 
   identity {
     type         = "UserAssigned"
@@ -134,13 +138,13 @@ resource "azurerm_container_app" "api" {
   }
 
   template {
-    min_replicas                     = 0
+    min_replicas                     = var.deploy_production_native_edge ? 1 : 0
     max_replicas                     = 1
     termination_grace_period_seconds = 30
 
     container {
       name   = "api"
-      image  = "${azurerm_container_registry.scribe.login_server}/${var.container_image_repository}:${var.container_image_tag}"
+      image  = local.application_image
       cpu    = 0.5
       memory = "1Gi"
 
