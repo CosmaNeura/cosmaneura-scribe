@@ -30,6 +30,28 @@ The proposed globally unique storage, Key Vault, and registry names were availab
 Azure does not reserve names during a check, so availability must be repeated immediately before a
 reviewed apply.
 
+## Automated dark-state contract
+
+`infra/tests/production_receiver_dark.tftest.hcl` uses an OpenTofu mock provider and synthetic
+identifiers, so it does not authenticate to Azure or read remote state. Run it from the repository
+root with:
+
+```bash
+tofu -chdir=infra test -filter=tests/production_receiver_dark.tftest.hcl
+```
+
+The contract proves that the production configuration leaves the API, PostgreSQL, Speech, jobs,
+platform peering, private-DNS platform link, workflow authentication, capture protocol, and
+platform handoff disabled. It also checks that the dormant foundation retains internal-only
+Container Apps ingress, managed-identity-only private storage, and private RBAC-only,
+purge-protected Key Vault custody. Separate negative cases require durable PostgreSQL before a
+production API and require both workflow authentication and PostgreSQL before capture can be
+enabled.
+
+This test is source validation, not an Azure plan or deployment approval. A real production plan
+still requires the isolated production backend, current non-secret Azure identifiers, refreshed
+name/capacity checks, and independent review.
+
 ## Design-plan evidence
 
 An isolated empty-state copy of this production configuration was planned on 2026-08-14 with every
