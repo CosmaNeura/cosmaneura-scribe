@@ -97,6 +97,60 @@ and the still-open standalone identity/runtime/physical acceptance boundary.
 
 ## Standalone startup
 
+### Disabled production image context
+
+`prepare_receiver_image_context.py` is the only supported input path for the
+standalone receiver image. It requires a clean 40-character Git revision, the
+retained qualified identity checkpoint, and digest-pinned references for the
+reviewed uv and Python base tags. It copies the four receiver runtime modules,
+one fixed contract launcher, the tracked API package/build metadata, and the
+twelve qualified identity files.
+The identity preparer selects the receipt-gated production policy, applies its
+patch with zero fuzz, and records the exact input, patch, and output hashes.
+
+The generated context contains the constant `{"schema":1,"enabled":false}`
+sentinel for the offline fail-closed smoke, but the image copies no runtime
+configuration. It contains no credentials, tokens, environment values,
+database bindings, protected data, certificates,
+or production activation receipt. The Dockerfile has no mutable base default,
+installs the exact production dependency lock without development groups, runs
+as `10001:10001`, and leaves source and dependencies owned by root. Supplying
+an active runtime configuration is a separate founder-reviewed deployment
+step; changing the image never activates the receiver.
+
+Prepare and inspect source only (these commands do not build, push, deploy, or
+start a container):
+
+```sh
+python scripts/standalone-provider/prepare_receiver_image_context.py \
+  --repo "$PWD" \
+  --qualified-receiver /absolute/path/to/qualified-receiver \
+  --output /new/absolute/path/receiver-context \
+  --source-revision "$(git rev-parse HEAD)" \
+  --uv-builder-image 'ghcr.io/astral-sh/uv:0.11.32-python3.12-trixie-slim@sha256:<64-hex>' \
+  --python-runtime-image 'docker.io/library/python:3.12-slim-trixie@sha256:<64-hex>'
+python scripts/standalone-provider/check_receiver_image_context.py \
+  --context /new/absolute/path/receiver-context \
+  --expected-source-revision "$(git rev-parse HEAD)"
+```
+
+The checker verifies every context byte, the fixed launcher/server entrypoints,
+non-root user, locked dependencies, receiver-source manifest, transformed
+identity manifest, and disabled configuration. Its in-process ASGI smoke
+replaces runtime construction with a trap and proves a request receives the fail-closed 404
+without importing `cosmas_os`. At deployment, the launcher accepts only the
+closed-world configuration JSON and the SHA-256 of the packaged manifest under
+the two recorded provider environment names. It materializes the exact bytes
+only after rejecting duplicate identity-manifest keys, requiring the exact
+twelve-file identity set, and re-hashing every packaged receiver and identity
+source. It writes with mode 0600, validates the closed-world configuration,
+removes both values from the process environment, and execs the fixed server.
+Missing, extra, changed, or already-materialized input fails before a listener
+starts. The checker uses no network or cloud
+service. A later container build must pass the two recorded digest references
+as build arguments plus the recorded source revision; the resulting image
+digest is the promotion identity. A tag alone is never a deployment input.
+
 `mountNativeProviderIOSApplication(root, { uploadTarget, core })` composes the
 native session, backend, iOS resource host and provider workspace. Supply the
 reviewed existing upload target/Core creation and navigation callbacks; the
