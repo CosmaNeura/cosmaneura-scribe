@@ -13,7 +13,7 @@ resources.
 | Environment | Resource group | State key | VNet |
 | --- | --- | --- | --- |
 | Development | `cosmaneura-scribe-development` | `cosmaneura-scribe/development.tfstate` | `10.42.0.0/16` |
-| Production | `cosmaneura-scribe-production` | `cosmaneura-scribe/production.tfstate` | `10.44.0.0/16` |
+| Production | `cosmaneura-scribe-production` | `cosmaneura-scribe/production.tfstate` | `10.46.0.0/16` |
 
 The checked-in examples contain no credentials. Subscription and tenant IDs are identifiers, not
 secrets, but local `.auto.tfvars` and backend files remain gitignored so operators do not normalize
@@ -29,6 +29,13 @@ latency, residency, failover, and network review.
 The proposed globally unique storage, Key Vault, and registry names were available on 2026-08-14.
 Azure does not reserve names during a check, so availability must be repeated immediately before a
 reviewed apply.
+
+The 2026-10-28 subscription inventory found that the earlier production example's
+`10.44.0.0/16` already belongs to `cosmaneura-scheduling-dev-vnet` and that
+`10.45.0.0/16` belongs to its PostgreSQL VNet. The example now uses the observed-unused
+`10.46.0.0/16`. This is not a reservation: capture a fresh `az network vnet list` inventory and
+run `python3 scripts/check_production_network_overlap.py` immediately before every reviewed plan
+and apply.
 
 ## Automated dark-state contract
 
@@ -109,6 +116,15 @@ resource and must not be used as the expected count for the next plan.
 
 1. Copy `production.backend.hcl.example` and `production.tfvars.example` to their gitignored local
    names. Enter identifiers only; authenticate with Azure CLI or GitHub OIDC—never a client secret.
+   Capture current VNet names, resource groups, and address prefixes as JSON, then require:
+
+   ```bash
+   python3 scripts/check_production_network_overlap.py \
+     --candidate 10.46.0.0/16 --inventory <path>
+   ```
+
+   Any overlap is a stop condition; do not choose a replacement range without a refreshed network
+   review.
 2. Run a full refreshed foundation plan with every deployment flag false. Review the new state
    boundary and verify there are no development resource addresses.
 3. After East US capacity approval, enable only `deploy_postgres_foundation`; review the paid

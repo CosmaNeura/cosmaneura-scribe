@@ -17,12 +17,13 @@ enable_phi_safe_data_plane_diagnostics = false
 log_analytics_retention_in_days         = 30
 log_analytics_daily_quota_gb            = 0.5
 
-# Production is isolated from development's 10.42.0.0/16 boundary.
-virtual_network_address_space            = ["10.44.0.0/16"]
-private_endpoint_subnet_address_prefixes = ["10.44.1.0/24"]
-container_apps_subnet_address_prefixes   = ["10.44.2.0/23"]
-postgres_subnet_address_prefixes         = ["10.44.4.0/24"]
-production_native_edge_subnet_address_prefixes = ["10.44.6.0/23"]
+# Production is isolated from the live 10.42.0.0/16 Scribe development,
+# 10.44.0.0/16 scheduling development, and 10.45.0.0/16 scheduling PostgreSQL boundaries.
+virtual_network_address_space            = ["10.46.0.0/16"]
+private_endpoint_subnet_address_prefixes = ["10.46.1.0/24"]
+container_apps_subnet_address_prefixes   = ["10.46.2.0/23"]
+postgres_subnet_address_prefixes         = ["10.46.4.0/24"]
+production_native_edge_subnet_address_prefixes = ["10.46.6.0/23"]
 
 # Foundation-only review. East US PostgreSQL capacity is still pending and no workload is approved.
 deploy_container_app              = false
