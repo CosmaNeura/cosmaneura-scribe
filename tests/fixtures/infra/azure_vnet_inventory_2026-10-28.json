@@ -1,0 +1,30 @@
+[
+  {
+    "name": "cosmaneura-scheduling-dev-vnet",
+    "prefixes": [
+      "10.44.0.0/16"
+    ],
+    "resourceGroup": "cosmaneura-scheduling-development"
+  },
+  {
+    "name": "cosmaneura-scheduling-dev-postgres-vnet",
+    "prefixes": [
+      "10.45.0.0/16"
+    ],
+    "resourceGroup": "cosmaneura-scheduling-development"
+  },
+  {
+    "name": "cosmaneura-scribe-development-vnet",
+    "prefixes": [
+      "10.42.0.0/16"
+    ],
+    "resourceGroup": "cosmaneura-scribe-development"
+  },
+  {
+    "name": "cosmaneura-staging-scribe-workers-vnet",
+    "prefixes": [
+      "10.240.240.0/22"
+    ],
+    "resourceGroup": "cosmaneura-staging"
+  }
+]

@@ -93,6 +93,11 @@
   subnet and external environment, moves the not-yet-deployed production workflow
   API onto that environment, and enables digest pinning only when the full
   reviewed production binding is supplied.
+- The 2026-10-28 live VNet inventory invalidated the original `10.44.0.0/16`
+  production example because scheduling development already owns that prefix.
+  The corrected example uses the observed-unused `10.46.0.0/16`; it remains
+  unreserved and must pass the checked-in overlap guard against a fresh inventory
+  immediately before every plan and apply.
 - Previous known-good artifact: the current false-default private foundation.
   There is no prior production receiver image or deployable production client
   path to designate as known-good.
