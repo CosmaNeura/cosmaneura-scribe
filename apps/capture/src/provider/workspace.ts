@@ -11,7 +11,7 @@ import { BffCaptureQueueTransport } from "../bff/queue-transport";
 import { HttpCreatorReviewApi, type CreatorReviewView } from "../../../review-ui/src/creator-review-api";
 import { mountCreatorReview, renderNoteTranscript, bindTranscriptTools } from "../../../review-ui/src/creator-review-panel";
 import { bindTranscriptPlayback } from "../../../review-ui/src/passage-playback";
-import { CoreCaptureBff, CoreCaptureClient, requireValue, reference,
+import { CoreCaptureBff, CoreCaptureClient, ProviderEncounterRecoveryError, requireValue, reference,
   type LanguageMode } from "./core-client";
 import { canonical, noteTemplates, parseDraft, pendingSave, resolveNote, checkNoteSave, reviewedSource, sameSource, saveNote,
   preferredNoteTemplate, type CoreDraft, type CoreNoteTemplate, type PendingNoteSave, type ReviewedSource } from "./core-notes";
@@ -19,7 +19,7 @@ import { activeNotePreparation, appendNotePreparationSuccessor, assertProgress, 
 import type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources, ProviderEncounter } from "./workspace-contracts";
 export type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources, ProviderEncounter } from "./workspace-contracts";
 import "./workspace.css";
-import { openingReviewView } from "./opening-review";
+import { openingRecoveryReason, openingReviewView } from "./opening-review";
 import { encounterSetupMarkup } from "./encounter-setup-view";
 import type { EncounterDraft, EncounterSetupState } from "./encounter-setup";
 import { readNoteOpening, type NoteOpening } from "./note-opening";
@@ -136,11 +136,13 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const identity = identityOverride ?? context.encounter.identity;
     return identity?.state === "provisional" ? null : identity?.canonicalPatientRef ?? separateVisitPatientRef;
   };
-  const showSeparateVisitRecovery = (): void => {
+  const showSeparateVisitRecovery = (serverDisposition = false): void => {
     const setup = host.encounterSetup;
     const eligible = separateVisitPatientRef !== null && context?.encounter.patientRef === separateVisitPatientRef && setup;
     const canConfirm = eligible && !separatePatient() && setup.patientMatchJournal && setup.patientCandidates && setup.matchPatient;
-    show(`<h1>Recording access needed on this device</h1><p>If this recording was prepared on another device, continue on that device. Moving an unfinished recording between devices is not supported. If this is the original device, contact support before retrying. Do not remove Scribe or reset its data.</p>
+    show(`<h1>${serverDisposition ? "Start a separate visit" : "Recording access needed on this device"}</h1><p>${serverDisposition
+      ? "This existing visit cannot be continued for recording on this device. Its saved work remains unchanged."
+      : "If this recording was prepared on another device, continue on that device. Moving an unfinished recording between devices is not supported. If this is the original device, contact support before retrying. Do not remove Scribe or reset its data."}</p>
       ${eligible ? '<p>You can start a separate visit here for the same patient. The earlier visit and its saved work will stay unchanged. A new recording starts only after you confirm consent.</p>' : ''}
       ${eligible && separatePatient() ? '<button data-workspace-action="new-visit-same-patient">Start a new visit for this patient</button>' : canConfirm ? '<p>Confirm this patient’s identity before starting another visit.</p><button data-workspace-action="confirm-patient-for-new-visit">Confirm patient details</button>' : ''}
       <button data-workspace-action="encounters">Your encounters</button>`);
@@ -237,6 +239,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           ? "Recording stop could not be confirmed. Stop it in the native app before continuing."
           : error instanceof CaptureDeviceCustodyError
             ? "This device could not confirm access to the recording key or saved recording state. Your saved work is retained."
+          : error instanceof ProviderEncounterRecoveryError
+            ? "This existing visit could not be continued for recording. Its saved work remains unchanged."
             : context && journal.progress?.pendingSave
               ? ""
             : step === "encounter setup" || step === "encounter creation"
@@ -246,7 +250,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
             : openingRef
               ? "This visit could not be opened. Your saved work is retained. Retry opening the visit."
               : `The ${step} could not be confirmed. Your saved work is retained. Return to Your encounters and reopen this encounter to recover.`;
-        if (error instanceof CaptureDeviceCustodyError) {
+        if (error instanceof ProviderEncounterRecoveryError) {
+          showSeparateVisitRecovery(true);
+        } else if (error instanceof CaptureDeviceCustodyError) {
           showSeparateVisitRecovery();
         } else if (context && journal.progress?.pendingSave) {
           showSaveRecovery();
@@ -878,14 +884,28 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       journal = loaded;
       if (recentStates.get(ref)?.sessionId !== loaded.progress?.sessionId) recentStates.delete(ref);
       const first = openingReviewView(opened.openingReview, opened.scope);
+      const prefetchedRecovery = openingRecoveryReason(opened.openingRecovery, opened.scope);
       if (loaded.progress) {
         assertProgress(loaded.progress);
         if (loaded.progress.pendingSave) {
           endOpening(); showSaveRecovery();
         } else if (loaded.progress.sessionId) await recordOrReview(undefined, first ?? undefined, opening.signal, initialAction);
         else { endOpening(); show(`<h1>Recover recording preparation</h1><p>Confirm the original request before starting another recording.</p><button data-workspace-action="admit">Retry preparation</button>`); }
+      } else if (prefetchedRecovery) {
+        const patientRef = opened.encounter.patientRef;
+        if (host.encounterSetup && patientRef && reference(patientRef, "patient")) separateVisitPatientRef = patientRef;
+        throw new ProviderEncounterRecoveryError(prefetchedRecovery);
       } else {
-        const recovered = first === undefined ? await interruptibleRead(client.discoverEncounter(), opening.signal) : first;
+        let recovered: CreatorReviewView | null;
+        try {
+          recovered = first === undefined ? await interruptibleRead(client.discoverEncounter(), opening.signal) : first;
+        } catch (error) {
+          if (error instanceof ProviderEncounterRecoveryError) {
+            const patientRef = opened.encounter.patientRef;
+            if (host.encounterSetup && patientRef && reference(patientRef, "patient")) separateVisitPatientRef = patientRef;
+          }
+          throw error;
+        }
         if (!authorized(n)) return;
         endOpening();
         if (recovered === null) {

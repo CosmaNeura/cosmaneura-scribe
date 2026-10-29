@@ -192,7 +192,8 @@ export class DesktopProviderWorkspaceMain {
             return { encounterId: encounter.id, encounter: opened.encounter, scope: opened.scope,
               ...(opened.signInPreparation ? { signInPreparationSupported: true as const } : {}),
               ...(opened.noteOpeningSupported ? { noteOpeningSupported: true as const } : {}),
-              ...(opened.openingReview ? { openingReview: opened.openingReview } : {}) };
+              ...(opened.openingReview ? { openingReview: opened.openingReview } : {}),
+              ...(opened.openingRecovery ? { openingRecovery: opened.openingRecovery } : {}) };
           } catch (error) { opening.abort(); throw error; }
         } finally { connection.transitioning = false; }
       });
@@ -395,13 +396,16 @@ export class DesktopProviderWorkspaceMain {
         coreCaptureResponseLimit(path.slice(path.lastIndexOf("/") + 1))) }; }
       catch (error) { if (admission) delete encounter.preparationAttempt; throw error; }
     }
-    // Permit one native-sanitized recovery outcome, never arbitrary error content.
-    if (path === "/service/v1/agent/scribe/capture-admissions" && response.status === 409
+    // Permit only closed native-sanitized recovery outcomes, never arbitrary error content.
+    if (["/service/v1/agent/scribe/capture-admissions", "/service/v1/agent/scribe/capture-operations"].includes(path)
+      && response.status === 409
       && response.headers.get("content-type")?.split(";", 1)[0] === "application/json") {
       const failure = object(await readBoundedJson(response, 1024));
       if (signal.aborted) throw unavailable();
-      if (Object.keys(failure).length === 1 && failure.detail === "provider_consent_required") {
-        return { status: 409, body: { detail: "provider_consent_required" } };
+      const allowed = path.endsWith("capture-admissions") ? ["provider_consent_required"]
+        : ["provider_operation_unavailable", "provider_operation_conflict"];
+      if (Object.keys(failure).length === 1 && allowed.includes(String(failure.detail))) {
+        return { status: 409, body: { detail: failure.detail } };
       }
     }
     return { status: response.status, body: null };

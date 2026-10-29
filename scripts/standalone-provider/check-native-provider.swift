@@ -105,6 +105,31 @@ struct CheckNativeProvider {
     }
     @MainActor static func main() async throws {
         var checks = 0
+        // Only the two closed operation dispositions cross the native bridge.
+        do {
+            for (source, expected) in [
+                ("core_provider_operation_unavailable", "provider_operation_unavailable"),
+                ("core_provider_operation_conflict", "provider_operation_conflict"),
+            ] {
+                let reply = ProviderNativeReply(status: 409,
+                    body: Data("{\"detail\":\"\(source)\"}".utf8))
+                let safe = NativeProviderConnection.sanitizedFailure(reply, action: .operation)
+                try require(safe.status == 409 && String(decoding: safe.body, as: UTF8.self)
+                    == "{\"detail\":\"\(expected)\"}")
+                checks += 1
+            }
+            for body in [
+                "{\"detail\":\"core_provider_operation_unavailable\",\"extra\":true}",
+                "{\"detail\":\"core_provider_consent_required\"}",
+                "{\"detail\":\"private-sentinel\"}",
+            ] {
+                let safe = NativeProviderConnection.sanitizedFailure(
+                    ProviderNativeReply(status: 409, body: Data(body.utf8)), action: .operation)
+                try require(String(decoding: safe.body, as: UTF8.self)
+                    == "{\"detail\":\"provider_request_unconfirmed\"}")
+                checks += 1
+            }
+        }
         // Account correlation is exact UTF-8 hashing, scoped to the ready state.
         // It neither reads a token nor exposes the native identity/session tuple.
         do {
@@ -351,6 +376,39 @@ struct CheckNativeProvider {
             if fault == "none" {
                 let mounted = try connection.recordingMount(workspaceID: workspace, bindingRef: binding, revision: revision)
                 try require(mounted.recoveryScope == recovery)
+            } else {
+                do {
+                    _ = try connection.recordingMount(workspaceID: workspace, bindingRef: binding, revision: revision)
+                    try require(false)
+                } catch is CheckFailure { throw CheckFailure.failed } catch {}
+            }
+            connection.close(); checks += 1
+        }
+        for fault in ["none", "disposition", "nonce", "both"] {
+            let (auth, _, wire, connection) = try make()
+            let workspace = UUID(), recoveryScope = UUID(), nonce = UUID().uuidString.lowercased()
+            let binding = "scribe_capture_binding_01j00000000000000000000000"
+            let appointment = "appointment_01j00000000000000000000000", revision = auth.state().revision
+            let body = String(decoding: try JSONSerialization.data(withJSONObject: [
+                "workspace_id": workspace.uuidString.lowercased(), "opening_nonce": nonce,
+            ]), as: UTF8.self)
+            var recovery: [String: Any] = ["contract_version": "1", "workspace_id": workspace.uuidString.lowercased(),
+                "binding_ref": binding, "request_nonce": nonce, "disposition": "provider_operation_unavailable"]
+            if fault == "disposition" { recovery["disposition"] = "provider_request_unconfirmed" }
+            if fault == "nonce" { recovery["request_nonce"] = UUID().uuidString.lowercased() }
+            var value: [String: Any] = ["revision": revision, "workspaceId": workspace.uuidString.lowercased(),
+                "recoveryScope": recoveryScope.uuidString.lowercased(), "bindingRef": binding,
+                "appointmentRef": appointment, "encounter": ["appointmentRef": appointment],
+                "openingRecovery": recovery]
+            if fault == "both" {
+                value["openingReview"] = ["contract_version": "1", "workspace_id": workspace.uuidString.lowercased(),
+                    "binding_ref": binding, "request_nonce": nonce, "operation": "provider_encounter"]
+            }
+            await wire.setResponse(ProviderNativeReply(status: 200, body: try JSONSerialization.data(withJSONObject: value)))
+            _ = try await connection.send(try request(auth, action: "mount", body: body))
+            if fault == "none" {
+                let mounted = try connection.recordingMount(workspaceID: workspace, bindingRef: binding, revision: revision)
+                try require(mounted.recoveryScope == recoveryScope)
             } else {
                 do {
                     _ = try connection.recordingMount(workspaceID: workspace, bindingRef: binding, revision: revision)
