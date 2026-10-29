@@ -200,7 +200,8 @@ def test_runner_uses_a_baked_fail_closed_provider_mirror() -> None:
     assert re.search(r'TF_CLI_CONFIG_FILE\s*=\s*"/workspace/infra/runner/tofurc"', runner)
     assert "tofu providers mirror -platform=linux_amd64 /opt/tofu/providers" in dockerfile
     assert "filesystem_mirror" in tofu_config
-    assert 'include = ["registry.opentofu.org/hashicorp/azurerm"]' in tofu_config
+    assert '"registry.opentofu.org/hashicorp/azurerm"' in tofu_config
+    assert '"registry.opentofu.org/azure/azapi"' in tofu_config
     assert "direct" not in tofu_config
 
 

@@ -75,12 +75,15 @@ contain that label.
    firewall, existing databases, and Scribe foundation state.
 3. Complete a separately reviewed production wrapping-key bootstrap without
    opening the private vault. The applied foundation intentionally omitted
-   `session-audio-wrapping` and its runtime crypto-user grant, while the API
+   `session-audio-wrapping` and its key-scoped runtime Reader grant, while the API
    configuration requires that key URI. Prefer a Terraform-owned ARM
    `Microsoft.KeyVault/vaults/keys@2024-11-01` child resource (RSA-3072,
    `wrapKey`/`unwrapKey`) over a one-off CLI write, retain `prevent_destroy`,
    and bind the grant to its exact ARM ID. Preserve the existing AzureRM
-   data-plane resource for environments where it is already state-owned.
+   data-plane resource for environments where it is already state-owned. The
+   implementation and key-only saved-plan gate are in
+   [the ARM key flight plan](2026-10-29-production-arm-audio-key.md); API unwrap
+   access is never part of that bootstrap.
 4. Inventory existing production Azure Speech/AI resources and prove whether
    they satisfy Scribe's service/region/private-access requirements. Do not create
    another service merely because the dark source supports one.

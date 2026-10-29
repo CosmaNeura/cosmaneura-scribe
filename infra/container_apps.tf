@@ -226,7 +226,7 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "COSMANEURA_SCRIBE_AUDIO_ENCRYPTION_KEY_ID"
-        value = azurerm_key_vault_key.audio.versionless_id
+        value = local.audio_key_versionless_id
       }
 
       dynamic "env" {
