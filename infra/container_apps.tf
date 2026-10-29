@@ -104,16 +104,12 @@ resource "azurerm_private_dns_a_record" "container_apps_wildcard" {
 resource "azurerm_container_app" "api" {
   count = var.deploy_container_app ? 1 : 0
 
-  name                = local.container_app_name
-  resource_group_name = local.resource_group_name
-  container_app_environment_id = (
-    var.deploy_production_native_edge
-    ? azurerm_container_app_environment.production_native_edge[0].id
-    : azurerm_container_app_environment.scribe.id
-  )
-  workload_profile_name  = "Consumption"
-  revision_mode          = "Single"
-  max_inactive_revisions = 3
+  name                         = local.container_app_name
+  resource_group_name          = local.production_workload_resource_group_name
+  container_app_environment_id = local.production_workload_environment_id
+  workload_profile_name        = "Consumption"
+  revision_mode                = "Single"
+  max_inactive_revisions       = 3
 
   identity {
     type         = "UserAssigned"
@@ -126,7 +122,7 @@ resource "azurerm_container_app" "api" {
   }
 
   ingress {
-    external_enabled           = true
+    external_enabled           = !var.deploy_production_existing_host_reuse
     allow_insecure_connections = false
     target_port                = 8020
     transport                  = "auto"
@@ -245,7 +241,7 @@ resource "azurerm_container_app" "api" {
         for_each = var.use_postgres_repository ? [1] : []
         content {
           name  = "COSMANEURA_SCRIBE_DATABASE_HOST"
-          value = azurerm_postgresql_flexible_server.scribe[0].fqdn
+          value = local.production_database_fqdn
         }
       }
 
@@ -254,6 +250,22 @@ resource "azurerm_container_app" "api" {
         content {
           name  = "COSMANEURA_SCRIBE_DATABASE_NAME"
           value = azurerm_postgresql_flexible_server_database.scribe[0].name
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.deploy_production_existing_host_reuse ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_DATABASE_POOL_SIZE"
+          value = "2"
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.deploy_production_existing_host_reuse ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_DATABASE_MAX_OVERFLOW"
+          value = "0"
         }
       }
 
@@ -296,6 +308,17 @@ resource "azurerm_container_app" "api" {
       condition     = var.environment != "production" || var.use_postgres_repository
       error_message = "a production Scribe API cannot use the process-memory repository"
     }
+
+    precondition {
+      condition = (
+        !var.deploy_production_existing_host_reuse ||
+        (
+          local.production_database_server_id == try(var.production_existing_hosting_binding.postgres_server_resource_id, "") &&
+          local.production_database_fqdn == try(var.production_existing_hosting_binding.postgres_server_fqdn, "")
+        )
+      )
+      error_message = "existing-host reuse must bind the API only to the reviewed production PostgreSQL server"
+    }
   }
 
   depends_on = [
@@ -304,5 +327,7 @@ resource "azurerm_container_app" "api" {
     azurerm_role_assignment.runtime_audio_key_reader,
   ]
 
-  tags = local.tags
+  tags = merge(local.tags, {
+    scribe_hosting_mode = var.deploy_production_existing_host_reuse ? "existing-core-host" : "dedicated"
+  })
 }

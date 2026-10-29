@@ -36,7 +36,7 @@ resource "azurerm_private_dns_zone_virtual_network_link" "postgres" {
 }
 
 resource "azurerm_user_assigned_identity" "database_migrations" {
-  count = var.deploy_postgres_foundation ? 1 : 0
+  count = local.production_database_enabled ? 1 : 0
 
   name                = "${local.name_prefix}-database-migrations"
   resource_group_name = local.resource_group_name
@@ -45,7 +45,7 @@ resource "azurerm_user_assigned_identity" "database_migrations" {
 }
 
 resource "azurerm_role_assignment" "database_migrations_acr" {
-  count = var.deploy_postgres_foundation ? 1 : 0
+  count = local.production_database_enabled ? 1 : 0
 
   scope                = azurerm_container_registry.scribe.id
   role_definition_name = "AcrPull"
@@ -105,10 +105,10 @@ resource "azurerm_postgresql_flexible_server_active_directory_administrator" "mi
 }
 
 resource "azurerm_postgresql_flexible_server_database" "scribe" {
-  count = var.deploy_postgres_foundation ? 1 : 0
+  count = local.production_database_enabled ? 1 : 0
 
   name      = var.postgres_database_name
-  server_id = azurerm_postgresql_flexible_server.scribe[0].id
+  server_id = local.production_database_server_id
   charset   = "UTF8"
   collation = "en_US.utf8"
 
@@ -141,12 +141,12 @@ resource "azurerm_container_app_job" "database_migrations" {
   count = var.deploy_database_migration_job ? 1 : 0
 
   name                         = "cosmaneura-scribe-${local.environment_short}-migrate"
-  resource_group_name          = local.resource_group_name
-  location                     = local.resource_group_location
-  container_app_environment_id = azurerm_container_app_environment.scribe.id
+  resource_group_name          = local.production_workload_resource_group_name
+  location                     = local.production_workload_location
+  container_app_environment_id = local.production_workload_environment_id
   workload_profile_name        = "Consumption"
   replica_timeout_in_seconds   = 900
-  replica_retry_limit          = 1
+  replica_retry_limit          = var.deploy_production_existing_host_reuse ? 0 : 1
 
   identity {
     type = "UserAssigned"
@@ -191,7 +191,7 @@ resource "azurerm_container_app_job" "database_migrations" {
 
       env {
         name  = "COSMANEURA_SCRIBE_DATABASE_HOST"
-        value = azurerm_postgresql_flexible_server.scribe[0].fqdn
+        value = local.production_database_fqdn
       }
 
       env {
