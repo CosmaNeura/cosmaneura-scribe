@@ -27,6 +27,15 @@ export interface AdmissionIntent {
 }
 export type CoreOperation = { readonly kind: string; readonly payload?: unknown;
   readonly object_id?: string; readonly lease_id?: string };
+export type ProviderEncounterRecoveryReason = "unavailable" | "conflict";
+
+/** A closed server disposition that permits only the explicit separate-visit recovery UI. */
+export class ProviderEncounterRecoveryError extends Error {
+  constructor(readonly reason: ProviderEncounterRecoveryReason) {
+    super("provider encounter recovery required");
+    this.name = "ProviderEncounterRecoveryError";
+  }
+}
 
 /** Fixed Core facade; never sends demographics, authority claims or transcript text. */
 export class CoreCaptureClient {
@@ -42,8 +51,16 @@ export class CoreCaptureClient {
 
   /** Discover server work when this device has no journal; never infer absence from an error. */
   async discoverEncounter(): Promise<CreatorReviewView | null> {
-    const value = await this.send("capture-operations", { operation: { kind: "provider_encounter" } }, crypto.randomUUID());
-    return parseProviderEncounter(value);
+    try {
+      const value = await this.send("capture-operations", { operation: { kind: "provider_encounter" } }, crypto.randomUUID());
+      return parseProviderEncounter(value);
+    } catch (error) {
+      if (error instanceof BffResponseError && error.status === 409) {
+        if (error.code === "core_capture_operation_unavailable") throw new ProviderEncounterRecoveryError("unavailable");
+        if (error.code === "core_capture_operation_conflict") throw new ProviderEncounterRecoveryError("conflict");
+      }
+      throw error;
+    }
   }
 
   /** Resume server custody before considering another consent submission. */
@@ -150,6 +167,19 @@ export class CoreCaptureClient {
         requireValue(!signal.aborted);
         if (record(failure) && Object.keys(failure).length === 1 && failure.detail === "provider_consent_required") {
           throw new BffResponseError(409, "core_capture_consent_required", null);
+        }
+      }
+      if (action === "capture-operations" && response.status === 409
+        && response.headers.get("content-type")?.split(";", 1)[0] === "application/json") {
+        const failure: unknown = await readBoundedJson(response, 1024);
+        requireValue(!signal.aborted);
+        if (record(failure) && Object.keys(failure).length === 1) {
+          if (failure.detail === "provider_operation_unavailable") {
+            throw new BffResponseError(409, "core_capture_operation_unavailable", null);
+          }
+          if (failure.detail === "provider_operation_conflict") {
+            throw new BffResponseError(409, "core_capture_operation_conflict", null);
+          }
         }
       }
       throw new BffResponseError(response.status, "core_capture_unconfirmed", null);

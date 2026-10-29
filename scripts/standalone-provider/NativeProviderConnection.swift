@@ -1748,6 +1748,20 @@ protocol ProviderNativeWire: Sendable {
             return ProviderNativeReply(status: 409,
                 body: Data("{\"detail\":\"provider_consent_required\"}".utf8))
         }
+        if action == .operation, reply.status == 409, reply.body.count <= 1024,
+           let value = try? JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
+           Set(value.keys) == ["detail"], let detail = value["detail"] as? String {
+            let safe: String?
+            switch detail {
+            case "core_provider_operation_unavailable": safe = "provider_operation_unavailable"
+            case "core_provider_operation_conflict": safe = "provider_operation_conflict"
+            default: safe = nil
+            }
+            if let safe {
+                return ProviderNativeReply(status: 409,
+                    body: Data("{\"detail\":\"\(safe)\"}".utf8))
+            }
+        }
         return ProviderNativeReply(status: reply.status,
             body: Data("{\"detail\":\"provider_request_unconfirmed\"}".utf8))
     }

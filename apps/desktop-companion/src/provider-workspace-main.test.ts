@@ -367,6 +367,10 @@ describe("trusted desktop provider workspace", () => {
   });
   it.each([
     ["capture-admissions", 409, { detail: "provider_consent_required" }, { detail: "provider_consent_required" }],
+    ["capture-operations", 409, { detail: "provider_operation_unavailable" }, { detail: "provider_operation_unavailable" }],
+    ["capture-operations", 409, { detail: "provider_operation_conflict" }, { detail: "provider_operation_conflict" }],
+    ["capture-operations", 409, { detail: "provider_operation_unavailable", extra: "untrusted" }, null],
+    ["capture-notes", 409, { detail: "provider_operation_unavailable" }, null],
     ["capture-notes", 409, { detail: "provider_consent_required" }, null],
     ["capture-admissions", 503, { detail: "provider_consent_required" }, null],
     ["capture-admissions", 409, { detail: "provider_consent_required", extra: "untrusted" }, null],
@@ -377,7 +381,8 @@ describe("trusted desktop provider workspace", () => {
       await f.connect(); await f.open();
       f.backend.mockResolvedValueOnce(Response.json(body, { status }));
       const reply = await f.invoke("core", { path: "/service/v1/agent/scribe/" + action, key: crypto.randomUUID(),
-        body: { binding_ref: scope.bindingRef, workspace_id: workspaceId, request_nonce: crypto.randomUUID() } });
+        body: { binding_ref: scope.bindingRef, workspace_id: workspaceId, request_nonce: crypto.randomUUID(),
+          ...(action === "capture-operations" ? { operation: { kind: "provider_encounter" } } : {}) } });
       expect(reply.ok).toBe(true); expect(reply.result).toEqual({ status, body: expected });
     } finally { await f.main.dispose(); }
   });

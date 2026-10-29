@@ -105,6 +105,31 @@ struct CheckNativeProvider {
     }
     @MainActor static func main() async throws {
         var checks = 0
+        // Only the two closed operation dispositions cross the native bridge.
+        do {
+            for (source, expected) in [
+                ("core_provider_operation_unavailable", "provider_operation_unavailable"),
+                ("core_provider_operation_conflict", "provider_operation_conflict"),
+            ] {
+                let reply = ProviderNativeReply(status: 409,
+                    body: Data("{\"detail\":\"\(source)\"}".utf8))
+                let safe = NativeProviderConnection.sanitizedFailure(reply, action: .operation)
+                try require(safe.status == 409 && String(decoding: safe.body, as: UTF8.self)
+                    == "{\"detail\":\"\(expected)\"}")
+                checks += 1
+            }
+            for body in [
+                "{\"detail\":\"core_provider_operation_unavailable\",\"extra\":true}",
+                "{\"detail\":\"core_provider_consent_required\"}",
+                "{\"detail\":\"private-sentinel\"}",
+            ] {
+                let safe = NativeProviderConnection.sanitizedFailure(
+                    ProviderNativeReply(status: 409, body: Data(body.utf8)), action: .operation)
+                try require(String(decoding: safe.body, as: UTF8.self)
+                    == "{\"detail\":\"provider_request_unconfirmed\"}")
+                checks += 1
+            }
+        }
         // Account correlation is exact UTF-8 hashing, scoped to the ready state.
         // It neither reads a token nor exposes the native identity/session tuple.
         do {

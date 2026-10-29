@@ -27,7 +27,8 @@ const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); vi.unstubAllGlobals(); });
 
 function fixture(options: { status?: "created" | "capturing"; patientRef?: string | null; setup?: boolean;
-  state?: () => Promise<EncounterSetupState>; inaccessibleJournal?: boolean; identity?: PatientIdentity } = {}) {
+  state?: () => Promise<EncounterSetupState>; inaccessibleJournal?: boolean; identity?: PatientIdentity;
+  operationFailure?: "unavailable" | "conflict" | "generic" } = {}) {
   vi.stubGlobal("Element", Surface);
   vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "visible" }));
   vi.stubGlobal("ResizeObserver", class { observe(): void {} disconnect(): void {} });
@@ -37,7 +38,11 @@ function fixture(options: { status?: "created" | "capturing"; patientRef?: strin
     ...(options.patientRef === null ? {} : { patientRef: options.patientRef ?? patientRef }) };
   const newEncounter = { ...oldEncounter, appointmentRef: newRef,
     ...(options.identity && options.identity.state !== "provisional" ? { patientRef: options.identity.canonicalPatientRef } : {}) };
-  const request = vi.fn(async () => { throw Error("No capture or note request expected"); });
+  const request = vi.fn(async () => {
+    if (options.operationFailure) return Response.json({ detail: options.operationFailure === "generic"
+      ? "provider_request_unconfirmed" : `provider_operation_${options.operationFailure}` }, { status: 409 });
+    throw Error("No capture or note request expected");
+  });
   const recorder = vi.fn(async () => { throw Error("No recorder expected"); });
   const journal = { load: vi.fn(async () => {
     if (options.inaccessibleJournal) throw new CaptureDeviceCustodyError();
@@ -51,7 +56,7 @@ function fixture(options: { status?: "created" | "capturing"; patientRef?: strin
     const scope = { appointmentRef: encounter.appointmentRef, bindingRef: "scribe_capture_binding_" + suffix,
       workspaceId: fresh ? id(3) : id(1) };
     return { encounter, scope, request, signal: abort.signal, journal: fresh ? newJournal : journal,
-      openingReview: { scope, receivedAt: Date.now(), view: fresh ? null : view }, recorder,
+      ...(!fresh && options.operationFailure ? {} : { openingReview: { scope, receivedAt: Date.now(), view: fresh ? null : view } }), recorder,
       reviewJournal: () => ({ load: async () => null, save: vi.fn(), clear: vi.fn() }), openInCore: vi.fn() };
   };
   const setup = { state: vi.fn<ProviderEncounterSetup["state"]>(options.state ?? (async () => ({
@@ -76,6 +81,24 @@ function fixture(options: { status?: "created" | "capturing"; patientRef?: strin
   };
   return { root, content, click, host, setup, request, recorder, journal, newJournal, abort };
 }
+
+it.each(["unavailable", "conflict"] as const)("offers explicit separate-visit recovery for a closed %s disposition", async operationFailure => {
+  const f = fixture({ operationFailure }); await f.click("open");
+  expect(f.content.innerHTML).toContain("Start a separate visit");
+  expect(f.content.innerHTML).toContain("saved work remains unchanged");
+  expect(f.setup.submit).not.toHaveBeenCalled(); expect(f.journal.save).not.toHaveBeenCalled();
+  await f.click("new-visit-same-patient");
+  expect(f.setup.submit).toHaveBeenCalledOnce();
+  expect(f.content.innerHTML).toContain('name="consent"');
+  expect(f.recorder).not.toHaveBeenCalled(); expect(f.journal.save).not.toHaveBeenCalled();
+});
+
+it("does not offer separate-visit recovery for a generic 409", async () => {
+  const f = fixture({ operationFailure: "generic" }); await f.click("open");
+  expect(f.content.innerHTML).toContain("Visit could not open");
+  expect(f.content.innerHTML).not.toContain('data-workspace-action="new-visit-same-patient"');
+  expect(f.setup.submit).not.toHaveBeenCalled(); expect(f.journal.save).not.toHaveBeenCalled();
+});
 
 it.each(["created", "capturing"] as const)("creates a separate visit for the same patient only after explicit choice from %s", async status => {
   const f = fixture({ status }); await f.click("open");
