@@ -55,6 +55,7 @@ BRIDGE = [
     AUTH / "Bridge" / f"{name}.swift"
     for name in [
         "NativeProviderConnection",
+        "ProviderNativeTimingJournal",
         "ProviderNativeTransport",
         "NativeProviderRecordingService",
         "NativeSourceStartOwner",
@@ -160,14 +161,36 @@ def main() -> None:
         if platform == "ios":
             # Build the real native queue core without its unrelated Capacitor
             # wrapper; its production package retains Swift 5 language mode.
-            queue_sources = sorted((PLUGINS / "secure-queue/ios/Sources/CosmaneuraSecureQueue").glob("*.swift"))
+            queue_sources = sorted(
+                (PLUGINS / "secure-queue/ios/Sources/CosmaneuraSecureQueue").glob("*.swift")
+            )
             queue_flags = [flag for flag in bridge_flags]
             queue_flags[queue_flags.index("-swift-version") + 1] = "5"
-            run("ios-native-queue-module", queue_flags + ["-emit-module", "-module-name", "CosmaneuraSecureQueue",
-                "-emit-module-path", str(target / "CosmaneuraSecureQueue.swiftmodule"),
-                *[str(path) for path in queue_sources if path.name != "SecureQueuePlugin.swift"]])
-            run("ios-run-typecheck", bridge_flags + ["-typecheck", *map(str, BRIDGE),
-                str(AUTH / "Bridge/NativeProviderPassage.swift")])
+            run(
+                "ios-native-queue-module",
+                queue_flags
+                + [
+                    "-emit-module",
+                    "-module-name",
+                    "CosmaneuraSecureQueue",
+                    "-emit-module-path",
+                    str(target / "CosmaneuraSecureQueue.swiftmodule"),
+                    *[
+                        str(path)
+                        for path in queue_sources
+                        if path.name != "SecureQueuePlugin.swift"
+                    ],
+                ],
+            )
+            run(
+                "ios-run-typecheck",
+                bridge_flags
+                + [
+                    "-typecheck",
+                    *map(str, BRIDGE),
+                    str(AUTH / "Bridge/NativeProviderPassage.swift"),
+                ],
+            )
         else:
             executable = str(target / "run-checks")
             run(
@@ -218,6 +241,7 @@ def main() -> None:
                         for name in (
                             "NativeProviderConnection.swift",
                             "ProviderNativeTransport.swift",
+                            "ProviderNativeTimingJournal.swift",
                             "NativeProviderRecordingService.swift",
                             "NativeSourceStartOwner.swift",
                             "NativeSourceProofJournal.swift",

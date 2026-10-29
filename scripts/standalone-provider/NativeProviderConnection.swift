@@ -243,6 +243,9 @@ struct ProviderNativeRequestTiming: Sendable {
     }
 
     func log() {
+        #if os(iOS)
+        ProviderNativeTimingJournal.shared.record(self)
+        #endif
         Self.logger.info("provider_request action=\(action.rawValue, privacy: .public) token_ms=\(tokenMilliseconds) receiver_ms=\(receiverMilliseconds ?? -1) total_ms=\(totalMilliseconds) status=\(status ?? 0) completed=\(completed) server_registry_ms=\(serverTiming?.milliseconds(.registry) ?? -1) server_workload_token_ms=\(serverTiming?.milliseconds(.workload_token) ?? -1) server_core_exchange_ms=\(serverTiming?.milliseconds(.core_exchange) ?? -1) server_core_mount_ms=\(serverTiming?.milliseconds(.core_mount) ?? -1) server_core_binding_ms=\(serverTiming?.milliseconds(.core_binding) ?? -1) server_core_operation_ms=\(serverTiming?.milliseconds(.core_operation) ?? -1) server_core_encounter_lookup_ms=\(serverTiming?.milliseconds(.core_encounter_lookup) ?? -1) server_total_ms=\(serverTiming?.milliseconds(.total) ?? -1)")
         if let core = coreTiming {
             let token = core.measurement(.workflow_token), http = core.measurement(.workflow_http)

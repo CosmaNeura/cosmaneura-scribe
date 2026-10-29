@@ -12,9 +12,14 @@ from pathlib import Path
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--scenario", choices=("source", "desktop-initial-window"), default="source")
-    parser.add_argument("--mac-app-store-xpc", action="store_true",
-                        help="Compile Store identity and run fake-storage/owned-filesystem checks only")
+    parser.add_argument(
+        "--scenario", choices=("source", "desktop-initial-window"), default="source"
+    )
+    parser.add_argument(
+        "--mac-app-store-xpc",
+        action="store_true",
+        help="Compile Store identity and run fake-storage/owned-filesystem checks only",
+    )
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -44,9 +49,15 @@ def main() -> None:
             "NativeCaptureProcessFence",
             "DesktopSourceRegistry",
             "check-native-provider",
-            "check-desktop-source" if args.scenario == "source" else "check-native-desktop-initial-window",
+            "check-desktop-source"
+            if args.scenario == "source"
+            else "check-native-desktop-initial-window",
         ]
     ]
+    bridge.append(
+        repo
+        / "apps/capture/native-plugins/cosmas-native-auth/Bridge/ProviderNativeTimingJournal.swift"
+    )
     if args.scenario == "desktop-initial-window":
         # This fixture supplies its own SDK/wire types and entry point.
         bridge.remove(standalone / "check-native-provider.swift")
