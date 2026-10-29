@@ -122,13 +122,13 @@ variable "production_native_receiver_identity_client_id" {
 }
 
 variable "production_core_registry_postgres_resource_id" {
-  description = "Exact Core production PostgreSQL Flexible Server resource ID used by the native receiver and, for the dedicated edge only, its Scribe-side private endpoint."
+  description = "Exact Core production PostgreSQL Flexible Server resource ID used by the receiver and by the dedicated edge/private captured workers through a Scribe-side private endpoint. Core retains server ownership."
   type        = string
   default     = ""
 
   validation {
     condition = (
-      !(var.deploy_production_native_edge || var.deploy_production_existing_host_reuse) ||
+      !(var.deploy_production_native_edge || var.deploy_production_existing_host_reuse || var.deploy_production_captured_workers) ||
       (
         can(regex(
           "^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\\.DBforPostgreSQL/flexibleServers/[^/]+$",
@@ -137,7 +137,8 @@ variable "production_core_registry_postgres_resource_id" {
         startswith(
           lower(var.production_core_registry_postgres_resource_id),
           "/subscriptions/${lower(var.subscription_id)}/resourcegroups/cosmaneura-prod/",
-        )
+        ) &&
+        (!var.deploy_production_captured_workers || lower(var.production_core_registry_postgres_resource_id) == lower("/subscriptions/${var.subscription_id}/resourceGroups/cosmaneura-prod/providers/Microsoft.DBforPostgreSQL/flexibleServers/cosmaneura-prod-postgres"))
       )
     )
     error_message = "production_core_registry_postgres_resource_id must name the existing cosmaneura-prod PostgreSQL server in this subscription"
@@ -199,7 +200,7 @@ variable "enable_production_native_direct_upload" {
     condition = (
       !var.enable_production_native_direct_upload ||
       (
-        var.deploy_production_native_edge &&
+        (var.deploy_production_native_edge || var.prepare_production_existing_host_runtime_network) &&
         can(regex("^[0-9a-f]{64}$", var.production_native_upload_policy_receipt_sha256))
       )
     )
@@ -222,7 +223,7 @@ variable "enable_production_native_receiver" {
     condition = (
       !var.enable_production_native_receiver ||
       (
-        var.deploy_production_native_edge &&
+        (var.deploy_production_native_edge || var.enable_production_existing_host_runtime) &&
         var.enable_capture_protocol &&
         var.enable_production_native_direct_upload
       )
@@ -355,7 +356,7 @@ resource "azurerm_container_app_environment" "production_native_edge" {
 }
 
 resource "azurerm_private_dns_zone" "core_registry_postgres" {
-  count = var.deploy_production_native_edge ? 1 : 0
+  count = local.production_private_data_paths ? 1 : 0
 
   name                = "privatelink.postgres.database.azure.com"
   resource_group_name = local.resource_group_name
@@ -363,7 +364,7 @@ resource "azurerm_private_dns_zone" "core_registry_postgres" {
 }
 
 resource "azurerm_private_dns_zone_virtual_network_link" "core_registry_postgres" {
-  count = var.deploy_production_native_edge ? 1 : 0
+  count = local.production_private_data_paths ? 1 : 0
 
   name                  = "${local.name_prefix}-core-registry-postgres-link"
   resource_group_name   = local.resource_group_name
@@ -374,7 +375,7 @@ resource "azurerm_private_dns_zone_virtual_network_link" "core_registry_postgres
 }
 
 resource "azurerm_private_endpoint" "core_registry_postgres" {
-  count = var.deploy_production_native_edge ? 1 : 0
+  count = local.production_private_data_paths ? 1 : 0
 
   name                = "${local.name_prefix}-core-registry-postgres-pe"
   resource_group_name = local.resource_group_name

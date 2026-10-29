@@ -22,7 +22,8 @@ provider "azapi" {
 }
 
 provider "azurerm" {
-  subscription_id     = var.subscription_id
-  storage_use_azuread = true
+  subscription_id                 = var.subscription_id
+  storage_use_azuread             = true
+  resource_provider_registrations = var.environment == "production" ? "none" : "core"
   features {}
 }

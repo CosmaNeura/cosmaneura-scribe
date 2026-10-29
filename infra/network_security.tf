@@ -16,7 +16,7 @@ resource "azurerm_network_security_group" "private_endpoints" {
   }
 
   dynamic "security_rule" {
-    for_each = var.deploy_production_native_edge ? [1] : []
+    for_each = local.production_private_data_paths ? [1] : []
 
     content {
       name                         = "AllowContainerAppsPostgresInbound"
@@ -26,7 +26,7 @@ resource "azurerm_network_security_group" "private_endpoints" {
       protocol                     = "Tcp"
       source_port_range            = "*"
       destination_port_range       = "5432"
-      source_address_prefixes      = var.production_native_edge_subnet_address_prefixes
+      source_address_prefixes      = concat(var.deploy_production_native_edge ? var.production_native_edge_subnet_address_prefixes : [], var.deploy_production_captured_workers ? var.container_apps_subnet_address_prefixes : [])
       destination_address_prefixes = var.private_endpoint_subnet_address_prefixes
     }
   }
@@ -254,6 +254,21 @@ resource "azurerm_network_security_group" "container_apps" {
     destination_port_range       = "5432"
     source_address_prefix        = "*"
     destination_address_prefixes = var.postgres_subnet_address_prefixes
+  }
+
+  dynamic "security_rule" {
+    for_each = var.deploy_production_captured_workers ? [1] : []
+    content {
+      name                         = "AllowCapturedPrivateCorePostgresOutbound"
+      priority                     = 295
+      direction                    = "Outbound"
+      access                       = "Allow"
+      protocol                     = "Tcp"
+      source_port_range            = "*"
+      destination_port_range       = "5432"
+      source_address_prefixes      = var.container_apps_subnet_address_prefixes
+      destination_address_prefixes = var.private_endpoint_subnet_address_prefixes
+    }
   }
 
   security_rule {
