@@ -208,6 +208,44 @@ struct CheckNativeProvider {
                 try require(timings.last?.coreTiming == currentCore)
             }
             try require(timings.count == 2 && timings.allSatisfy { $0.completed })
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700])
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let file = directory.appendingPathComponent("provider-timing.json")
+            let journal = ProviderNativeTimingJournal(destination: file)
+            for timing in timings { journal.record(timing) }
+            journal.record(ProviderNativeRequestTiming(action: .catalog, tokenMilliseconds: -1,
+                receiverMilliseconds: nil, totalMilliseconds: 1, status: 200,
+                completed: true, serverTiming: nil))
+            journal.record(ProviderNativeRequestTiming(action: .catalog, tokenMilliseconds: 1,
+                receiverMilliseconds: nil, totalMilliseconds: 1, status: 999,
+                completed: true, serverTiming: nil))
+            await journal.flush()
+            let rows = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [[String: Any]]
+            try require(rows.count == 2)
+            let allowed: Set<String> = ["version", "clock", "monotonic_ns", "utc", "action", "token_ms",
+                "receiver_ms", "total_ms", "status", "completed", "server_ms", "core_ms",
+                "core_response_start_only", "core_nonadditive", "dropped_events"]
+            try require(rows.allSatisfy { Set($0.keys).isSubset(of: allowed) })
+            try require(Set((rows[0]["server_ms"] as! [String: Any]).keys)
+                == Set(ProviderServerTiming.Phase.allCases.map(\.rawValue)))
+            try require(rows[0]["core_nonadditive"] as? Bool == true
+                && rows[0]["core_response_start_only"] as? Bool == true)
+            try require(rows[1]["server_ms"] == nil && rows[1]["core_ms"] == nil)
+            let permissions = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as! NSNumber
+            try require(permissions.intValue == 0o600)
+            let first = timings[0]
+            await withTaskGroup(of: Void.self) { group in
+                for _ in 0..<300 { group.addTask { journal.record(first) } }
+            }
+            await journal.flush()
+            let bytes = try Data(contentsOf: file)
+            let bounded = try JSONSerialization.jsonObject(with: bytes) as! [[String: Any]]
+            try require(bytes.count <= ProviderNativeTimingJournal.maximumBytes
+                && bounded.count <= ProviderNativeTimingJournal.maximumEntries)
+            let ticks = bounded.compactMap { ($0["monotonic_ns"] as? String).flatMap(UInt64.init) }
+            try require(ticks.count == bounded.count && ticks == ticks.sorted())
             connection.close(); checks += 1
         }
         for outcome in ["success", "denied", "token-failure", "invalid-reply", "cancelled"] {

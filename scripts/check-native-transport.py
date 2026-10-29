@@ -144,6 +144,7 @@ def main() -> None:
                 "-o",
                 str(executable),
                 str(bridge / "NativeProviderConnection.swift"),
+                str(bridge / "ProviderNativeTimingJournal.swift"),
                 str(bridge / "ProviderNativeTransport.swift"),
                 *[
                     str(owner_sources / filename)
