@@ -25,6 +25,11 @@ but disabled and scaled to zero. Capture, handoff, upload, receiver, encounter,
 Speech, transcription, reconciliation, acceptance, runner, and VNet-connection
 gates must all remain false. Images must be immutable digest bindings.
 
+The workflow API origin is the FQDN returned by the Container App ingress. It is
+not composed from the app name and environment domain: Azure inserts a distinct
+`.internal.` label for internal ingress, while the dedicated public edge has no
+such label.
+
 The database migration identity and job are Scribe-owned. The Core repository
 must separately enable Entra authentication on its existing PostgreSQL server,
 without disabling password authentication, and register that exact migration

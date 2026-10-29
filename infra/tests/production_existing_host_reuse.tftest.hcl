@@ -96,6 +96,15 @@ mock_provider "azurerm" {
   }
 }
 
+override_resource {
+  target = azurerm_container_app.api
+  values = {
+    ingress = {
+      fqdn = "cosmaneura-scribe-prod-api.internal.lemonsmoke-1009414c.northcentralus.azurecontainerapps.io"
+    }
+  }
+}
+
 variables {
   subscription_id         = "00000000-0000-0000-0000-000000000000"
   tenant_id               = "00000000-0000-4000-8000-000000000001"
@@ -219,6 +228,15 @@ run "existing_host_reuse_is_dark_and_creates_no_paid_foundation" {
       }["COSMANEURA_SCRIBE_DATABASE_MAX_OVERFLOW"] == "0"
     )
     error_message = "the existing-host API must remain internal, scaled to zero, immutable, behaviorally dark, and conservatively pooled"
+  }
+
+  assert {
+    condition = (
+      output.production_workflow_api_origin == "https://cosmaneura-scribe-prod-api.internal.lemonsmoke-1009414c.northcentralus.azurecontainerapps.io" &&
+      output.production_workflow_api_origin == "https://${azurerm_container_app.api[0].ingress[0].fqdn}" &&
+      output.production_workflow_api_origin != "https://${local.container_app_name}.${var.production_existing_hosting_binding.container_app_environment_default_domain}"
+    )
+    error_message = "reuse mode must export Azure's actual internal-ingress FQDN, including the distinct internal domain segment, rather than composing an external hostname"
   }
 
   assert {

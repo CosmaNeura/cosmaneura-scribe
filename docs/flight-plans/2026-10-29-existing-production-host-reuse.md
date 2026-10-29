@@ -62,20 +62,33 @@ configuration; it is not load qualification or activation evidence.
    retaining password authentication and register only the Scribe migration UAMI
    as Entra administrator. Do not change existing firewall rules or credentials.
 
+The workflow API origin must come from the Container App ingress resource, not
+from a composed app-name/environment-domain string. Azure inserts an
+`.internal.` label for internal app ingress; the dedicated public edge does not
+contain that label.
+
 ## Required pre-apply gates
 
 1. Merge independently reviewed Scribe and Core source with all reuse/activation
    variables false.
 2. Re-read live resource IDs, domain, egress IP, PostgreSQL version/SKU/auth,
    firewall, existing databases, and Scribe foundation state.
-3. Inventory existing production Azure Speech/AI resources and prove whether
+3. Complete a separately reviewed production wrapping-key bootstrap without
+   opening the private vault. The applied foundation intentionally omitted
+   `session-audio-wrapping` and its runtime crypto-user grant, while the API
+   configuration requires that key URI. Prefer a Terraform-owned ARM
+   `Microsoft.KeyVault/vaults/keys@2024-11-01` child resource (RSA-3072,
+   `wrapKey`/`unwrapKey`) over a one-off CLI write, retain `prevent_destroy`,
+   and bind the grant to its exact ARM ID. Preserve the existing AzureRM
+   data-plane resource for environments where it is already state-owned.
+4. Inventory existing production Azure Speech/AI resources and prove whether
    they satisfy Scribe's service/region/private-access requirements. Do not create
    another service merely because the dark source supports one.
-4. Produce an exact saved production plan. It may add only the isolated database,
+5. Produce an exact saved production plan. It may add only the isolated database,
    one migration identity/ACR pull role, one manual migration job, and two dark
    Scribe apps. Any paid server/environment, deletion, replacement, Core app
    change, public storage/Key Vault change, or activation is an abort condition.
-5. Independently review immutable API/receiver images and the exact plan. Obtain
+6. Independently review immutable API/receiver images and the exact plan. Obtain
    separate authorization before apply.
 
 ## Apply and activation remain separate

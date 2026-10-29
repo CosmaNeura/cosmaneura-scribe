@@ -253,7 +253,7 @@ locals {
   )
   production_workflow_api_origin = (
     local.production_workloads_enabled
-    ? "https://${local.container_app_name}.${local.production_workload_environment_default_domain}"
+    ? "https://${azurerm_container_app.api[0].ingress[0].fqdn}"
     : "https://disabled.invalid"
   )
   application_image = (

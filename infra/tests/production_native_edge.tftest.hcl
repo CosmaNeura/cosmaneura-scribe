@@ -114,6 +114,15 @@ override_resource {
   }
 }
 
+override_resource {
+  target = azurerm_container_app.api
+  values = {
+    ingress = {
+      fqdn = "cosmaneura-scribe-prod-api.synthetic-production.azurecontainerapps.io"
+    }
+  }
+}
+
 variables {
   subscription_id         = "00000000-0000-0000-0000-000000000000"
   tenant_id               = "00000000-0000-4000-8000-000000000001"
@@ -204,6 +213,15 @@ run "edge_is_deployable_but_behaviorally_dark" {
       }["COSMANEURA_SCRIBE_TRUSTED_PLATFORM_CLIENT_ID"] == var.trusted_platform_client_id
     )
     error_message = "the public workflow API must stay warm, use the immutable image, and retain exact Entra authentication"
+  }
+
+  assert {
+    condition = (
+      output.production_workflow_api_origin == "https://cosmaneura-scribe-prod-api.synthetic-production.azurecontainerapps.io" &&
+      output.production_workflow_api_origin == "https://${azurerm_container_app.api[0].ingress[0].fqdn}" &&
+      !strcontains(output.production_workflow_api_origin, ".internal.")
+    )
+    error_message = "the dedicated edge must continue exporting Azure's actual public workflow API ingress FQDN"
   }
 
   assert {
