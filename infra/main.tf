@@ -105,7 +105,15 @@ resource "azurerm_storage_account" "audio" {
   lifecycle {
     precondition {
       condition     = local.production_existing_host_reuse_contract_valid
-      error_message = "existing-host reuse requires exact digest-pinned production images, the isolated cosmaneura_scribe database, PostgreSQL/authenticated dark workloads, and every capture, processing, handoff, upload, receiver, encounter, acceptance, runner, and network activation gate disabled"
+      error_message = "existing-host reuse requires exact digest-pinned images, the isolated cosmaneura_scribe database, authenticated workloads, and only separately qualified existing-host runtime/network gates; legacy processing, handoff, acceptance and runner gates stay disabled"
+    }
+    precondition {
+      condition     = local.production_existing_host_network_contract_valid
+      error_message = "bounded network preparation requires its separately reviewed authenticated ciphertext-upload rung"
+    }
+    precondition {
+      condition     = local.production_existing_host_runtime_contract_valid
+      error_message = "existing-host runtime requires the Core-owned additive Entra auth rung and qualified private workers/cohort; password auth must remain enabled"
     }
   }
 
@@ -127,8 +135,17 @@ resource "azurerm_key_vault" "scribe" {
   sku_name                      = "standard"
   rbac_authorization_enabled    = true
   purge_protection_enabled      = true
-  public_network_access_enabled = false
+  public_network_access_enabled = var.prepare_production_existing_host_runtime_network
   soft_delete_retention_days    = 90
+
+  dynamic "network_acls" {
+    for_each = var.prepare_production_existing_host_runtime_network ? [1] : []
+    content {
+      default_action = "Deny"
+      bypass         = "None"
+      ip_rules       = ["${var.production_existing_hosting_binding.container_apps_outbound_ipv4}/32"]
+    }
+  }
 
   tags = local.tags
 }

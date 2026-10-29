@@ -134,7 +134,7 @@ resource "azurerm_container_app" "api" {
   }
 
   template {
-    min_replicas                     = var.deploy_production_native_edge ? 1 : 0
+    min_replicas                     = var.deploy_production_native_edge || var.enable_production_existing_host_runtime ? 1 : 0
     max_replicas                     = 1
     termination_grace_period_seconds = 30
 
@@ -146,7 +146,7 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "AZURE_TOKEN_CREDENTIALS"
-        value = "prod"
+        value = var.deploy_production_existing_host_reuse ? "ManagedIdentityCredential" : "prod"
       }
 
       env {
@@ -162,6 +162,20 @@ resource "azurerm_container_app" "api" {
       env {
         name  = "COSMANEURA_SCRIBE_CAPTURE_PROTOCOL_ENABLED"
         value = tostring(var.enable_capture_protocol)
+      }
+
+      dynamic "env" {
+        for_each = var.deploy_production_existing_host_reuse ? {
+          COSMANEURA_SCRIBE_CONFIGURED_CAPTURE_ENABLED              = tostring(var.enable_production_existing_host_runtime)
+          COSMANEURA_SCRIBE_CONFIGURED_CAPTURE_CONTINUATION_ENABLED = tostring(var.enable_production_existing_host_runtime)
+          COSMANEURA_SCRIBE_CONFIGURED_CAPTURE_TENANT_IDS           = jsonencode(var.production_capture_tenant_id == "" ? [] : [var.production_capture_tenant_id])
+          COSMANEURA_SCRIBE_TRANSCRIPTION_JOB_ENABLED               = "false"
+          COSMANEURA_SCRIBE_TRANSCRIPTION_BACKEND                   = "none"
+        } : {}
+        content {
+          name  = env.key
+          value = env.value
+        }
       }
 
       dynamic "env" {

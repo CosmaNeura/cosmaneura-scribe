@@ -223,6 +223,22 @@ resource "azurerm_container_app_job" "database_migrations" {
       }
 
       dynamic "env" {
+        for_each = var.deploy_production_captured_workers ? {
+          COSMANEURA_SCRIBE_DATABASE_TRANSCRIPTION_PRINCIPAL_NAME          = azurerm_user_assigned_identity.production_captured["speech"].name
+          COSMANEURA_SCRIBE_DATABASE_TRANSCRIPTION_PRINCIPAL_OBJECT_ID     = azurerm_user_assigned_identity.production_captured["speech"].principal_id
+          COSMANEURA_SCRIBE_DATABASE_TRANSLATION_PRINCIPAL_NAME            = azurerm_user_assigned_identity.production_captured["translation"].name
+          COSMANEURA_SCRIBE_DATABASE_TRANSLATION_PRINCIPAL_OBJECT_ID       = azurerm_user_assigned_identity.production_captured["translation"].principal_id
+          COSMANEURA_SCRIBE_DERIVED_WRITER_DATABASE_PERMISSIONS_ENABLED    = tostring(var.enable_production_captured_database_permissions)
+          COSMANEURA_SCRIBE_CONFIGURED_WORKER_DATABASE_PERMISSIONS_ENABLED = tostring(var.enable_production_captured_database_permissions)
+          COSMANEURA_SCRIBE_CONFIGURED_CAPTURE_TENANT_IDS                  = jsonencode(var.production_capture_tenant_id == "" ? [] : [var.production_capture_tenant_id])
+        } : {}
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
+      dynamic "env" {
         for_each = var.deploy_transcription_job ? [1] : []
         content {
           name  = "COSMANEURA_SCRIBE_DATABASE_TRANSCRIPTION_PRINCIPAL_OBJECT_ID"
@@ -252,6 +268,13 @@ resource "azurerm_container_app_job" "database_migrations" {
     azurerm_postgresql_flexible_server_database.scribe,
     azurerm_role_assignment.database_migrations_acr,
   ]
+
+  lifecycle {
+    precondition {
+      condition     = !var.enable_production_captured_database_permissions || local.production_database_authentication_valid
+      error_message = "configured-capture role bootstrap requires the Core-owned live Entra auth rung with password auth retained"
+    }
+  }
 
   tags = local.tags
 }

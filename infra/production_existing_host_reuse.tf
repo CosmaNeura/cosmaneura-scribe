@@ -19,7 +19,7 @@ variable "production_existing_hosting_binding" {
 
   validation {
     condition = (
-      !var.deploy_production_existing_host_reuse ||
+      !(var.deploy_production_existing_host_reuse || var.prepare_production_existing_host_runtime_network) ||
       try(
         var.production_existing_hosting_binding != null &&
         var.production_existing_hosting_binding.resource_group_name == "cosmaneura-prod" &&
@@ -51,11 +51,11 @@ locals {
       var.deploy_database_migration_job &&
       var.use_postgres_repository &&
       var.enable_workflow_authentication &&
-      !var.enable_capture_protocol &&
+      (!var.enable_capture_protocol || var.enable_production_existing_host_runtime) &&
       !var.enable_master_platform_handoff &&
-      !var.enable_production_native_direct_upload &&
-      !var.enable_production_native_receiver &&
-      !var.enable_production_native_encounter_creation &&
+      (!var.enable_production_native_direct_upload || var.prepare_production_existing_host_runtime_network) &&
+      (!var.enable_production_native_receiver || var.enable_production_existing_host_runtime) &&
+      (!var.enable_production_native_encounter_creation || var.enable_production_existing_host_runtime) &&
       !var.deploy_private_speech_foundation &&
       !var.deploy_speech_smoke_job &&
       !var.enable_speech_smoke_job &&
