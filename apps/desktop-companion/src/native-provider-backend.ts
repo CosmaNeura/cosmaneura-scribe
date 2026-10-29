@@ -1,7 +1,7 @@
 import { scopedSignInPreparation } from "../../capture/src/provider/signin-preparation";
 import { NO_DIAGNOSTICS, type RuntimeDiagnostic, type RuntimeTimingEvent } from "./runtime-diagnostics.js";
 import { parseEncounterDisplay } from "../../capture/src/provider/encounter-display";
-import { openingReviewFromCore } from "../../capture/src/provider/opening-review";
+import { openingResultFromCore } from "../../capture/src/provider/opening-review";
 import type { CiphertextUploadTarget } from "../../capture/src/bff/contracts";
 import type { ProviderEncounter } from "../../capture/src/provider/workspace-contracts";
 import { exact, object, uuid } from "../../capture/src/provider/desktop-host-protocol";
@@ -156,6 +156,7 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
       const encounter = parseEncounter(object(value.encounter));
       if (encounter.appointmentRef !== appointmentRef) throw unavailable();
       const scope = Object.freeze({ workspaceId: row.workspaceId, appointmentRef, bindingRef: value.bindingRef });
+      const openingResult = openingNonce ? openingResultFromCore(scope, openingNonce, value) : {};
       const ownedSources = new Set<string>();
       const mountedSignal = AbortSignal.any([lifetime, signal]);
       mountedSignal.addEventListener("abort", () => { void abandonWindow().catch(() => undefined); }, { once: true });
@@ -188,7 +189,7 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
         }) } : {}),
         ...(object(value.encounter).admission_metadata_v1 === true ? { admissionMetadataSupported: true as const } : {}),
         ...(supportsNoteOpening ? { noteOpeningSupported: true as const } : {}),
-        ...(openingNonce ? { openingReview: openingReviewFromCore(scope, openingNonce, value.openingReview) } : {}),
+        ...openingResult,
         uploadTarget: options.uploadTarget,
         sendFreshInitialWindow: (proof, body, key, operationSignal) => {
           const admission = claimDesktopInitialWindow(proof, { scope, body, key });

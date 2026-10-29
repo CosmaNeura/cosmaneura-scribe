@@ -2,7 +2,7 @@ import { nativePassagePlayer } from "./native-passage";
 import { scopedSignInPreparation } from "./signin-preparation";
 import { parseEncounterDisplay } from "./encounter-display";
 import { speakerNameSuggestion } from "../../../review-ui/src/creator-edit";
-import { openingReviewFromCore } from "./opening-review";
+import { openingResultFromCore } from "./opening-review";
 import { MAX_CHUNKS } from "@cosmaneura-scribe/capture-protocol";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import type { CiphertextUploadTarget } from "../bff/contracts";
@@ -263,6 +263,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       const displayed = encounter(value.encounter);
       if (displayed.appointmentRef !== appointmentRef) throw unavailable();
       const scope = Object.freeze({ workspaceId: row.workspaceId, appointmentRef, bindingRef: value.bindingRef });
+      const openingResult = openingNonce ? openingResultFromCore(scope, openingNonce, value) : {};
       let recordingAuthorization: string | null = null;
       return {
         encounter: displayed, recoveryScope: value.recoveryScope, scope, signal,
@@ -282,7 +283,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
         }) } : {}),
         ...(nativeContextReuse ? { recorderRechecksReview: true as const } : {}),
         ...(supportsNoteOpening ? { noteOpeningSupported: true as const } : {}),
-        ...(openingNonce ? { openingReview: openingReviewFromCore(scope, openingNonce, value.openingReview) } : {}),
+        ...openingResult,
         uploadTarget: options.uploadTarget,
         ...(nativeRecording ? { nativeRecording: {
           open: (sessionId: string, requestId: string) => {

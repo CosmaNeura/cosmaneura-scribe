@@ -79,6 +79,7 @@ export function createProviderIOSHost(backend: ProviderIOSBackend, consentPrepar
         ...(mount.noteOpeningSupported ? { noteOpeningSupported: true as const } : {}),
         ...(mount.recorderRechecksReview === true ? { recorderRechecksReview: true as const } : {}),
         ...(mount.openingReview ? { openingReview: mount.openingReview } : {}),
+        ...(mount.openingRecovery ? { openingRecovery: mount.openingRecovery } : {}),
         ...(mount.playPassage ? { playPassage: (session: string, segment: string, extra: AbortSignal) => {
           current(); return mount.playPassage!(session, segment, extra);
         } } : {}),

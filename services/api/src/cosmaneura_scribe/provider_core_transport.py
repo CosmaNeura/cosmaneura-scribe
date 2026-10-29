@@ -826,7 +826,11 @@ class ProviderCoreTransport:
                                 "core_provider_template_preference_unsupported", 422
                             )
                         if (
-                            path == _ROOT + "capture-admissions"
+                            path
+                            in {
+                                _ROOT + "capture-admissions",
+                                _ROOT + "capture-operations",
+                            }
                             and response.status_code == 409
                             and response.headers.get("X-Cosmaneura-Capture-Version") == "1"
                             and response.headers.get("content-type", "")
@@ -846,12 +850,31 @@ class ProviderCoreTransport:
                                 failure_bytes.extend(chunk)
                             failure = _decode(failure_bytes)
                             if (
-                                failure.get("code") == "CAPTURE_CONSENT_REQUIRED"
+                                path == _ROOT + "capture-admissions"
+                                and failure.get("code") == "CAPTURE_CONSENT_REQUIRED"
                                 and failure.get("status") == 409
                                 and failure.get("retryable") is False
                             ):
                                 await self._context(selection)
                                 raise ProviderCoreUnavailable("core_provider_consent_required", 409)
+                            if path == _ROOT + "capture-operations":
+                                operation_code = {
+                                    "CAPTURE_OPERATION_UNAVAILABLE": (
+                                        "core_provider_operation_unavailable",
+                                        409,
+                                    ),
+                                    "CAPTURE_OPERATION_CONFLICT": (
+                                        "core_provider_operation_conflict",
+                                        409,
+                                    ),
+                                }.get(failure.get("code"))
+                                if (
+                                    operation_code is not None
+                                    and failure.get("status") == 409
+                                    and failure.get("retryable") is False
+                                ):
+                                    await self._context(selection)
+                                    raise ProviderCoreUnavailable(*operation_code)
                         code, result = {
                             409: ("core_provider_conflict", 409),
                             202: ("core_provider_pending", 503),

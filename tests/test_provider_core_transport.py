@@ -1475,6 +1475,68 @@ async def test_consent_renewal_requires_exact_current_core_refusal(connection, v
     assert "private-sentinel" not in str(caught.value)
 
 
+@pytest.mark.parametrize(
+    ("variant", "expected"),
+    [
+        ("unavailable", "core_provider_operation_unavailable"),
+        ("conflict", "core_provider_operation_conflict"),
+        ("other_code", "core_provider_conflict"),
+        ("wrong_status", "core_provider_conflict"),
+        ("retryable", "core_provider_conflict"),
+        ("missing_version", "core_provider_conflict"),
+        ("wrong_content_type", "core_provider_conflict"),
+        ("cacheable", "core_provider_conflict"),
+        ("oversize", "core_provider_receipt_invalid"),
+    ],
+)
+async def test_provider_encounter_preserves_only_closed_recovery_dispositions(
+    connection, variant, expected
+):
+    wire, client = connection
+    mount = await client.open()
+
+    def refusal(path, value):
+        if not path.endswith("capture-operations"):
+            return value
+        headers = {
+            "Cache-Control": "public" if variant == "cacheable" else "no-store",
+            "Content-Type": (
+                "application/json"
+                if variant == "wrong_content_type"
+                else "application/problem+json"
+            ),
+            "X-Cosmaneura-Capture-Version": "1",
+        }
+        if variant == "missing_version":
+            headers.pop("X-Cosmaneura-Capture-Version")
+        code = {
+            "conflict": "CAPTURE_OPERATION_CONFLICT",
+            "other_code": "CAPTURE_REQUEST_CONFLICT",
+        }.get(variant, "CAPTURE_OPERATION_UNAVAILABLE")
+        return httpx.Response(
+            409,
+            headers=headers,
+            json={
+                "code": code,
+                "status": 503 if variant == "wrong_status" else 409,
+                "retryable": variant == "retryable",
+                "detail": "private-sentinel" * (200 if variant == "oversize" else 1),
+            },
+        )
+
+    wire.alter = refusal
+    with pytest.raises(ProviderCoreUnavailable) as caught:
+        await client.request(
+            mount,
+            ROOT + "capture-operations",
+            body(operation={"kind": "provider_encounter"}),
+            "retained-provider-encounter-key",
+        )
+    assert caught.value.code == expected
+    assert caught.value.status == (503 if variant == "oversize" else 409)
+    assert "private-sentinel" not in str(caught.value)
+
+
 async def test_default_off_and_invalid_intents_never_acquire_credentials(connection):
     wire, client = connection
     dark = ProviderCoreTransport(

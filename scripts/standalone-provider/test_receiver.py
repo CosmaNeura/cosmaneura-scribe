@@ -121,6 +121,7 @@ class CoreWire:
         self.review_status = "created"
         self.review_http_status = 200
         self.review_schema_version = "1.0"
+        self.provider_encounter_problem_code = None
         self.alter = lambda _path, _data, result: result
 
     async def handle(self, request):
@@ -222,6 +223,22 @@ class CoreWire:
                             "translation_progress": [],
                         }
                     elif kind == "provider_encounter":
+                        if self.provider_encounter_problem_code is not None:
+                            if self.after:
+                                self.after(path)
+                            return httpx.Response(
+                                409,
+                                headers={
+                                    **headers,
+                                    "Content-Type": "application/problem+json",
+                                },
+                                json={
+                                    "code": self.provider_encounter_problem_code,
+                                    "status": 409,
+                                    "retryable": False,
+                                    "detail": "private-sentinel",
+                                },
+                            )
                         receipt = {
                             "schema_version": "1.0",
                             "status": "not_prepared",
@@ -695,6 +712,81 @@ async def test_optional_opening_read_reuses_setup_and_keeps_legacy_mount(harness
         legacy = await c.post("/provider/v1/mount", json={"workspace_id": h.workspace})
         assert legacy.status_code == 200 and "openingReview" not in legacy.json()
         assert len(h.wire.calls) == 7 and h.wire.operations == ["provider_encounter"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("core_code", "disposition"),
+    [
+        ("CAPTURE_OPERATION_UNAVAILABLE", "provider_operation_unavailable"),
+        ("CAPTURE_OPERATION_CONFLICT", "provider_operation_conflict"),
+    ],
+)
+async def test_opening_refusal_reauthorizes_mount_and_returns_only_closed_recovery(
+    harness, core_code, disposition
+):
+    h = harness
+    h.wire.provider_encounter_problem_code = core_code
+    nonce = str(uuid4())
+    async with client(h) as c:
+        reply = await c.post(
+            "/provider/v1/mount",
+            json={"workspace_id": h.workspace, "opening_nonce": nonce},
+            headers={"Authorization": "Bearer " + h.token(native=True)},
+        )
+    assert reply.status_code == 200
+    value = reply.json()
+    assert value["bindingRef"] == BINDING
+    assert "openingReview" not in value
+    assert value["openingRecovery"] == {
+        "contract_version": "1",
+        "workspace_id": h.workspace,
+        "binding_ref": BINDING,
+        "request_nonce": nonce,
+        "disposition": disposition,
+    }
+    # One refused provider read, followed by a fresh independent mount only.
+    assert h.wire.operations == ["provider_encounter"]
+    assert len(h.wire.calls) == 7
+    assert "private-sentinel" not in reply.text
+
+
+@pytest.mark.asyncio
+async def test_opening_refusal_keeps_unrecognized_conflict_fail_closed(harness):
+    h = harness
+    h.wire.provider_encounter_problem_code = "CAPTURE_REQUEST_CONFLICT"
+    async with client(h) as c:
+        reply = await c.post(
+            "/provider/v1/mount",
+            json={"workspace_id": h.workspace, "opening_nonce": str(uuid4())},
+            headers={"Authorization": "Bearer " + h.token(native=True)},
+        )
+    assert reply.status_code == 409
+    assert "openingRecovery" not in reply.text
+    assert h.wire.operations == ["provider_encounter"]
+
+
+@pytest.mark.asyncio
+async def test_opening_refusal_does_not_reuse_failed_mount_authority(harness):
+    h = harness
+    h.wire.provider_encounter_problem_code = "CAPTURE_OPERATION_UNAVAILABLE"
+    def revoke_after_refusal(path):
+        if path.endswith("capture-operations"):
+            h.mutate(CoreCaptureAccount, h.account, revoked_at=datetime.now(UTC))
+
+    h.wire.after = revoke_after_refusal
+    async with client(h) as c:
+        reply = await c.post(
+            "/provider/v1/mount",
+            json={"workspace_id": h.workspace, "opening_nonce": str(uuid4())},
+            headers={"Authorization": "Bearer " + h.token(native=True)},
+        )
+    assert reply.status_code == 403
+    assert "openingRecovery" not in reply.text
+    # The rejected combined attempt ran, but no second Core mount was attempted
+    # after the independent local authorization was revoked.
+    assert len(h.wire.calls) == 4
+    assert h.wire.operations == ["provider_encounter"]
 
 
 @pytest.mark.asyncio

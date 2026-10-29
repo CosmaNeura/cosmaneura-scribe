@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { longReviewFixture } from "../../../review-ui/src/long-review.fixture";
-import { openingReviewFromCore, openingReviewView, parseOpeningReview } from "./opening-review";
+import { openingRecoveryFromCore, openingRecoveryReason, openingResultFromCore,
+  openingReviewFromCore, openingReviewView, parseOpeningRecovery, parseOpeningReview } from "./opening-review";
 
 const scope = { workspaceId: "10000000-0000-4000-8000-000000000001",
   appointmentRef: "appointment_01j00000000000000000000000", bindingRef: "scribe_capture_binding_01j00000000000000000000000" };
@@ -41,4 +42,28 @@ it.each(["workspaceId", "appointmentRef", "bindingRef"])("rejects %s changed aft
 });
 it.each([NaN, Infinity, -1, "1000"])("rejects an invalid IPC timestamp %s", receivedAt => {
   expect(() => parseOpeningReview({ ...openingReviewFromCore(scope, nonce, receipt()), receivedAt }, scope)).toThrow();
+});
+it.each([
+  ["provider_operation_unavailable", "unavailable"],
+  ["provider_operation_conflict", "conflict"],
+] as const)("carries only the closed opening recovery %s", (disposition, reason) => {
+  const envelope = { contract_version: "1", workspace_id: scope.workspaceId, binding_ref: scope.bindingRef,
+    request_nonce: nonce, disposition };
+  const recovery = openingRecoveryFromCore(scope, nonce, envelope);
+  expect(openingRecoveryReason(parseOpeningRecovery(JSON.parse(JSON.stringify(recovery)), scope), scope)).toBe(reason);
+  expect(openingResultFromCore(scope, nonce, { openingRecovery: envelope })).toEqual({ openingRecovery: recovery });
+});
+it.each([
+  { disposition: "provider_request_unconfirmed" },
+  { disposition: "provider_operation_unavailable", extra: true },
+  { workspace_id: nonce }, { binding_ref: scope.bindingRef + "1" }, { request_nonce: session },
+])("rejects malformed opening recovery: %j", change => {
+  expect(() => openingRecoveryFromCore(scope, nonce, { contract_version: "1", workspace_id: scope.workspaceId,
+    binding_ref: scope.bindingRef, request_nonce: nonce, disposition: "provider_operation_unavailable", ...change })).toThrow();
+});
+it("rejects missing or ambiguous combined opening results", () => {
+  const recovery = { contract_version: "1", workspace_id: scope.workspaceId, binding_ref: scope.bindingRef,
+    request_nonce: nonce, disposition: "provider_operation_unavailable" };
+  expect(() => openingResultFromCore(scope, nonce, {})).toThrow();
+  expect(() => openingResultFromCore(scope, nonce, { openingReview: receipt(), openingRecovery: recovery })).toThrow();
 });

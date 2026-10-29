@@ -1,7 +1,8 @@
 import { webcrypto } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpCreatorReviewApi } from "../../../review-ui/src/creator-review-api";
-import { CoreCaptureClient, CoreCaptureBff, type AdmissionIntent, type CoreCaptureScope, type AuthorizedCoreRequest } from "./core-client";
+import { CoreCaptureClient, CoreCaptureBff, ProviderEncounterRecoveryError,
+  type AdmissionIntent, type CoreCaptureScope, type AuthorizedCoreRequest } from "./core-client";
 import { canonical, parseDraft, pendingSave, resolveNote, checkNoteSave, saveNote, sha256, preferredNoteTemplate, type CoreDraft } from "./core-notes";
 import { NativeProviderWorkspaceJournal, assertProgress, type ProviderProgress } from "./workspace-journal";
 
@@ -82,6 +83,23 @@ describe("configured Core provider boundary", () => {
   it.each([409, 403, 503])("never mistakes failed discovery (%s) for a new encounter", async status => {
     const client = new CoreCaptureClient(scope, async () => new Response(null, { status }), new AbortController().signal);
     await expect(client.discoverEncounter()).rejects.toThrow();
+  });
+  it.each([
+    ["provider_operation_unavailable", "unavailable"],
+    ["provider_operation_conflict", "conflict"],
+  ] as const)("preserves the closed existing-visit recovery disposition %s", async (detail, reason) => {
+    const client = new CoreCaptureClient(scope, async () => Response.json({ detail }, { status: 409 }),
+      new AbortController().signal);
+    await expect(client.discoverEncounter()).rejects.toEqual(new ProviderEncounterRecoveryError(reason));
+  });
+  it.each([
+    { detail: "provider_operation_unavailable", extra: true },
+    { detail: "provider_operation_conflict", extra: true },
+    { detail: "provider_request_unconfirmed" },
+  ])("keeps malformed or unrelated discovery conflicts generic", async failure => {
+    const client = new CoreCaptureClient(scope, async () => Response.json(failure, { status: 409 }),
+      new AbortController().signal);
+    await expect(client.discoverEncounter()).rejects.toMatchObject({ code: "core_capture_unconfirmed" });
   });
   it.each([
     { schema_version: "1.0", status: "available", review: null },
