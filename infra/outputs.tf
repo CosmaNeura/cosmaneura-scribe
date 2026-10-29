@@ -62,11 +62,18 @@ output "parallel_platform_private_dns_link_id" {
 }
 
 output "postgres_fqdn" {
-  value = var.deploy_postgres_foundation ? azurerm_postgresql_flexible_server.scribe[0].fqdn : null
+  value = local.production_database_enabled ? local.production_database_fqdn : null
 }
 
 output "postgres_database_name" {
-  value = var.deploy_postgres_foundation ? azurerm_postgresql_flexible_server_database.scribe[0].name : null
+  value = local.production_database_enabled ? azurerm_postgresql_flexible_server_database.scribe[0].name : null
+}
+
+output "production_workload_hosting_mode" {
+  description = "Production workload placement selected by reviewed configuration; null while production workloads are absent."
+  value = local.production_workloads_enabled ? (
+    var.deploy_production_existing_host_reuse ? "existing-core-host" : "dedicated-native-edge"
+  ) : null
 }
 
 output "database_migration_job_name" {

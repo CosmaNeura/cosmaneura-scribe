@@ -26,6 +26,7 @@ postgres_subnet_address_prefixes         = ["10.46.4.0/24"]
 production_native_edge_subnet_address_prefixes = ["10.46.6.0/23"]
 
 # Foundation-only review. East US PostgreSQL capacity is still pending and no workload is approved.
+deploy_production_existing_host_reuse = false
 deploy_container_app              = false
 deploy_postgres_foundation        = false
 deploy_database_migration_job     = false
@@ -75,6 +76,19 @@ production_native_receiver_identity_client_id     = ""
 production_core_registry_postgres_resource_id     = ""
 production_native_upload_policy_receipt_sha256    = ""
 production_native_receiver_binding                = null
+
+# Existing-host reuse is a separate, false-by-default alternative to the
+# dedicated native edge. These selectors are non-secret live resource facts;
+# populating them does not authorize a plan or apply.
+production_existing_hosting_binding = {
+  resource_group_name                      = "cosmaneura-prod"
+  location                                 = "northcentralus"
+  container_app_environment_id             = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/managedEnvironments/cosmaneura-prod-app-environment"
+  container_app_environment_default_domain = "lemonsmoke-1009414c.northcentralus.azurecontainerapps.io"
+  container_apps_outbound_ipv4             = "64.236.176.41"
+  postgres_server_resource_id              = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.DBforPostgreSQL/flexibleServers/cosmaneura-prod-postgres"
+  postgres_server_fqdn                     = "cosmaneura-prod-postgres.postgres.database.azure.com"
+}
 
 connect_parallel_platform_vnet = false
 parallel_platform_vnet_id      = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-prod/providers/Microsoft.Network/virtualNetworks/cosmaneura-prod-parallel-vnet"

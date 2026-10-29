@@ -8,6 +8,7 @@ variable "deploy_production_native_edge" {
       !var.deploy_production_native_edge ||
       (
         var.environment == "production" &&
+        !var.deploy_production_existing_host_reuse &&
         var.deploy_container_app &&
         var.deploy_postgres_foundation &&
         var.deploy_database_migration_job &&
@@ -90,7 +91,7 @@ variable "production_native_receiver_identity_resource_id" {
 
   validation {
     condition = (
-      !var.deploy_production_native_edge ||
+      !(var.deploy_production_native_edge || var.deploy_production_existing_host_reuse) ||
       (
         can(regex(
           "^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\\.ManagedIdentity/userAssignedIdentities/[^/]+$",
@@ -113,7 +114,7 @@ variable "production_native_receiver_identity_client_id" {
 
   validation {
     condition = (
-      !var.deploy_production_native_edge ||
+      !(var.deploy_production_native_edge || var.deploy_production_existing_host_reuse) ||
       can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", var.production_native_receiver_identity_client_id))
     )
     error_message = "production_native_receiver_identity_client_id must be the exact existing UAMI client UUID"
@@ -121,13 +122,13 @@ variable "production_native_receiver_identity_client_id" {
 }
 
 variable "production_core_registry_postgres_resource_id" {
-  description = "Exact Core production PostgreSQL Flexible Server resource ID used only to create the Scribe-side private endpoint."
+  description = "Exact Core production PostgreSQL Flexible Server resource ID used by the native receiver and, for the dedicated edge only, its Scribe-side private endpoint."
   type        = string
   default     = ""
 
   validation {
     condition = (
-      !var.deploy_production_native_edge ||
+      !(var.deploy_production_native_edge || var.deploy_production_existing_host_reuse) ||
       (
         can(regex(
           "^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\\.DBforPostgreSQL/flexibleServers/[^/]+$",
@@ -165,7 +166,7 @@ variable "production_native_receiver_binding" {
 
   validation {
     condition = (
-      !var.deploy_production_native_edge ||
+      !(var.deploy_production_native_edge || var.deploy_production_existing_host_reuse) ||
       (
         try(var.production_native_receiver_binding != null, false) &&
         can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", try(var.production_native_receiver_binding.environment_id, ""))) &&
@@ -246,17 +247,17 @@ locals {
   production_native_edge_name       = "${local.name_prefix}-native-edge-environment"
   production_native_edge_managed_rg = "${local.name_prefix}-native-edge-managed"
   production_native_receiver_origin = (
-    var.deploy_production_native_edge
-    ? "https://${local.production_native_receiver_name}.${azurerm_container_app_environment.production_native_edge[0].default_domain}"
+    local.production_workloads_enabled
+    ? "https://${local.production_native_receiver_name}.${local.production_workload_environment_default_domain}"
     : "https://disabled.invalid"
   )
   production_workflow_api_origin = (
-    var.deploy_production_native_edge
-    ? "https://${local.container_app_name}.${azurerm_container_app_environment.production_native_edge[0].default_domain}"
+    local.production_workloads_enabled
+    ? "https://${azurerm_container_app.api[0].ingress[0].fqdn}"
     : "https://disabled.invalid"
   )
   application_image = (
-    var.deploy_production_native_edge
+    local.production_workloads_enabled
     ? "${azurerm_container_registry.scribe.login_server}/${var.container_image_repository}@${var.container_image_digest}"
     : "${azurerm_container_registry.scribe.login_server}/${var.container_image_repository}:${var.container_image_tag}"
   )
@@ -272,7 +273,7 @@ locals {
     local.production_native_receiver_identity_parts[7],
     "disabled",
   )
-  production_native_receiver_configuration = var.deploy_production_native_edge ? {
+  production_native_receiver_configuration = local.production_workloads_enabled ? {
     schema                                = 1
     enabled                               = var.enable_production_native_receiver
     encounter_creation_enabled            = var.enable_production_native_encounter_creation
@@ -302,7 +303,7 @@ locals {
 }
 
 data "azurerm_user_assigned_identity" "production_native_receiver" {
-  count = var.deploy_production_native_edge ? 1 : 0
+  count = local.production_workloads_enabled ? 1 : 0
 
   name                = local.production_native_receiver_identity_name
   resource_group_name = local.production_native_receiver_identity_resource_group
@@ -401,7 +402,7 @@ resource "azurerm_private_endpoint" "core_registry_postgres" {
 }
 
 resource "azurerm_role_assignment" "production_native_receiver_acr" {
-  count = var.deploy_production_native_edge ? 1 : 0
+  count = local.production_workloads_enabled ? 1 : 0
 
   scope                            = azurerm_container_registry.scribe.id
   role_definition_id               = "/subscriptions/${var.subscription_id}/providers/Microsoft.Authorization/roleDefinitions/7f951dda-4ed3-4680-a7ca-43fe172d538d"
@@ -411,11 +412,11 @@ resource "azurerm_role_assignment" "production_native_receiver_acr" {
 }
 
 resource "azurerm_container_app" "production_native_receiver" {
-  count = var.deploy_production_native_edge ? 1 : 0
+  count = local.production_workloads_enabled ? 1 : 0
 
   name                         = local.production_native_receiver_name
-  resource_group_name          = local.resource_group_name
-  container_app_environment_id = azurerm_container_app_environment.production_native_edge[0].id
+  resource_group_name          = local.production_workload_resource_group_name
+  container_app_environment_id = local.production_workload_environment_id
   workload_profile_name        = "Consumption"
   revision_mode                = "Single"
   max_inactive_revisions       = 3
@@ -519,12 +520,12 @@ resource "azurerm_container_app" "production_native_receiver" {
 
 output "production_native_receiver_origin" {
   description = "Exact public system-trust origin to seal into reviewed production native clients; null while the edge is absent."
-  value       = var.deploy_production_native_edge ? local.production_native_receiver_origin : null
+  value       = local.production_workloads_enabled ? local.production_native_receiver_origin : null
 }
 
 output "production_workflow_api_origin" {
-  description = "Exact Entra-protected public workflow API origin for Core; null while the edge is absent."
-  value       = var.deploy_production_native_edge ? local.production_workflow_api_origin : null
+  description = "Exact Entra-protected workflow API origin for Core; internal in existing-host reuse mode and null while production workloads are absent."
+  value       = local.production_workloads_enabled ? local.production_workflow_api_origin : null
 }
 
 output "production_native_upload_origin" {

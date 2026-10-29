@@ -96,6 +96,33 @@ mock_provider "azurerm" {
   }
 }
 
+override_resource {
+  target = azurerm_container_app_environment.scribe
+  values = {
+    id                = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-scribe-production/providers/Microsoft.App/managedEnvironments/cosmaneura-scribe-prod-private-environment"
+    default_domain    = "synthetic-private.azurecontainerapps.io"
+    static_ip_address = "10.44.2.4"
+  }
+}
+
+override_resource {
+  target = azurerm_container_app_environment.production_native_edge
+  values = {
+    id                = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-scribe-production/providers/Microsoft.App/managedEnvironments/cosmaneura-scribe-prod-native-edge-environment"
+    default_domain    = "synthetic-production.azurecontainerapps.io"
+    static_ip_address = "203.0.113.10"
+  }
+}
+
+override_resource {
+  target = azurerm_container_app.api
+  values = {
+    ingress = {
+      fqdn = "cosmaneura-scribe-prod-api.synthetic-production.azurecontainerapps.io"
+    }
+  }
+}
+
 variables {
   subscription_id         = "00000000-0000-0000-0000-000000000000"
   tenant_id               = "00000000-0000-4000-8000-000000000001"
@@ -186,6 +213,25 @@ run "edge_is_deployable_but_behaviorally_dark" {
       }["COSMANEURA_SCRIBE_TRUSTED_PLATFORM_CLIENT_ID"] == var.trusted_platform_client_id
     )
     error_message = "the public workflow API must stay warm, use the immutable image, and retain exact Entra authentication"
+  }
+
+  assert {
+    condition = (
+      output.production_workflow_api_origin == "https://cosmaneura-scribe-prod-api.synthetic-production.azurecontainerapps.io" &&
+      output.production_workflow_api_origin == "https://${azurerm_container_app.api[0].ingress[0].fqdn}" &&
+      !strcontains(output.production_workflow_api_origin, ".internal.")
+    )
+    error_message = "the dedicated edge must continue exporting Azure's actual public workflow API ingress FQDN"
+  }
+
+  assert {
+    condition = (
+      azurerm_container_app_job.database_migrations[0].container_app_environment_id == azurerm_container_app_environment.scribe.id &&
+      azurerm_container_app_job.database_migrations[0].container_app_environment_id != azurerm_container_app_environment.production_native_edge[0].id &&
+      azurerm_container_app_job.database_migrations[0].resource_group_name == local.resource_group_name &&
+      azurerm_container_app_job.database_migrations[0].location == local.resource_group_location
+    )
+    error_message = "the dedicated-edge migration job must remain in the original private Scribe environment"
   }
 
   assert {

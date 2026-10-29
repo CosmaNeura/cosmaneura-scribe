@@ -347,8 +347,12 @@ variable "deploy_database_migration_job" {
   default     = false
 
   validation {
-    condition     = !var.deploy_database_migration_job || var.deploy_postgres_foundation
-    error_message = "deploy_database_migration_job requires deploy_postgres_foundation=true"
+    condition = (
+      !var.deploy_database_migration_job ||
+      var.deploy_postgres_foundation ||
+      var.deploy_production_existing_host_reuse
+    )
+    error_message = "deploy_database_migration_job requires a dedicated PostgreSQL foundation or the exact existing production host reuse mode"
   }
 }
 
@@ -358,8 +362,12 @@ variable "use_postgres_repository" {
   default     = false
 
   validation {
-    condition     = !var.use_postgres_repository || var.deploy_postgres_foundation
-    error_message = "use_postgres_repository requires deploy_postgres_foundation=true"
+    condition = (
+      !var.use_postgres_repository ||
+      var.deploy_postgres_foundation ||
+      var.deploy_production_existing_host_reuse
+    )
+    error_message = "use_postgres_repository requires a dedicated PostgreSQL foundation or the exact existing production host reuse mode"
   }
 }
 
