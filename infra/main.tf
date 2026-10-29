@@ -25,6 +25,12 @@ locals {
 
 locals {
   audio_key_versionless_resource_id = "${azurerm_key_vault.scribe.id}/keys/${local.audio_key_name}"
+  audio_key_versionless_id = var.enable_production_arm_audio_key_bootstrap ? (
+    "${azurerm_key_vault.scribe.vault_uri}keys/${local.audio_key_name}"
+  ) : azurerm_key_vault_key.audio[0].versionless_id
+  audio_key_resource_id = var.enable_production_arm_audio_key_bootstrap ? (
+    local.audio_key_versionless_resource_id
+  ) : azurerm_key_vault_key.audio[0].resource_id
 }
 
 resource "azurerm_resource_group" "scribe" {
@@ -128,6 +134,8 @@ resource "azurerm_key_vault" "scribe" {
 }
 
 resource "azurerm_key_vault_key" "audio" {
+  count = var.enable_production_arm_audio_key_bootstrap ? 0 : 1
+
   name         = local.audio_key_name
   key_vault_id = azurerm_key_vault.scribe.id
   key_type     = "RSA"
@@ -144,6 +152,40 @@ resource "azurerm_key_vault_key" "audio" {
   }
 
   tags = local.tags
+}
+
+# Preserve every existing AzureRM-owned key. This is an address-only state move;
+# prevent_destroy refuses changing the provider owner of an already-owned key.
+moved {
+  from = azurerm_key_vault_key.audio
+  to   = azurerm_key_vault_key.audio[0]
+}
+
+resource "azapi_resource" "production_audio_key" {
+  count = var.enable_production_arm_audio_key_bootstrap ? 1 : 0
+
+  type      = "Microsoft.KeyVault/vaults/keys@2024-11-01"
+  parent_id = azurerm_key_vault.scribe.id
+  name      = local.audio_key_name
+  tags      = local.tags
+  body = {
+    properties = {
+      kty     = "RSA"
+      keySize = 3072
+      keyOps  = ["unwrapKey", "wrapKey"]
+      attributes = {
+        enabled    = true
+        exportable = false
+      }
+    }
+  }
+
+  schema_validation_enabled = true
+  response_export_values    = []
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "azurerm_private_endpoint" "audio_blob" {
@@ -208,6 +250,11 @@ resource "azurerm_role_assignment" "runtime_audio_key_reader" {
   principal_id                     = azurerm_user_assigned_identity.runtime.principal_id
   principal_type                   = "ServicePrincipal"
   skip_service_principal_aad_check = true
+
+  depends_on = [
+    azurerm_key_vault_key.audio,
+    azapi_resource.production_audio_key,
+  ]
 
   lifecycle {
     # This flag is a create-time AAD propagation bypass, not an Azure role property.

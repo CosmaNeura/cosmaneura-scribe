@@ -86,7 +86,8 @@ def test_runtime_reader_uses_the_versionless_wrapping_key_scope() -> None:
     )[1].split("}\n", maxsplit=1)[0]
     assert "scope                            = local.audio_key_versionless_resource_id" in role
     assert "azurerm_key_vault_key.audio.resource_id" not in role
-    assert "azurerm_key_vault_key.audio" not in role
+    assert "azurerm_key_vault_key.audio," in role
+    assert "azapi_resource.production_audio_key," in role
     assert "/versions/" not in role
     assert "21090545-7ca7-4776-b22c-e363652d74d2" in role
     assert (

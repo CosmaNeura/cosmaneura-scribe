@@ -8,6 +8,9 @@ create_resource_group = true
 # These names were available on 2026-08-14 but remain unreserved until a reviewed apply.
 storage_account_name     = "cosmaneurascribeprod"
 key_vault_name           = "cosmaneura-scribe-prod"
+
+# Separate reviewed key-only plan/apply; false preserves AzureRM-owned keys.
+enable_production_arm_audio_key_bootstrap = false
 container_registry_name = "cosmaneurascribeprod"
 
 # Production cost/retention approval is separate. Keep the staged workspace and diagnostics off.

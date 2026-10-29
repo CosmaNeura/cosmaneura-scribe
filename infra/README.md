@@ -31,7 +31,20 @@ Key Vault, an RSA-3072 wrapping key, private endpoints, a runtime managed identi
 least-privilege data-plane roles. The runtime can read only the key's public metadata; it cannot
 unwrap a session key.
 
-The wrapping key is a second-stage private Key Vault data-plane resource. The vault, private
+For the intentionally absent production key only,
+`enable_production_arm_audio_key_bootstrap = true` selects a Terraform-owned
+`Microsoft.KeyVault/vaults/keys@2024-11-01` ARM child. This uses Azure's management
+plane without opening the private vault. The key remains non-exportable RSA3072,
+allows only wrap/unwrap operations, and has `prevent_destroy`. The API receives
+the existing key-scoped **Key Vault Reader** role; no API unwrap permission is
+created. Review the separate key-only saved plan under
+[`../docs/flight-plans/2026-10-29-production-arm-audio-key.md`](../docs/flight-plans/2026-10-29-production-arm-audio-key.md).
+This flag defaults false. Keep it false for existing AzureRM-owned keys, including
+development and staging. The declared `audio` to `audio[0]` move changes only their
+Terraform address; it does not replace the key. Switching an already-owned key
+between providers is refused by `prevent_destroy` and is not a rollback action.
+
+The default wrapping key remains a second-stage private Key Vault data-plane resource. The vault, private
 endpoint, and DNS link must exist before the key plan; do not include the key in an empty foundation
 apply. Run key applies from an approved private-network runner that can resolve and reach the vault;
 an ordinary public GitHub runner cannot create or reconcile it. The approved one-time bootstrap uses

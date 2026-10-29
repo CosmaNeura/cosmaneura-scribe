@@ -51,6 +51,17 @@ variable "key_vault_name" {
   type        = string
 }
 
+variable "enable_production_arm_audio_key_bootstrap" {
+  description = "Use Terraform-owned ARM management-plane custody for the absent production wrapping key. Keep false for every existing AzureRM-owned key; changing owners is not a rollback."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.enable_production_arm_audio_key_bootstrap || var.environment == "production"
+    error_message = "the ARM wrapping-key bootstrap is production-only"
+  }
+}
+
 variable "virtual_network_address_space" {
   description = "Dedicated scribe development VNet address space."
   type        = list(string)

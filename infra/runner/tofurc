@@ -1,6 +1,9 @@
 provider_installation {
   filesystem_mirror {
     path    = "/opt/tofu/providers"
-    include = ["registry.opentofu.org/hashicorp/azurerm"]
+    include = [
+      "registry.opentofu.org/hashicorp/azurerm",
+      "registry.opentofu.org/azure/azapi",
+    ]
   }
 }

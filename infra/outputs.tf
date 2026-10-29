@@ -16,7 +16,7 @@ output "key_vault_uri" {
 
 output "audio_encryption_key_id" {
   description = "Versionless data-plane ID of the RSA-3072 session-key wrapping key."
-  value       = azurerm_key_vault_key.audio.versionless_id
+  value       = local.audio_key_versionless_id
 }
 
 output "runtime_managed_identity_client_id" {

@@ -30,7 +30,7 @@ resource "azurerm_role_assignment" "transcription_audio_reader" {
 resource "azurerm_role_assignment" "transcription_audio_key_crypto_user" {
   count = var.enable_transcription_job ? 1 : 0
 
-  scope                            = azurerm_key_vault_key.audio.resource_id
+  scope                            = local.audio_key_resource_id
   role_definition_id               = "/subscriptions/${var.subscription_id}/providers/Microsoft.Authorization/roleDefinitions/12338af0-0e69-4776-bea7-57ae8d297424"
   principal_id                     = azurerm_user_assigned_identity.transcription[0].principal_id
   principal_type                   = "ServicePrincipal"
@@ -155,7 +155,7 @@ resource "azurerm_container_app_job" "transcription" {
 
       env {
         name  = "COSMANEURA_SCRIBE_AUDIO_ENCRYPTION_KEY_ID"
-        value = azurerm_key_vault_key.audio.versionless_id
+        value = local.audio_key_versionless_id
       }
 
       env {
