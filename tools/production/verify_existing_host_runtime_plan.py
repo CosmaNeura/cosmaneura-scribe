@@ -7,7 +7,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from verify_audio_key_plan import KEY_ID, READER_ID, RUNTIME_PRINCIPAL, SUBSCRIPTION, VAULT_ID
 
@@ -16,6 +16,14 @@ POSTGRES_ID = (
     f"{CORE_ID}/providers/Microsoft.DBforPostgreSQL/flexibleServers/cosmaneura-prod-postgres"
 )
 AI_ID = f"{CORE_ID}/providers/Microsoft.CognitiveServices/accounts/cosmaneuraprodopenai"
+SCRIBE_ID = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/cosmaneura-scribe-production"
+PRIVATE_ENVIRONMENT_ID = (
+    f"{SCRIBE_ID}/providers/Microsoft.App/managedEnvironments/"
+    "cosmaneura-scribe-production-environment"
+)
+ACR_ID = f"{SCRIBE_ID}/providers/Microsoft.ContainerRegistry/registries/cosmaneurascribeprod"
+WORKER_SOURCE = "79d4b3dfa5442a417328f316f5bf58c63d77e8bc"
+WORKER_DIGEST = "sha256:c744e69e70422c1d49318919657440ec05228ef173cc7e7199f9fc39d792d4a3"
 KEY_CREATES = {
     "azapi_resource.production_audio_key[0]",
     "azurerm_role_assignment.runtime_audio_key_reader",
@@ -61,6 +69,53 @@ def _env(container: dict[str, Any]) -> dict[str, str | None]:
     return values
 
 
+def _normal_record(record: dict[str, Any]) -> dict[str, Any]:
+    # Provider refresh uses null for unspecified optional fields; planned
+    # inline rules use empty strings/lists. These have the same NSG meaning.
+    return {
+        key: sorted(cast(list[Any], value)) if isinstance(value, list) else value
+        for key, value in record.items()
+        if value is not None and value != "" and value != []
+    }
+
+
+def verify_nsg_delta(change: dict[str, Any], address: str) -> dict[str, Any]:
+    private = address == "azurerm_network_security_group.private_endpoints"
+    before, after = change["before"], change["after"]
+    old = {rule["name"]: _normal_record(rule) for rule in before["security_rule"]}
+    new = {rule["name"]: _normal_record(rule) for rule in after["security_rule"]}
+    expected: dict[str, Any] = {
+        "name": "AllowContainerAppsPostgresInbound"
+        if private
+        else "AllowCapturedPrivateCorePostgresOutbound",
+        "priority": 110 if private else 295,
+        "direction": "Inbound" if private else "Outbound",
+        "access": "Allow",
+        "protocol": "Tcp",
+        "source_port_range": "*",
+        "destination_port_range": "5432",
+        "source_address_prefixes": ["10.46.2.0/23"],
+        "destination_address_prefixes": ["10.46.1.0/24"],
+    }
+    if not (
+        len(old) == len(before["security_rule"])
+        and len(new) == len(after["security_rule"])
+        and set(new) == set(old) | {expected["name"]}
+        and expected["name"] not in old
+        and all(new[name] == rule for name, rule in old.items())
+        and new[expected["name"]] == expected
+        and _normal_record({k: v for k, v in before.items() if k != "security_rule"})
+        == _normal_record({k: v for k, v in after.items() if k != "security_rule"})
+    ):
+        raise ValueError("UnexpectedNsgDelta")
+    return {
+        "address": address,
+        "preserved_existing_rule_count": len(old),
+        "removed_or_modified_existing_rules": False,
+        "added_rule": expected,
+    }
+
+
 def verify(document: dict[str, Any], mode: str) -> dict[str, Any]:
     """Refuse extra resource actions, activation, credentials and broader custody."""
     variables = {key: item.get("value") for key, item in document.get("variables", {}).items()}
@@ -97,6 +152,7 @@ def verify(document: dict[str, Any], mode: str) -> dict[str, Any]:
     after: dict[str, dict[str, Any]] = {}
     actual_creates: set[str] = set()
     actual_updates: set[str] = set()
+    nsg_delta: list[dict[str, Any]] = []
     unchanged = 0
     for item in document.get("resource_changes", []):
         action = item.get("change", {}).get("actions")
@@ -112,6 +168,8 @@ def verify(document: dict[str, Any], mode: str) -> dict[str, Any]:
             actual_creates.add(address)
         elif action == ["update"] and address in updates:
             actual_updates.add(address)
+            if mode == "workers":
+                nsg_delta.append(verify_nsg_delta(item["change"], address))
         else:
             raise ValueError("UnexpectedResourceAction")
     if actual_creates != creates or actual_updates != updates or unchanged != 24:
@@ -169,13 +227,44 @@ def verify(document: dict[str, Any], mode: str) -> dict[str, Any]:
             or storage.get("public_network_access_enabled") is not False
         ):
             raise ValueError("UnexpectedWorkerPublicNetwork")
+        if not (
+            variables.get("production_captured_worker_image_tag") == WORKER_SOURCE
+            and variables.get("production_captured_worker_image_digest") == WORKER_DIGEST
+        ):
+            raise ValueError("UnexpectedWorkerArtifact")
+        config = next(
+            item
+            for item in document["configuration"]["root_module"]["resources"]
+            if item["address"] == "azurerm_container_app_job.production_captured"
+        )
+        expressions = config["expressions"]
+        expected_refs = ["azurerm_user_assigned_identity.production_captured", "each.key"]
+        if not (
+            expressions["identity"][0]["type"].get("constant_value") == "UserAssigned"
+            and expressions["identity"][0]["identity_ids"].get("references") == expected_refs
+            and expressions["registry"][0]["identity"].get("references") == expected_refs
+        ):
+            raise ValueError("UnexpectedWorkerIdentityBinding")
         for phase in ("speech", "translation"):
             job = after[f'azurerm_container_app_job.production_captured["{phase}"]']
+            identity = after[f'azurerm_user_assigned_identity.production_captured["{phase}"]']
+            pull = after[f'azurerm_role_assignment.production_captured_acr["{phase}"]']
             container = job["template"][0]["container"][0]
             env = _env(container)
             principal = f"cosmaneura-scribe-production-captured-{phase}"
             if not (
-                job.get("schedule_trigger_config") == []
+                job.get("name") == f"scribe-prod-captured-{phase}"
+                and job.get("resource_group_name") == "cosmaneura-scribe-production"
+                and job.get("location") == "eastus"
+                and job.get("container_app_environment_id") == PRIVATE_ENVIRONMENT_ID
+                and container.get("image")
+                == f"cosmaneurascribeprod.azurecr.io/cosmaneura-scribe-api@{WORKER_DIGEST}"
+                and identity.get("name") == principal
+                and identity.get("resource_group_name") == "cosmaneura-scribe-production"
+                and identity.get("location") == "eastus"
+                and pull.get("scope") == ACR_ID
+                and pull.get("role_definition_name") == "AcrPull"
+                and job.get("schedule_trigger_config") == []
                 and len(job.get("manual_trigger_config", [])) == 1
                 and job.get("replica_retry_limit") == 0
                 and container.get("command")
@@ -211,6 +300,7 @@ def verify(document: dict[str, Any], mode: str) -> dict[str, Any]:
         "api_can_unwrap": False,
         "new_hosting_database_or_ai_account": False,
         "production_apply_performed": False,
+        "verified_nsg_rule_delta": nsg_delta,
     }
 
 

@@ -44,7 +44,7 @@ def _network_plan() -> dict:
                     "keyOps": ["wrapKey", "unwrapKey"],
                     "attributes": {"enabled": True, "exportable": False},
                 }
-            }
+            },
         },
         "azurerm_role_assignment.runtime_audio_key_reader": {
             "scope": PLAN.KEY_ID,
@@ -167,3 +167,65 @@ def test_activation_and_anonymous_audio_are_rejected() -> None:
     _after(document, "azurerm_storage_container.audio")["container_access_type"] = "blob"
     with pytest.raises(ValueError, match="UnexpectedDataControls"):
         PLAN.verify(document, "network")
+
+
+def _nsg_change(private: bool) -> dict:
+    old = {
+        "name": "KeepHttps",
+        "priority": 100,
+        "direction": "Inbound",
+        "access": "Allow",
+        "protocol": "Tcp",
+        "source_port_range": "*",
+        "destination_port_range": "443",
+        "source_address_prefix": "VirtualNetwork",
+        "destination_address_prefix": "*",
+        "description": None,
+    }
+    kept = {**old, "description": "", "source_address_prefixes": []}
+    added = {
+        "name": "AllowContainerAppsPostgresInbound"
+        if private
+        else "AllowCapturedPrivateCorePostgresOutbound",
+        "priority": 110 if private else 295,
+        "direction": "Inbound" if private else "Outbound",
+        "access": "Allow",
+        "protocol": "Tcp",
+        "source_port_range": "*",
+        "destination_port_range": "5432",
+        "source_address_prefixes": ["10.46.2.0/23"],
+        "destination_address_prefixes": ["10.46.1.0/24"],
+    }
+    return {
+        "before": {"name": "synthetic-nsg", "security_rule": [old]},
+        "after": {"name": "synthetic-nsg", "security_rule": [kept, added]},
+    }
+
+
+@pytest.mark.parametrize("private", [False, True])
+def test_nsg_projection_accepts_only_the_one_private_postgres_rule(private: bool) -> None:
+    address = "azurerm_network_security_group." + (
+        "private_endpoints" if private else "container_apps"
+    )
+    receipt = PLAN.verify_nsg_delta(_nsg_change(private), address)
+    assert receipt["preserved_existing_rule_count"] == 1
+    assert receipt["removed_or_modified_existing_rules"] is False
+    assert receipt["added_rule"]["destination_port_range"] == "5432"
+
+
+@pytest.mark.parametrize("change", ["broader_source", "changed_previous_rule"])
+def test_nsg_projection_rejects_broadening_or_changed_existing_rule(change: str) -> None:
+    document = _nsg_change(False)
+    if change == "broader_source":
+        document["after"]["security_rule"][1]["source_address_prefixes"] = ["10.0.0.0/8"]
+    else:
+        document["after"]["security_rule"][0]["destination_port_range"] = "*"
+    with pytest.raises(ValueError, match="UnexpectedNsgDelta"):
+        PLAN.verify_nsg_delta(document, "azurerm_network_security_group.container_apps")
+
+
+def test_nsg_projection_rejects_removing_an_existing_rule() -> None:
+    document = _nsg_change(True)
+    document["after"]["security_rule"].pop(0)
+    with pytest.raises(ValueError, match="UnexpectedNsgDelta"):
+        PLAN.verify_nsg_delta(document, "azurerm_network_security_group.private_endpoints")
