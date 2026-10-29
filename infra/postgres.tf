@@ -36,7 +36,7 @@ resource "azurerm_private_dns_zone_virtual_network_link" "postgres" {
 }
 
 resource "azurerm_user_assigned_identity" "database_migrations" {
-  count = local.production_database_enabled ? 1 : 0
+  count = local.production_database_enabled || var.prepare_production_database_migration_identity ? 1 : 0
 
   name                = "${local.name_prefix}-database-migrations"
   resource_group_name = local.resource_group_name
@@ -45,7 +45,7 @@ resource "azurerm_user_assigned_identity" "database_migrations" {
 }
 
 resource "azurerm_role_assignment" "database_migrations_acr" {
-  count = local.production_database_enabled ? 1 : 0
+  count = local.production_database_enabled || var.prepare_production_database_migration_identity ? 1 : 0
 
   scope                = azurerm_container_registry.scribe.id
   role_definition_name = "AcrPull"
