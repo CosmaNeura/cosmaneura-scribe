@@ -7,11 +7,10 @@ capacity. This plan authorizes local source and validation only. It does not
 authorize an Azure plan/apply, database creation, identity or role change, image
 publication, migration execution, application activation, or production traffic.
 
-The current central architecture selects a separate parallel VNet-integrated
-Container Apps environment for production Scribe connectivity. A central ADR
-amendment or explicit supersession is required before this candidate can merge
-or activate; owner direction authorizes preparation, not an undocumented policy
-rewrite.
+The current central architecture and defaults retain the separate private
+VNet-integrated Container Apps environment. Merging a false-default option does
+not change that live placement. Selecting this option for traffic or changing
+its network/security posture remains a separately reviewed activation decision.
 
 Exact Scribe base: `79d4b3dfa5442a417328f316f5bf58c63d77e8bc`.
 

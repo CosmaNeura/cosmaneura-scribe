@@ -141,9 +141,9 @@ resource "azurerm_container_app_job" "database_migrations" {
   count = var.deploy_database_migration_job ? 1 : 0
 
   name                         = "cosmaneura-scribe-${local.environment_short}-migrate"
-  resource_group_name          = local.production_workload_resource_group_name
-  location                     = local.production_workload_location
-  container_app_environment_id = local.production_workload_environment_id
+  resource_group_name          = local.production_database_migration_resource_group_name
+  location                     = local.production_database_migration_location
+  container_app_environment_id = local.production_database_migration_environment_id
   workload_profile_name        = "Consumption"
   replica_timeout_in_seconds   = 900
   replica_retry_limit          = var.deploy_production_existing_host_reuse ? 0 : 1

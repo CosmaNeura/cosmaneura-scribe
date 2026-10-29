@@ -1,7 +1,7 @@
 # ADR 0092: False-default reuse of existing production hosting
 
-Status: proposed source candidate; central architecture ratification, production
-planning, apply, migration, and activation remain unapproved.
+Status: accepted for dormant source; production planning, apply, migration, and
+activation remain unapproved.
 
 ## Decision
 
@@ -11,12 +11,11 @@ places separate Scribe Container App resources in the existing Core production
 Container Apps environment and creates only an isolated `cosmaneura_scribe`
 logical database on the existing Core PostgreSQL Flexible Server.
 
-The ratified platform architecture currently selects a parallel VNet-integrated
-environment for production platform↔Scribe connectivity (platform architecture
-v3.6 / ADR 0010). Owner direction to reuse existing paid hosting motivates this
-candidate but does not silently rewrite that decision. The central architecture
-ADR must be amended or explicitly supersede this placement before merge or
-activation; this repository-local proposal is not that ratification.
+The dedicated private path remains the canonical default selected by the
+ratified platform architecture. Merging this false-default alternative changes
+no active placement or production boundary. Selecting it for production traffic,
+or changing its network/security posture, remains a separate architecture and
+activation decision.
 
 Reuse mode binds exact reviewed resource IDs, FQDNs, region, outbound IPv4, and
 the existing production Scribe workflow identity. It does not discover a host by

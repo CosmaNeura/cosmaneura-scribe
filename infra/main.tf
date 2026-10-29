@@ -96,6 +96,13 @@ resource "azurerm_storage_account" "audio" {
     }
   }
 
+  lifecycle {
+    precondition {
+      condition     = local.production_existing_host_reuse_contract_valid
+      error_message = "existing-host reuse requires exact digest-pinned production images, the isolated cosmaneura_scribe database, PostgreSQL/authenticated dark workloads, and every capture, processing, handoff, upload, receiver, encounter, acceptance, runner, and network activation gate disabled"
+    }
+  }
+
   tags = local.tags
 }
 

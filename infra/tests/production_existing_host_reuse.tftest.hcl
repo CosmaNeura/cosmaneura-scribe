@@ -294,7 +294,7 @@ run "reuse_refuses_a_shared_core_database_name" {
   }
 
   expect_failures = [
-    check.production_existing_host_reuse_contract,
+    azurerm_storage_account.audio,
   ]
 }
 
@@ -306,7 +306,31 @@ run "reuse_refuses_behavior_activation" {
   }
 
   expect_failures = [
-    check.production_existing_host_reuse_contract,
+    azurerm_storage_account.audio,
+  ]
+}
+
+run "reuse_fatally_refuses_a_mutable_workflow_image" {
+  command = plan
+
+  variables {
+    container_image_digest = "not-deployed"
+  }
+
+  expect_failures = [
+    azurerm_storage_account.audio,
+  ]
+}
+
+run "reuse_fatally_refuses_a_mutable_receiver_image" {
+  command = plan
+
+  variables {
+    production_native_receiver_image_digest = "not-deployed"
+  }
+
+  expect_failures = [
+    azurerm_storage_account.audio,
   ]
 }
 

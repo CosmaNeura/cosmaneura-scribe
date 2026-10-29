@@ -4,59 +4,6 @@ variable "deploy_production_existing_host_reuse" {
   default     = false
 }
 
-check "production_existing_host_reuse_contract" {
-  assert {
-    condition = (
-      !var.deploy_production_existing_host_reuse ||
-      (
-        var.environment == "production" &&
-        !var.deploy_production_native_edge &&
-        var.deploy_container_app &&
-        !var.deploy_postgres_foundation &&
-        var.deploy_database_migration_job &&
-        var.use_postgres_repository &&
-        var.enable_workflow_authentication &&
-        !var.enable_capture_protocol &&
-        !var.enable_master_platform_handoff &&
-        !var.enable_production_native_direct_upload &&
-        !var.enable_production_native_receiver &&
-        !var.enable_production_native_encounter_creation &&
-        !var.deploy_private_speech_foundation &&
-        !var.deploy_speech_smoke_job &&
-        !var.enable_speech_smoke_job &&
-        !var.deploy_transcription_job &&
-        !var.enable_transcription_job &&
-        !var.deploy_delivery_reconciler_job &&
-        !var.enable_delivery_reconciler_job &&
-        !var.deploy_private_api_acceptance_job &&
-        !var.enable_private_api_acceptance_job &&
-        !var.allow_private_api_acceptance_invocation &&
-        !var.deploy_private_terraform_runner &&
-        !var.enable_private_terraform_runner &&
-        !var.connect_parallel_platform_vnet &&
-        var.postgres_database_name == "cosmaneura_scribe" &&
-        lower(var.production_native_receiver_identity_resource_id) == lower(
-          "/subscriptions/${var.subscription_id}/resourceGroups/cosmaneura-prod/providers/Microsoft.ManagedIdentity/userAssignedIdentities/cosmaneura-prod-scribe-workflow"
-        ) &&
-        lower(var.production_native_receiver_identity_client_id) == "c7bae168-fbf5-4658-b0d9-dd4b5373a1be" &&
-        lower(var.production_core_registry_postgres_resource_id) == lower(
-          "/subscriptions/${var.subscription_id}/resourceGroups/cosmaneura-prod/providers/Microsoft.DBforPostgreSQL/flexibleServers/cosmaneura-prod-postgres"
-        ) &&
-        try(
-          var.production_native_receiver_binding.core_registry_database_host == var.production_existing_hosting_binding.postgres_server_fqdn,
-          false,
-        ) &&
-        can(regex("^[0-9a-f]{40}$", var.container_image_tag)) &&
-        can(regex("^sha256:[0-9a-f]{64}$", var.container_image_digest)) &&
-        can(regex("^[0-9a-f]{40}$", var.production_native_receiver_image_tag)) &&
-        can(regex("^sha256:[0-9a-f]{64}$", var.production_native_receiver_image_digest)) &&
-        can(regex("^[0-9a-f]{64}$", var.production_native_receiver_image_contract_sha256))
-      )
-    )
-    error_message = "existing-host reuse requires exact digest-pinned production images, the isolated cosmaneura_scribe database, PostgreSQL/authenticated dark workloads, and every capture, processing, handoff, upload, receiver, encounter, acceptance, runner, and network activation gate disabled"
-  }
-}
-
 variable "production_existing_hosting_binding" {
   description = "Exact non-secret live Core hosting selectors used only by the dark production reuse mode. A populated binding is not deployment authority."
   type = object({
@@ -94,6 +41,53 @@ variable "production_existing_hosting_binding" {
 }
 
 locals {
+  production_existing_host_reuse_contract_valid = (
+    !var.deploy_production_existing_host_reuse ||
+    (
+      var.environment == "production" &&
+      !var.deploy_production_native_edge &&
+      var.deploy_container_app &&
+      !var.deploy_postgres_foundation &&
+      var.deploy_database_migration_job &&
+      var.use_postgres_repository &&
+      var.enable_workflow_authentication &&
+      !var.enable_capture_protocol &&
+      !var.enable_master_platform_handoff &&
+      !var.enable_production_native_direct_upload &&
+      !var.enable_production_native_receiver &&
+      !var.enable_production_native_encounter_creation &&
+      !var.deploy_private_speech_foundation &&
+      !var.deploy_speech_smoke_job &&
+      !var.enable_speech_smoke_job &&
+      !var.deploy_transcription_job &&
+      !var.enable_transcription_job &&
+      !var.deploy_delivery_reconciler_job &&
+      !var.enable_delivery_reconciler_job &&
+      !var.deploy_private_api_acceptance_job &&
+      !var.enable_private_api_acceptance_job &&
+      !var.allow_private_api_acceptance_invocation &&
+      !var.deploy_private_terraform_runner &&
+      !var.enable_private_terraform_runner &&
+      !var.connect_parallel_platform_vnet &&
+      var.postgres_database_name == "cosmaneura_scribe" &&
+      lower(var.production_native_receiver_identity_resource_id) == lower(
+        "/subscriptions/${var.subscription_id}/resourceGroups/cosmaneura-prod/providers/Microsoft.ManagedIdentity/userAssignedIdentities/cosmaneura-prod-scribe-workflow"
+      ) &&
+      lower(var.production_native_receiver_identity_client_id) == "c7bae168-fbf5-4658-b0d9-dd4b5373a1be" &&
+      lower(var.production_core_registry_postgres_resource_id) == lower(
+        "/subscriptions/${var.subscription_id}/resourceGroups/cosmaneura-prod/providers/Microsoft.DBforPostgreSQL/flexibleServers/cosmaneura-prod-postgres"
+      ) &&
+      try(
+        var.production_native_receiver_binding.core_registry_database_host == var.production_existing_hosting_binding.postgres_server_fqdn,
+        false,
+      ) &&
+      can(regex("^[0-9a-f]{40}$", var.container_image_tag)) &&
+      can(regex("^sha256:[0-9a-f]{64}$", var.container_image_digest)) &&
+      can(regex("^[0-9a-f]{40}$", var.production_native_receiver_image_tag)) &&
+      can(regex("^sha256:[0-9a-f]{64}$", var.production_native_receiver_image_digest)) &&
+      can(regex("^[0-9a-f]{64}$", var.production_native_receiver_image_contract_sha256))
+    )
+  )
   production_workloads_enabled = (
     var.deploy_production_native_edge || var.deploy_production_existing_host_reuse
   )
@@ -109,6 +103,21 @@ locals {
     var.deploy_production_existing_host_reuse
     ? try(var.production_existing_hosting_binding.location, "")
     : local.resource_group_location
+  )
+  production_database_migration_resource_group_name = (
+    var.deploy_production_existing_host_reuse
+    ? try(var.production_existing_hosting_binding.resource_group_name, "")
+    : local.resource_group_name
+  )
+  production_database_migration_location = (
+    var.deploy_production_existing_host_reuse
+    ? try(var.production_existing_hosting_binding.location, "")
+    : local.resource_group_location
+  )
+  production_database_migration_environment_id = (
+    var.deploy_production_existing_host_reuse
+    ? try(var.production_existing_hosting_binding.container_app_environment_id, "")
+    : azurerm_container_app_environment.scribe.id
   )
   production_workload_environment_id = (
     var.deploy_production_existing_host_reuse
