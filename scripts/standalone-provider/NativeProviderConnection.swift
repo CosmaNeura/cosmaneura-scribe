@@ -871,11 +871,8 @@ protocol ProviderNativeWire: Sendable {
         recordingMounts.removeValue(forKey: id)
         let opening = request.openingNonce
         let bodyKeys: Set<String> = opening == nil ? ["workspace_id"] : ["workspace_id", "opening_nonce"]
-        var replyKeys: Set<String> = ["revision", "recoveryScope", "workspaceId", "appointmentRef", "bindingRef", "encounter"]
-        if opening != nil { replyKeys.insert("openingReview") }
         guard Set(body.keys) == bodyKeys, reply.status == 200, reply.body.count <= request.responseLimit,
               let value = try? JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
-              Set(value.keys) == replyKeys,
               value["revision"] as? String == request.revision,
               value["workspaceId"] as? String == workspace,
               let recovery = value["recoveryScope"] as? String, let scope = UUID(uuidString: recovery),
@@ -886,13 +883,30 @@ protocol ProviderNativeWire: Sendable {
               appointment.range(of: "^appointment_[0-7][0-9a-hjkmnp-tv-z]{25}$", options: .regularExpression) != nil,
               let encounter = value["encounter"] as? [String: Any], encounter["appointmentRef"] as? String == appointment,
               recordingMounts.count < 100 else { return }
+        let hasReview = value["openingReview"] != nil, hasRecovery = value["openingRecovery"] != nil
+        guard opening == nil ? !hasReview && !hasRecovery : hasReview != hasRecovery else { return }
+        var replyKeys: Set<String> = ["revision", "recoveryScope", "workspaceId", "appointmentRef", "bindingRef", "encounter"]
+        if hasReview { replyKeys.insert("openingReview") }
+        if hasRecovery { replyKeys.insert("openingRecovery") }
+        guard Set(value.keys) == replyKeys else { return }
         if let opening {
-            guard let review = value["openingReview"] as? [String: Any],
-                  review["contract_version"] as? String == "1",
-                  review["workspace_id"] as? String == workspace,
-                  review["binding_ref"] as? String == binding,
-                  review["request_nonce"] as? String == opening.uuidString.lowercased(),
-                  review["operation"] as? String == "provider_encounter" else { return }
+            if hasReview {
+                guard let review = value["openingReview"] as? [String: Any],
+                      review["contract_version"] as? String == "1",
+                      review["workspace_id"] as? String == workspace,
+                      review["binding_ref"] as? String == binding,
+                      review["request_nonce"] as? String == opening.uuidString.lowercased(),
+                      review["operation"] as? String == "provider_encounter" else { return }
+            } else {
+                guard let recovery = value["openingRecovery"] as? [String: Any],
+                      Set(recovery.keys) == ["contract_version", "workspace_id", "binding_ref", "request_nonce", "disposition"],
+                      recovery["contract_version"] as? String == "1",
+                      recovery["workspace_id"] as? String == workspace,
+                      recovery["binding_ref"] as? String == binding,
+                      recovery["request_nonce"] as? String == opening.uuidString.lowercased(),
+                      let disposition = recovery["disposition"] as? String,
+                      ["provider_operation_unavailable", "provider_operation_conflict"].contains(disposition) else { return }
+            }
         }
         var preparationSupported = false
         if let rawCapability = encounter["native_recording_preparation_v1"] {

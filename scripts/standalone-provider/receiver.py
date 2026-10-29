@@ -515,12 +515,40 @@ class ProviderReceiver:
                 try:
                     if action == "mount":
                         opening_review = None
+                        opening_recovery = None
                         if "opening_nonce" in body:
                             _require(set(body) == {"workspace_id", "opening_nonce"})
-                            mount, opening_review = await transport.open_with_review(
-                                _uuid(body["opening_nonce"]),
-                                key,
-                            )
+                            opening_nonce = _uuid(body["opening_nonce"])
+                            try:
+                                mount, opening_review = await transport.open_with_review(
+                                    opening_nonce,
+                                    key,
+                                )
+                            except ProviderCoreUnavailable as error:
+                                disposition = {
+                                    "core_provider_operation_unavailable": (
+                                        "provider_operation_unavailable"
+                                    ),
+                                    "core_provider_operation_conflict": (
+                                        "provider_operation_conflict"
+                                    ),
+                                }.get(error.code)
+                                if error.status != 409 or disposition is None:
+                                    raise
+                                _require(checked_selection is not None)
+                                refused_selection = checked_selection[0].selection
+                                # The failed combined read grants no mount authority.
+                                # Reauthorize a separate read-only mount before
+                                # publishing this closed recovery disposition.
+                                mount = await transport.open()
+                                _require(mount.selection == refused_selection)
+                                opening_recovery = {
+                                    "contract_version": "1",
+                                    "workspace_id": str(mount.selection.workspace_id),
+                                    "binding_ref": mount.binding_ref,
+                                    "request_nonce": str(opening_nonce),
+                                    "disposition": disposition,
+                                }
                         else:
                             _require(set(body) == {"workspace_id"})
                             mount = await transport.open()
@@ -537,6 +565,8 @@ class ProviderReceiver:
                         }
                         if opening_review is not None:
                             result["openingReview"] = opening_review
+                        if opening_recovery is not None:
+                            result["openingRecovery"] = opening_recovery
                     else:
                         context = await fresh()
                         binding = body.get("binding_ref")

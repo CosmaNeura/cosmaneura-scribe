@@ -19,7 +19,7 @@ import { activeNotePreparation, appendNotePreparationSuccessor, assertProgress, 
 import type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources, ProviderEncounter } from "./workspace-contracts";
 export type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources, ProviderEncounter } from "./workspace-contracts";
 import "./workspace.css";
-import { openingReviewView } from "./opening-review";
+import { openingRecoveryReason, openingReviewView } from "./opening-review";
 import { encounterSetupMarkup } from "./encounter-setup-view";
 import type { EncounterDraft, EncounterSetupState } from "./encounter-setup";
 import { readNoteOpening, type NoteOpening } from "./note-opening";
@@ -884,12 +884,17 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       journal = loaded;
       if (recentStates.get(ref)?.sessionId !== loaded.progress?.sessionId) recentStates.delete(ref);
       const first = openingReviewView(opened.openingReview, opened.scope);
+      const prefetchedRecovery = openingRecoveryReason(opened.openingRecovery, opened.scope);
       if (loaded.progress) {
         assertProgress(loaded.progress);
         if (loaded.progress.pendingSave) {
           endOpening(); showSaveRecovery();
         } else if (loaded.progress.sessionId) await recordOrReview(undefined, first ?? undefined, opening.signal, initialAction);
         else { endOpening(); show(`<h1>Recover recording preparation</h1><p>Confirm the original request before starting another recording.</p><button data-workspace-action="admit">Retry preparation</button>`); }
+      } else if (prefetchedRecovery) {
+        const patientRef = opened.encounter.patientRef;
+        if (host.encounterSetup && patientRef && reference(patientRef, "patient")) separateVisitPatientRef = patientRef;
+        throw new ProviderEncounterRecoveryError(prefetchedRecovery);
       } else {
         let recovered: CreatorReviewView | null;
         try {

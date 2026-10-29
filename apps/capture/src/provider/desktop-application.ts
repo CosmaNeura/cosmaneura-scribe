@@ -13,7 +13,7 @@ import { assertProgress, type JournalSnapshot } from "./workspace-journal";
 import { parsePendingReviewDecision } from "../../../review-ui/src/creator-review-journal";
 import { connectDesktopRecorderView, type DesktopRecorderPort } from "./desktop-recorder-view";
 import { reference, type CoreCaptureScope } from "./core-client";
-import { parseOpeningReview } from "./opening-review";
+import { parseOpeningRecovery, parseOpeningReview } from "./opening-review";
 import type { ConsentPreparationRelease } from "./consent-preparation";
 import { parseDesktopProviderEvent, sessionState, exact, object, uuid, jsonCopy, unavailable,
   type DesktopProviderMethod, type DesktopProviderPort, type DesktopProviderRequest } from "./desktop-host-protocol";
@@ -219,9 +219,12 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
         openEncounter: async (appointmentRef, operationSignal) => {
           const result = await send("open", { appointmentRef }, null, operationSignal);
           const hasOpening = typeof result === "object" && result !== null && "openingReview" in result;
+          const hasOpeningRecovery = typeof result === "object" && result !== null && "openingRecovery" in result;
+          if (hasOpening && hasOpeningRecovery) throw unavailable();
           const hasSignInPreparation = typeof result === "object" && result !== null && "signInPreparationSupported" in result;
           const hasNoteOpening = typeof result === "object" && result !== null && "noteOpeningSupported" in result;
           const value = exact(result, ["encounterId", "encounter", "scope", ...(hasOpening ? ["openingReview"] : []),
+            ...(hasOpeningRecovery ? ["openingRecovery"] : []),
             ...(hasNoteOpening ? ["noteOpeningSupported"] : []), ...(hasSignInPreparation ? ["signInPreparationSupported"] : [])]);
           if (hasNoteOpening && value.noteOpeningSupported !== true || hasSignInPreparation && value.signInPreparationSupported !== true) throw unavailable();
           current(operationSignal);
@@ -243,6 +246,7 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
             }) } : {}), encounter: displayed, scope, signal: linked,
             ...(hasNoteOpening ? { noteOpeningSupported: true as const } : {}),
             ...(hasOpening ? { openingReview: parseOpeningReview(value.openingReview, scope) } : {}),
+            ...(hasOpeningRecovery ? { openingRecovery: parseOpeningRecovery(value.openingRecovery, scope) } : {}),
             request: async (path, body, key, extra) => {
               const result = exact(await call("core", { path, body, key }, extra), ["status", "body"]);
               if (![200, 401, 403, 409, 422, 503].includes(Number(result.status))) throw unavailable();

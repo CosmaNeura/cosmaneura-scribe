@@ -262,6 +262,7 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
           } } : {}),
           ...(selected.noteOpeningSupported ? { noteOpeningSupported: true as const } : {}),
           ...(selected.openingReview ? { openingReview: selected.openingReview } : {}),
+          ...(selected.openingRecovery ? { openingRecovery: selected.openingRecovery } : {}),
           playPassage: (sessionId, segmentId, operation) => guarded(async () => {
             uuid(sessionId); uuid(segmentId);
             const recorder = owned.recorder;

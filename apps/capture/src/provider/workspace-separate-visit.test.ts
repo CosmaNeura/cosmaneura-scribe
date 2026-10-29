@@ -28,7 +28,8 @@ afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose
 
 function fixture(options: { status?: "created" | "capturing"; patientRef?: string | null; setup?: boolean;
   state?: () => Promise<EncounterSetupState>; inaccessibleJournal?: boolean; identity?: PatientIdentity;
-  operationFailure?: "unavailable" | "conflict" | "generic" } = {}) {
+  operationFailure?: "unavailable" | "conflict" | "generic";
+  prefetchedFailure?: "unavailable" | "conflict" } = {}) {
   vi.stubGlobal("Element", Surface);
   vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "visible" }));
   vi.stubGlobal("ResizeObserver", class { observe(): void {} disconnect(): void {} });
@@ -56,7 +57,9 @@ function fixture(options: { status?: "created" | "capturing"; patientRef?: strin
     const scope = { appointmentRef: encounter.appointmentRef, bindingRef: "scribe_capture_binding_" + suffix,
       workspaceId: fresh ? id(3) : id(1) };
     return { encounter, scope, request, signal: abort.signal, journal: fresh ? newJournal : journal,
-      ...(!fresh && options.operationFailure ? {} : { openingReview: { scope, receivedAt: Date.now(), view: fresh ? null : view } }), recorder,
+      ...(!fresh && options.operationFailure ? {} : !fresh && options.prefetchedFailure
+        ? { openingRecovery: { scope, receivedAt: Date.now(), reason: options.prefetchedFailure } }
+        : { openingReview: { scope, receivedAt: Date.now(), view: fresh ? null : view } }), recorder,
       reviewJournal: () => ({ load: async () => null, save: vi.fn(), clear: vi.fn() }), openInCore: vi.fn() };
   };
   const setup = { state: vi.fn<ProviderEncounterSetup["state"]>(options.state ?? (async () => ({
@@ -89,6 +92,18 @@ it.each(["unavailable", "conflict"] as const)("offers explicit separate-visit re
   expect(f.setup.submit).not.toHaveBeenCalled(); expect(f.journal.save).not.toHaveBeenCalled();
   await f.click("new-visit-same-patient");
   expect(f.setup.submit).toHaveBeenCalledOnce();
+  expect(f.content.innerHTML).toContain('name="consent"');
+  expect(f.recorder).not.toHaveBeenCalled(); expect(f.journal.save).not.toHaveBeenCalled();
+});
+
+it.each(["unavailable", "conflict"] as const)("uses an independently mounted prefetched %s recovery without retrying the operation", async prefetchedFailure => {
+  const f = fixture({ prefetchedFailure }); await f.click("open");
+  expect(f.content.innerHTML).toContain("Start a separate visit");
+  expect(f.content.innerHTML).toContain("saved work remains unchanged");
+  expect(f.request).not.toHaveBeenCalled();
+  expect(f.setup.submit).not.toHaveBeenCalled(); expect(f.journal.save).not.toHaveBeenCalled();
+  await f.click("new-visit-same-patient");
+  expect(f.request).not.toHaveBeenCalled(); expect(f.setup.submit).toHaveBeenCalledOnce();
   expect(f.content.innerHTML).toContain('name="consent"');
   expect(f.recorder).not.toHaveBeenCalled(); expect(f.journal.save).not.toHaveBeenCalled();
 });

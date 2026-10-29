@@ -9,7 +9,7 @@ import type { CreatorReviewJournal } from "../../../review-ui/src/creator-review
 import type { CreatorEditJournal } from "../../../review-ui/src/creator-edit";
 import type { AuthorizedCoreRequest, CoreCaptureScope } from "./core-client";
 import type { ProviderWorkspaceJournal } from "./workspace-journal";
-import type { ProviderOpeningReview } from "./opening-review";
+import type { ProviderOpeningRecovery, ProviderOpeningReview } from "./opening-review";
 import type { ProviderEncounterSetup, ProviderAccount } from "./encounter-setup";
 import type { ProviderAudioPreflight } from "./audio-preflight";
 import type { PatientIdentity } from "./visit-features";
@@ -40,6 +40,7 @@ export interface AuthorizedProviderEncounter<R = ProviderRecorderResources | Pre
   readonly scope: CoreCaptureScope;
   readonly request: AuthorizedCoreRequest;
   readonly openingReview?: ProviderOpeningReview;
+  readonly openingRecovery?: ProviderOpeningRecovery;
   readonly noteOpeningSupported?: true;
   /** Trusted native acquisition checks current created/capturing status itself. */
   readonly recorderRechecksReview?: true;

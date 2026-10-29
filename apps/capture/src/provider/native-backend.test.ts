@@ -234,6 +234,30 @@ describe("native provider connection", () => {
     } finally { await backend.dispose(); }
   });
 
+  it.each([
+    ["provider_operation_unavailable", "unavailable"],
+    ["provider_operation_conflict", "conflict"],
+  ] as const)("retains an independently authorized mount with closed opening recovery %s", async (disposition, reason) => {
+    const f = fixture(), backend = await f.connect();
+    f.plugin.providerRequest.mockImplementation(async request => {
+      const result = JSON.parse(f.reply(request).body);
+      if (request.action === "catalog") result.opening_review_v1 = true;
+      if (request.action === "mount") result.openingRecovery = {
+        contract_version: "1", workspace_id: workspace, binding_ref: binding,
+        request_nonce: JSON.parse(request.body).opening_nonce, disposition,
+      };
+      return f.reply(request, result);
+    });
+    try {
+      await backend.listEncounters(backend.signal);
+      const mount = await backend.openEncounter(appointment, backend.signal);
+      expect(mount.openingReview).toBeUndefined();
+      expect(mount.openingRecovery?.reason).toBe(reason);
+      expect(mount.openingRecovery?.scope).toEqual(mount.scope);
+      expect(f.plugin.providerRequest.mock.calls.map(([r]) => r.action)).toEqual(["catalog", "mount"]);
+    } finally { await backend.dispose(); }
+  });
+
   it.each([false, true])("requests a combined opening only with advertised capability (%s)", async supported => {
     const f = fixture(), backend = await f.connect();
     f.plugin.providerRequest.mockImplementation(async request => {

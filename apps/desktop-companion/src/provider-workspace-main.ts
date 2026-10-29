@@ -192,7 +192,8 @@ export class DesktopProviderWorkspaceMain {
             return { encounterId: encounter.id, encounter: opened.encounter, scope: opened.scope,
               ...(opened.signInPreparation ? { signInPreparationSupported: true as const } : {}),
               ...(opened.noteOpeningSupported ? { noteOpeningSupported: true as const } : {}),
-              ...(opened.openingReview ? { openingReview: opened.openingReview } : {}) };
+              ...(opened.openingReview ? { openingReview: opened.openingReview } : {}),
+              ...(opened.openingRecovery ? { openingRecovery: opened.openingRecovery } : {}) };
           } catch (error) { opening.abort(); throw error; }
         } finally { connection.transitioning = false; }
       });
