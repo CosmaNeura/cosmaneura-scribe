@@ -575,6 +575,30 @@ async def prepare_then_dispatch(
                 )
         finally:
             await ordinary.close()
+        if (
+            preparation == "recording_window"
+            and not (unused_continuation or recorded_continuation)
+            and handoff is not None
+            and source_start_supported
+        ):
+            # A missing/expired setup credential negotiated a fresh context above.
+            # The following deliberate source start may consume that same context,
+            # just as it does after a retained first-window preparation. Publish
+            # only after the owning transport settled and the current-account
+            # fence; retain the original epoch, never the window response time.
+            if await fresh() != before:
+                raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise asyncio.CancelledError
+            retain_source_window(
+                handoff, origin, before, revision, workspace, cast(str, binding),
+                PreparedContext(
+                    mount, context, cast(str, interaction), turn, issued_at,
+                    source_start_supported=source_start_supported,
+                ),
+                payload, answer,
+            )
         if unused_continuation:
             # The first expired unused setup negotiates a NEW context above.
             # Retain only after the mutation, account fence and owned close;
