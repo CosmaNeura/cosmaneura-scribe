@@ -367,9 +367,12 @@ private final class PermissionFirstResult: @unchecked Sendable {
   }
 }
 
-private final class DriverCallbackGate: @unchecked Sendable {
+final class DriverCallbackGate: @unchecked Sendable {
+  // Internal deterministic seam: tests can hold an already-consumed receipt's
+  // retirement, matching a delayed awaiting task. Production supplies nil.
+  typealias DeferredRetirement = @Sendable (@escaping @Sendable () -> Void) async -> Void
   private enum FrameDecision {
-    case offer(PCMAudioCallbacks)
+    case offer(PCMAudioCallbacks, UInt64)
     case reject
     case overflow
   }
@@ -381,16 +384,21 @@ private final class DriverCallbackGate: @unchecked Sendable {
   private var callbacks: PCMAudioCallbacks?
   private var framesOpen = false
   private var frameOutstanding = false
+  private var frameReceipt: PCMFrameAdmission?
+  private var frameToken: UInt64 = 0
   private var eventsArmed = false
   private var startupFailed = false
   private var terminalEventSent = false
   private var hardEventSent = false
   private var frameWaiters: [CheckedContinuation<Bool, Never>] = []
   private var terminalDelivery: Task<Void, Never>?
+  private let deferredRetirement: DeferredRetirement?
 
-  init(continueInBackground: Bool, diagnostics: PCMStartupDiagnostics) {
+  init(continueInBackground: Bool, diagnostics: PCMStartupDiagnostics,
+    deferredRetirement: DeferredRetirement? = nil) {
     self.continueInBackground = continueInBackground
     self.diagnostics = diagnostics
+    self.deferredRetirement = deferredRetirement
   }
 
   func activate(generation: UInt64, callbacks: PCMAudioCallbacks) {
@@ -399,6 +407,8 @@ private final class DriverCallbackGate: @unchecked Sendable {
       self.callbacks = callbacks
       framesOpen = false
       frameOutstanding = false
+      frameReceipt = nil
+      frameToken = 0
       eventsArmed = false
       startupFailed = false
       terminalEventSent = false
@@ -433,6 +443,7 @@ private final class DriverCallbackGate: @unchecked Sendable {
       framesOpen = false
       callbacks = nil
       self.generation = nil
+      frameReceipt = nil
       let delivery = terminalDelivery
       terminalDelivery = nil
       defer { frameWaiters.removeAll() }
@@ -447,7 +458,11 @@ private final class DriverCallbackGate: @unchecked Sendable {
       guard self.generation == generation, framesOpen, let callbacks else {
         return .reject
       }
-      guard !frameOutstanding else {
+      // The core may have consumed the buffer before this driver's awaiting
+      // task is scheduled again. That completed receipt is not backpressure.
+      // An actually unconsumed buffer still closes capture without queuing.
+      guard (!frameOutstanding || frameReceipt?.isConsumed == true),
+        frameToken < UInt64.max else {
         framesOpen = false
         if !terminalEventSent {
           diagnostics.record(.driverAdmissionOverflow)
@@ -458,8 +473,10 @@ private final class DriverCallbackGate: @unchecked Sendable {
         }
         return .overflow
       }
+      frameToken += 1
       frameOutstanding = true
-      return .offer(callbacks)
+      frameReceipt = nil
+      return .offer(callbacks, frameToken)
     }
 
     switch decision {
@@ -467,16 +484,24 @@ private final class DriverCallbackGate: @unchecked Sendable {
       frames.zeroize()
     case .overflow:
       frames.zeroize()
-    case .offer(let callbacks):
+    case .offer(let callbacks, let token):
       let admission = callbacks.frames(frames)
       guard admission.accepted else {
         frames.zeroize()
-        completeFrame(generation: generation)
+        completeFrame(generation: generation, token: token)
         return
+      }
+      lock.withLock {
+        guard self.generation == generation, frameToken == token else { return }
+        frameReceipt = admission
       }
       Task { [weak self] in
         await admission.waitUntilConsumed()
-        self?.completeFrame(generation: generation)
+        if let deferred = self?.deferredRetirement {
+          await deferred { [weak self] in self?.completeFrame(generation: generation, token: token) }
+        } else {
+          self?.completeFrame(generation: generation, token: token)
+        }
       }
     }
   }
@@ -548,10 +573,12 @@ private final class DriverCallbackGate: @unchecked Sendable {
     if pending { receive(event: .captureFailed, generation: generation) }
   }
 
-  private func completeFrame(generation: UInt64) {
+  private func completeFrame(generation: UInt64, token: UInt64) {
     let waiters = lock.withLock { () -> [CheckedContinuation<Bool, Never>] in
-      guard self.generation == generation else { return [] }
+      // A delayed completion cannot retire a newer, still unconsumed buffer.
+      guard self.generation == generation, frameToken == token else { return [] }
       frameOutstanding = false
+      frameReceipt = nil
       defer { frameWaiters.removeAll() }
       return frameWaiters
     }
