@@ -365,13 +365,19 @@ class ProviderCoreTransport:
         interaction_ref: str,
         turn: UUID,
         workload: SecretStr,
+        expected_first_sequence_number: int = 0,
+        expected_lease_generation: int = 2,
     ) -> dict[str, object]:
-        """Consume the exact unused-continuation context; Core rechecks both decisions."""
+        """Consume an exact continuation context; Core rechecks both decisions."""
         sequence, intent, authorize_nonce = source_start_sequence(mount, body, key)
         _require(
             intent.source == "desktop_companion"
-            and intent.first_sequence_number == 0
-            and intent.lease_generation == 2
+            and type(expected_first_sequence_number) is int
+            and type(expected_lease_generation) is int
+            and intent.first_sequence_number == expected_first_sequence_number
+            and intent.lease_generation == expected_lease_generation
+            and (expected_first_sequence_number == 0 and expected_lease_generation == 2
+                 or expected_first_sequence_number > 0 and expected_lease_generation >= 2)
             and re.fullmatch(r"[A-Za-z0-9._~-]{16,160}", interaction_ref)
         )
         _secret(token)
