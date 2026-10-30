@@ -26,9 +26,20 @@ caused the overflow.
 Observe the existing receipt's completed consumption and release before
 allowing the next frame. Tag each frame so a late retirement cannot clear a
 newer frame's admission. All copies of a receipt await the same completed core
-release. At most one unconsumed frame remains admitted. Actual unconsumed
+release. Completion is awaited outside the receipt lock; the bounded synchronous
+core admission release and consumed flag are published under the same lock used
+by observers and copied waiters. This closes the release-to-publication interval
+without creating an additional per-frame consumption task. At most one
+unconsumed frame remains admitted. Actual unconsumed
 overlap still fails capture and zeroizes the rejected frame; the regression
 also verifies that behavior after a delayed old completion.
+
+A second regression holds a nonempty admission release after its side effect,
+then starts the next driver callback on a separate queue. The callback must wait
+until consumption is published, then accept the next frame without a capture
+failure. It also checks that copied receipt waits do not release admission twice.
+The test wait is deliberately longer than the real synchronous flag clear; it
+does not add a production hook or change the admission bound.
 
 The deterministic retirement hook is internal and defaults to absent in
 production. Consent, source authority, native generation fencing, storage,
@@ -37,11 +48,19 @@ controls. This is source work only; it activates no production cohort.
 
 ## Validation and release sequence
 
-1. Run the new regression and the existing native package. Candidate results:
-   one focused regression passes; all 38 tests in nine suites pass. The
+1. Run both regressions and the existing native package. Initial candidate
+   results: one focused regression and all 38 tests in nine suites passed. The
    controlled old-source regression compiles and fails the next-frame
    acceptance assertion. Its transparent test seam is retained in local
-   evidence, rather than represented as an unmodified old package.
+   evidence, rather than represented as an unmodified old package. For the
+   final coupled-release revision, the full 39-test run passes both regressions
+   and 36 other tests; the existing backup-exclusion metadata assertion fails
+   under the command sandbox. A targeted rerun of that assertion and both
+   regressions, using the unchanged compiled package outside that sandbox,
+   passes all three checks. The pre-revision release-boundary negative control
+   compiles and fails the intended assertion: a callback returns while the
+   admission release is still held. All failed runs remain retained; these
+   are local source checks, not live-phone or hosted-CI qualification.
 2. Obtain independent review of the final pushed commit, publish its durable
    record, and merge through the owner's approved process.
 3. Build a fresh signed iPhone candidate from merged main. Preserve the failed
