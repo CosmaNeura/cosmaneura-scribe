@@ -292,13 +292,18 @@ public struct PCMFrameAdmission: Sendable {
   public func waitUntilConsumed() async {
     await receipt?.waitUntilConsumed()
   }
+
+  /// The transferred buffer and its core admission have both been released.
+  /// This never admits or retains another buffer; it only observes completion.
+  public var isConsumed: Bool { receipt?.isConsumed ?? true }
 }
 
 private final class PCMFrameReceipt: @unchecked Sendable {
   private let completion: Task<Void, Never>
   private let release: (@Sendable () -> Void)?
   private let lock = NSLock()
-  private var released = false
+  private let consumed = PCMFrameConsumptionState()
+  private var consumption: Task<Void, Never>?
 
   init(completion: Task<Void, Never>, release: (@Sendable () -> Void)?) {
     self.completion = completion
@@ -306,14 +311,30 @@ private final class PCMFrameReceipt: @unchecked Sendable {
   }
 
   func waitUntilConsumed() async {
-    await completion.value
-    let shouldRelease = lock.withLock {
-      guard !released else { return false }
-      released = true
-      return true
+    // Copies of the receipt await the same release, rather than returning while
+    // another waiter is still releasing the core admission.
+    let task = lock.withLock {
+      if let consumption { return consumption }
+      let awaited = completion, releaseAdmission = release, state = consumed
+      let task = Task {
+        await awaited.value
+        releaseAdmission?()
+        state.mark()
+      }
+      consumption = task
+      return task
     }
-    if shouldRelease { release?() }
+    await task.value
   }
+
+  var isConsumed: Bool { consumed.value }
+}
+
+private final class PCMFrameConsumptionState: @unchecked Sendable {
+  private let lock = NSLock()
+  private var completed = false
+  var value: Bool { lock.withLock { completed } }
+  func mark() { lock.withLock { completed = true } }
 }
 
 public protocol PCMAudioDriving: Sendable {
