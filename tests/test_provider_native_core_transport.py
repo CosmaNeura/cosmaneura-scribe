@@ -516,6 +516,74 @@ async def test_each_client_phase_uses_one_fresh_core_request(action):
     assert "token" not in str(result)
 
 
+def recovery_reply(value):
+    result = value["result"]
+    review = result.pop("opening_review")
+    result["opening_recovery"] = {
+        "contract_version": "1",
+        "workspace_id": result["workspace_id"],
+        "binding_ref": result["binding_ref"],
+        "request_nonce": review["request_nonce"],
+        "disposition": "provider_operation_conflict",
+    }
+    return value
+
+
+async def test_uncertain_opening_is_distinct_recovery_after_fresh_mount_checks():
+    wire = Wire()
+    wire.alter = recovery_reply
+    request = {**body("mount"), "opening_nonce": str(uuid4())}
+    account, result = await wire.call("mount", request)
+    assert account == ACCOUNT and wire.checks == 3 and len(wire.calls) == 1
+    assert "opening_review" not in result
+    assert result["opening_recovery"]["disposition"] == "provider_operation_conflict"
+    assert result["opening_recovery"]["request_nonce"] == request["opening_nonce"]
+    assert wire.calls[0]["action"] == "mount" and "operation" not in wire.calls[0]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "both",
+        "missing",
+        "nonce",
+        "workspace",
+        "binding",
+        "version",
+        "disposition",
+        "extra",
+        "revoked",
+    ],
+)
+async def test_uncertain_opening_rejects_ambiguous_or_unbound_recovery(fault):
+    wire = Wire()
+
+    def alter(value):
+        review = value["result"]["opening_review"]
+        value = recovery_reply(value)
+        recovery = value["result"]["opening_recovery"]
+        if fault == "both":
+            value["result"]["opening_review"] = review
+        elif fault == "missing":
+            value["result"].pop("opening_recovery")
+        elif fault == "revoked":
+            wire.revoked = True
+        else:
+            field = {
+                "nonce": "request_nonce",
+                "workspace": "workspace_id",
+                "binding": "binding_ref",
+                "version": "contract_version",
+            }.get(fault, fault)
+            recovery[field] = "unrecognized"
+        return value
+
+    wire.alter = alter
+    with pytest.raises(ProviderCoreUnavailable):
+        await wire.call("mount", {**body("mount"), "opening_nonce": str(uuid4())})
+    assert len(wire.calls) == 1
+
+
 @pytest.mark.parametrize("status", [401, 403, 409, 422, 404, 503])
 async def test_failed_facade_never_falls_back_to_older_authority(status):
     wire = Wire()

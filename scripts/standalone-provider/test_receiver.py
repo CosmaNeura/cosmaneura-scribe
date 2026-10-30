@@ -1436,7 +1436,7 @@ async def test_new_workflow_disabled_and_legacy_revocation_cannot_fall_through(h
         assert reply.status_code == 403 and h.wire.calls == []
 
 
-def core_created_opening(h, after_lookup=None, *, native_admission=False):
+def core_created_opening(h, after_lookup=None, *, native_admission=False, opening_recovery=False):
     """Core-owned synthetic visit; real registry checks plus a counted Core wire."""
     h.receiver.encounter_creation_enabled = True
     workspace = uuid4()
@@ -1539,6 +1539,15 @@ def core_created_opening(h, after_lookup=None, *, native_admission=False):
                     value["opening_review"].update(
                         request_nonce=body["opening_nonce"], operation=kind, receipt=receipt
                     )
+                    if opening_recovery:
+                        value.pop("opening_review")
+                        value["opening_recovery"] = {
+                            "contract_version": "1",
+                            "workspace_id": str(workspace),
+                            "binding_ref": value["binding_ref"],
+                            "request_nonce": body["opening_nonce"],
+                            "disposition": "provider_operation_conflict",
+                        }
                 if native_admission:
                     value["prepared_context"] = {
                         "context_token": "offline-core-mount-token",
@@ -1626,6 +1635,30 @@ async def test_core_created_opening_uses_one_facade_and_keeps_checked_display(ha
         "encounter",
         "openingReview",
     }
+    assert h.wire.operations == ["provider_encounter"]
+
+
+@pytest.mark.asyncio
+async def test_core_created_uncertain_opening_publishes_only_existing_recovery(harness):
+    h = harness
+    workspace, lookups = core_created_opening(h, opening_recovery=True)
+    nonce = str(uuid4())
+    async with client(h) as c:
+        result = await c.post(
+            "/provider/v1/mount",
+            json={"workspace_id": str(workspace), "opening_nonce": nonce},
+        )
+    assert result.status_code == 200
+    reply = result.json()
+    assert "openingReview" not in reply
+    assert reply["openingRecovery"] == {
+        "contract_version": "1",
+        "workspace_id": str(workspace),
+        "binding_ref": reply["bindingRef"],
+        "request_nonce": nonce,
+        "disposition": "provider_operation_conflict",
+    }
+    assert lookups == [] and len(h.wire.calls) == 1
     assert h.wire.operations == ["provider_encounter"]
 
 

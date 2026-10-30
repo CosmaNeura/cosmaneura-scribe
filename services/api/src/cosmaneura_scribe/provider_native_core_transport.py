@@ -668,6 +668,8 @@ class ProviderNativeCoreTransport:
                                 and receipt.get("session_id") == payload["session_id"]
                             )
                     else:
+                        opening_fields = set(result) & {"opening_review", "opening_recovery"}
+                        _require(len(opening_fields) == (1 if "opening_nonce" in payload else 0))
                         _require(
                             set(result)
                             == {
@@ -679,17 +681,35 @@ class ProviderNativeCoreTransport:
                                 "appointment_ref",
                                 "encounter",
                             }
-                            | ({"opening_review"} if "opening_nonce" in payload else set())
+                            | opening_fields
                             | ({"prepared_context"} if handoff is not None else set())
                         )
                         _object(result.get("encounter"))
-                        if "opening_nonce" in payload:
+                        if "opening_review" in opening_fields:
                             review = _object(result["opening_review"])
                             _require(
                                 review.get("request_nonce") == payload["opening_nonce"]
                                 and review.get("workspace_id") == workspace
                                 and review.get("binding_ref") == binding
                                 and review.get("operation") == "provider_encounter"
+                            )
+                        if "opening_recovery" in opening_fields:
+                            recovery = _object(result["opening_recovery"])
+                            _require(
+                                set(recovery)
+                                == {
+                                    "contract_version",
+                                    "workspace_id",
+                                    "binding_ref",
+                                    "request_nonce",
+                                    "disposition",
+                                }
+                                and recovery.get("contract_version") == "1"
+                                and recovery.get("request_nonce") == payload["opening_nonce"]
+                                and recovery.get("workspace_id") == workspace
+                                and recovery.get("binding_ref") == binding
+                                and recovery.get("disposition")
+                                in {"provider_operation_unavailable", "provider_operation_conflict"}
                             )
                 # This is a publication fence. It cannot undo a remote mutation;
                 # Core keeps its own current authorization around downstream I/O.

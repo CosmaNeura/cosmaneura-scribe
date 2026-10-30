@@ -798,6 +798,8 @@ class ProviderReceiver:
             }
             if "opening_review" in value:
                 result["openingReview"] = value["opening_review"]
+            if "opening_recovery" in value:
+                result["openingRecovery"] = value["opening_recovery"]
             return result
         finally:
             await transport.close()
