@@ -51,6 +51,11 @@ export interface DesktopProviderRecorderOptions {
   readonly authorizeMount: (prepared: PreparedDesktopCapture, signal: AbortSignal) => Promise<{
     readonly grant: unknown; readonly status: "created" | "capturing";
   }>;
+  /** Unissued first-source preparation only. Record still authorizes the source. */
+  readonly readySourcePreparation?: {
+    prepare(prepared: PreparedDesktopCapture, signal: AbortSignal): Promise<{ readonly expiresAt: string }>;
+    release(): Promise<void>;
+  };
   readonly authority: NonNullable<DesktopCaptureControllerOptions["authority"]>;
   readonly indicator: PersistentRecordingIndicator;
   readonly flowStore: CaptureFlowStore;
@@ -142,6 +147,9 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private continuationGeneration = 0;
   private switchingInput = false;
   private inputSwitch: Promise<void> | null = null;
+  private readySourceTimer: ReturnType<typeof setTimeout> | undefined;
+  private readySourceWork: Promise<void> | undefined;
+  private readySourceAbort: AbortController | undefined;
 
   private constructor(private readonly options: DesktopProviderRecorderOptions) {
     if (typeof process === "undefined" || !process.versions.node || typeof window !== "undefined"
@@ -234,7 +242,21 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     this.unsubscribeController = this.controller.subscribe(() => this.publish());
     this.unsubscribeFlow = this.subscribeFlow();
     this.unsubscribe.push(() => this.unsubscribeController(), () => this.unsubscribeFlow());
-    if (options.audioInputs) this.unsubscribe.push(options.audioInputs.subscribe(() => this.publish()));
+    if (options.audioInputs) {
+      let input = options.audioInputs.getSnapshot().selectedInputId;
+      this.unsubscribe.push(options.audioInputs.subscribe(() => {
+        const next = options.audioInputs!.getSnapshot().selectedInputId;
+        if (next !== input) {
+          input = next;
+          // A device change invalidates the unused owner. Retain any lost
+          // cancellation until explicit recovery, never replace it in parallel.
+          if (this.readySourceAbort) void this.stopReadySourcePreparation(true).then(() => {
+            if (!this.operation && !this.switchingInput) this.beginReadySourcePreparation();
+          }).catch(() => undefined);
+        }
+        this.publish();
+      }));
+    }
     options.signal.addEventListener("abort", this.onRevocation, { once: true });
   }
 
@@ -322,7 +344,10 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
         }
         if (this.coverage !== null) throw unavailable(); // Never replay an attempt over retained coverage.
         if (!mayRestoreReady) throw unavailable();
-        await this.preparedContext();
+        const prepared = await this.preparedContext();
+        if (this.unusedSetupKnown && prepared.captureLeaseGeneration === 1 && !prepared.firstSequenceNumber) {
+          this.beginReadySourcePreparation();
+        }
         // Surface the existing storage guard before a person chooses a source.
         // Keep the ready owner so freeing space permits the normal fresh Start
         // check; a low/unknown capacity never grants capture or changes reserve.
@@ -398,12 +423,14 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       || this.captureMayBeActive || this.coverage !== null || this.flow.snapshot.recordedChunks > 0) throw unavailable();
     if (mode === this.audioMode) return;
     await this.run("other", async () => {
+      await this.stopReadySourcePreparation(true); this.requireOpen();
       await this.options.saveAudioMode?.(mode); this.requireOpen();
       this.audioMode = mode;
       this.callChoiceFailure = null;
       this.unmountedAvailability = await this.availability(this.signal); this.requireOpen();
     });
     if (mode === "meeting" && this.options.listMeetingWindows) await this.refreshMeetingWindows();
+    this.beginReadySourcePreparation();
   }
   async selectAudioInput(id: string): Promise<void> {
     this.requireOpen();
@@ -421,10 +448,12 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       // This internal drain preserves the choice's ticket. A deliberate Pause
       // or Finish cancels that ticket and joins the pending hardware save.
       if (recording) await this.stopCapture(false, false);
+      else await this.stopReadySourcePreparation(true);
       this.requireContinuation(generation);
       if (recording && this.flow.snapshot.state !== "paused") throw unavailable();
       await inputs.selectMicrophone(id); this.requireContinuation(generation);
       if (recording) await this.resumeCapture(generation);
+      else this.beginReadySourcePreparation();
     })().finally(() => { this.inputSwitch = null; this.switchingInput = false; this.publish(); });
     this.inputSwitch = work;
     return work;
@@ -490,6 +519,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     // helper's bounded startup. No grant or active indicator is spent waiting
     // for a person to choose. The native source still revalidates the window.
     try {
+      await this.stopReadySourcePreparation(false);
       this.requireAttempt(attempt, generation);
       await this.flow.checkStorageCapacity(); this.requireAttempt(attempt, generation);
       this.choosingWindow = this.audioMode === "meeting" && !this.options.listMeetingWindows; this.publish();
@@ -712,11 +742,14 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     if (this.closed) return Promise.resolve();
     if (this.closing) return this.closing;
     this.deactivated = true; this.cancelContinuation(); this.abort.abort(); this.attempt?.abort();
+    this.readySourceAbort?.abort();
+    if (this.readySourceTimer !== undefined) clearTimeout(this.readySourceTimer);
     this.meetingWindowId = null; this.meetingWindowExplicit = false; this.inheritedRecommendedIds.clear();
     // Interrupt startup now, then await all prior work before releasing custody.
     const halted = this.halt(); void halted.catch(() => undefined);
     this.closing = (async () => {
       await this.initialization?.catch(() => undefined);
+      await this.stopReadySourcePreparation(true);
       await this.operation?.catch(() => undefined); await this.stopping?.catch(() => undefined);
       await this.inputSwitch?.catch(() => undefined);
       await halted.catch(() => undefined);
@@ -761,6 +794,9 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private requireOpen(): void { if (this.deactivated || this.signal.aborted || this.preparationFailed) throw unavailable(); }
   private subscribeFlow(): () => void {
     return this.flow.subscribe(snapshot => {
+      if (snapshot.state !== "ready" && this.action !== "start" && this.action !== "resume") {
+        void this.stopReadySourcePreparation(true).catch(() => undefined);
+      }
       if (!this.deactivated && ["paused", "error"].includes(snapshot.state)
         && (this.controller.snapshot().state === "recording" || this.action === "start" || this.action === "resume" && this.choosingWindow)) {
         // A human picker can outlive the prepared lease. Release that await as
@@ -869,6 +905,41 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       leaseReceiptId: active.lease.receipt_id, captureLeaseGeneration: active.lease.generation,
       captureAuthorizedUntil: active.captureAuthorizedUntil,
       ...(active.continuation?.firstSequenceNumber ? { firstSequenceNumber: active.continuation.firstSequenceNumber } : {}) });
+  }
+  private beginReadySourcePreparation(): void {
+    if (!this.options.readySourcePreparation || this.readySourceWork || this.readySourceTimer !== undefined
+      || this.deactivated || this.signal.aborted || this.coverage !== null || !this.unusedSetupKnown
+      || this.flow.snapshot.state !== "ready" || this.flow.snapshot.recordedChunks !== 0) return;
+    const abort = new AbortController(); this.readySourceAbort = abort;
+    const signal = AbortSignal.any([this.signal, abort.signal]);
+    const work = (async () => {
+      const prepared = await this.preparedContext();
+      if (signal.aborted || prepared.captureLeaseGeneration !== 1 || prepared.firstSequenceNumber) return;
+      const result = await this.options.readySourcePreparation!.prepare(prepared, signal);
+      if (signal.aborted || this.flow.snapshot.state !== "ready") return;
+      const expires = Date.parse(result.expiresAt);
+      if (!Number.isFinite(expires) || expires <= Date.now() || expires > Date.parse(prepared.captureAuthorizedUntil)) throw unavailable();
+      // Refresh only after the original native expiry. The backend retires the
+      // expired owner with an acknowledged release before creating another.
+      this.readySourceTimer = setTimeout(() => {
+        this.readySourceTimer = undefined; this.beginReadySourcePreparation();
+      }, Math.max(1, expires - Date.now()));
+      this.readySourceTimer.unref?.();
+    })().finally(() => { if (this.readySourceWork === work) this.readySourceWork = undefined; });
+    this.readySourceWork = work;
+    // Failure retains custody in the backend. Only an explicit Start/cleanup
+    // can settle it; do not retry an ambiguous prepare in the background.
+    void work.catch(() => undefined);
+  }
+  private async stopReadySourcePreparation(release: boolean): Promise<void> {
+    if (this.readySourceTimer !== undefined) clearTimeout(this.readySourceTimer);
+    this.readySourceTimer = undefined;
+    if (release) this.readySourceAbort?.abort();
+    await this.readySourceWork?.catch(() => undefined);
+    if (this.readySourceTimer !== undefined) clearTimeout(this.readySourceTimer);
+    this.readySourceTimer = undefined;
+    this.readySourceAbort = undefined;
+    if (release) await this.options.readySourcePreparation?.release();
   }
   private probeForInitialization(): Promise<"ready" | "permission_required"> {
     // Moving the probe ahead of controller initialization must not remove its

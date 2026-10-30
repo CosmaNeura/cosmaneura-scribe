@@ -12,6 +12,7 @@ import { parseNativeProcessFence, type NativeProcessFence } from "./native-proce
 import type { NativeProviderClient } from "./native-provider-client.js";
 import { parseProviderAccount, type ProviderAccount, createEncounterSetup, type CreationRecords } from "../../capture/src/provider/encounter-setup";
 import { claimDesktopInitialWindow } from "./desktop-initial-window.js";
+import type { PreparedDesktopCapture } from "./provider-recorder.js";
 
 /** Real native RPC/receiver backend. The helper owns fresh SDK tokens and all
  * source-start proofs; the main process receives only the checked grant/decision. */
@@ -35,7 +36,10 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
   let openingReviewSupported = false, noteOpeningSupported = false, creationSupported = false;
   let account: ProviderAccount | undefined;
   const encounters = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
-  const sources = new Map<string, { sourceLeaseId?: string; retiringPreparation: boolean; processFence?: NativeProcessFence }>();
+  type Source = { sourceLeaseId?: string; retiringPreparation: boolean; processFence?: NativeProcessFence;
+    grant?: ReturnType<typeof parseBackendCaptureGrant>;
+    ready?: { prepared: PreparedDesktopCapture; expiresAt?: string; grant?: ReturnType<typeof parseBackendCaptureGrant> } };
+  const sources = new Map<string, Source>();
   const releasePreparation = async (preparationId: string, stopped: boolean): Promise<void> => {
     const source = sources.get(preparationId); if (!source) return;
     if (native.signal.aborted) throw unavailable();
@@ -158,9 +162,13 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
       const scope = Object.freeze({ workspaceId: row.workspaceId, appointmentRef, bindingRef: value.bindingRef });
       const openingResult = openingNonce ? openingResultFromCore(scope, openingNonce, value) : {};
       const ownedSources = new Set<string>();
+      let sourceWork: Promise<unknown> = Promise.resolve();
+      const serializeSource = <T>(run: () => Promise<T>): Promise<T> => {
+        const next = sourceWork.then(run); sourceWork = next.catch(() => undefined); return next;
+      };
       const mountedSignal = AbortSignal.any([lifetime, signal]);
       mountedSignal.addEventListener("abort", () => { void abandonWindow().catch(() => undefined); }, { once: true });
-      const release = async (): Promise<void> => {
+      const release = (): Promise<void> => serializeSource(async () => {
         // RAM metadata is already unusable in main. Notify native without adding
         // its RPC timeout to the existing confirmed source-cleanup path.
         void abandonWindow().catch(() => undefined);
@@ -168,13 +176,46 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
           await releasePreparation(preparationId, false);
           ownedSources.delete(preparationId);
         }
-      };
-      const retireSource = async (): Promise<void> => {
+      });
+      const retireSource = (): Promise<void> => serializeSource(async () => {
         for (const preparationId of ownedSources) {
           await releasePreparation(preparationId, true);
           ownedSources.delete(preparationId);
         }
+      });
+      const prepareSource = async (prepared: PreparedDesktopCapture, operationSignal: AbortSignal, ready: boolean) => {
+        current(signal); current(operationSignal);
+        const preparationId = crypto.randomUUID(), source: Source = { retiringPreparation: false,
+          ...(ready ? { ready: { prepared: Object.freeze({ ...prepared }) } } : {}) };
+        sources.set(preparationId, source); ownedSources.add(preparationId);
+        // Journal custody precedes dispatch, including a missing pipe reply.
+        const raw = await timed("provider_source_prepare", () => native.request(ready ? "sourcePrepare" : "sourcePrepareForStart", {
+          revision, preparationId, workspaceId: scope.workspaceId, bindingRef: scope.bindingRef,
+          sessionId: prepared.sessionId, leaseId: prepared.captureLeaseId,
+          leaseReceiptId: prepared.leaseReceiptId, leaseGeneration: prepared.captureLeaseGeneration,
+          captureAuthorizedUntil: prepared.captureAuthorizedUntil,
+          ...(prepared.firstSequenceNumber ? { firstSequenceNumber: prepared.firstSequenceNumber } : {}),
+        }, AbortSignal.any([lifetime, signal, operationSignal])));
+        const value = exact(raw, ready ? ["grant", "processFence", "preparationExpiresAt"] : ["grant", "processFence"]);
+        const grant = parseBackendCaptureGrant(value.grant), processFence = parseNativeProcessFence(value.processFence);
+        if (grant.captureSessionId !== prepared.sessionId || sources.get(preparationId) !== source || source.retiringPreparation) throw unavailable();
+        if (ready) {
+          if (typeof value.preparationExpiresAt !== "string" || !Number.isFinite(Date.parse(value.preparationExpiresAt))
+            || Date.parse(value.preparationExpiresAt) <= Date.now()
+            || Date.parse(value.preparationExpiresAt) > Date.parse(prepared.captureAuthorizedUntil)) throw unavailable();
+          source.ready!.expiresAt = value.preparationExpiresAt; source.ready!.grant = grant;
+        }
+        source.sourceLeaseId = grant.sourceLeaseId; source.processFence = processFence; source.grant = grant;
+        current(signal); current(operationSignal);
+        return source;
       };
+      const releaseReady = (): Promise<void> => serializeSource(async () => {
+        for (const id of ownedSources) if (sources.get(id)?.ready) {
+          // Preparation-only cancellation, never a physical-stop claim.
+          const source = sources.get(id)!; source.retiringPreparation = true;
+          await releasePreparation(id, false); ownedSources.delete(id);
+        }
+      });
       return {
         release, retireSource, encounter, scope, signal: mountedSignal, recoveryScope: uuid(value.recoveryScope),
         ...(state.recordingSignInPreparationVersion === 1 ? { signInPreparation: scopedSignInPreparation({
@@ -190,6 +231,25 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
         ...(object(value.encounter).admission_metadata_v1 === true ? { admissionMetadataSupported: true as const } : {}),
         ...(supportsNoteOpening ? { noteOpeningSupported: true as const } : {}),
         ...openingResult,
+        ...(state.desktopSourcePreparationVersion === 1 ? { readySourcePreparation: {
+          release: releaseReady,
+          prepare: (prepared: PreparedDesktopCapture, operationSignal: AbortSignal) => serializeSource(async () => {
+            current(signal); current(operationSignal);
+            if (prepared.captureLeaseGeneration !== 1 || prepared.firstSequenceNumber) throw unavailable();
+            for (const id of ownedSources) {
+              const prior = sources.get(id);
+              if (!prior?.ready) throw unavailable();
+              if (!prior.retiringPreparation && prior.ready.expiresAt && prior.ready.grant
+                && Date.parse(prior.ready.expiresAt) > Date.now() && samePrepared(prior.ready.prepared, prepared)) {
+                return { expiresAt: prior.ready.expiresAt };
+              }
+              prior.retiringPreparation = true;
+              await releasePreparation(id, false); ownedSources.delete(id);
+            }
+            const source = await prepareSource(prepared, operationSignal, true);
+            return { expiresAt: source.ready!.expiresAt! };
+          }),
+        } } : {}),
         uploadTarget: options.uploadTarget,
         sendFreshInitialWindow: (proof, body, key, operationSignal) => {
           const admission = claimDesktopInitialWindow(proof, { scope, body, key });
@@ -212,36 +272,32 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
             || body.workspace_id !== scope.workspaceId || body.binding_ref !== scope.bindingRef) throw unavailable();
           return request(action, { ...body }, key, AbortSignal.any([signal, operationSignal]));
         },
-        authorizeRecorder: async (prepared, operationSignal) => {
+        authorizeRecorder: (prepared, operationSignal) => serializeSource(async () => {
           current(signal); current(operationSignal);
           for (const preparationId of ownedSources) {
+            const source = sources.get(preparationId);
+            if (source?.ready) {
+              if (!source.retiringPreparation && source.ready.expiresAt && source.ready.grant && source.processFence
+                && Date.parse(source.ready.expiresAt) > Date.now() && samePrepared(source.ready.prepared, prepared)) {
+                const grant = source.ready.grant;
+                delete source.ready;
+                return { grant, status: "created" as const };
+              }
+              source.retiringPreparation = true;
+            }
             if (!sources.get(preparationId)?.sourceLeaseId || sources.get(preparationId)?.retiringPreparation) {
               await releasePreparation(preparationId, false);
               ownedSources.delete(preparationId);
             }
           }
           current(signal); current(operationSignal);
-          const preparationId = crypto.randomUUID(), source: { sourceLeaseId?: string; retiringPreparation: boolean; processFence?: NativeProcessFence } = { retiringPreparation: false };
-          sources.set(preparationId, source); ownedSources.add(preparationId);
           // Called after deliberate Start and window selection. The native
           // owner keeps the short-lived decision until sourceAuthorize consumes
           // it; this reply exposes only the original grant and process fence.
-          const raw = await timed("provider_source_prepare", () => native.request("sourcePrepareForStart", {
-            revision, preparationId, workspaceId: scope.workspaceId, bindingRef: scope.bindingRef,
-            sessionId: prepared.sessionId, leaseId: prepared.captureLeaseId,
-            leaseReceiptId: prepared.leaseReceiptId, leaseGeneration: prepared.captureLeaseGeneration,
-            captureAuthorizedUntil: prepared.captureAuthorizedUntil,
-            ...(prepared.firstSequenceNumber ? { firstSequenceNumber: prepared.firstSequenceNumber } : {}),
-          }, AbortSignal.any([lifetime, signal, operationSignal])));
-          const value = exact(raw, ["grant", "processFence"]);
-          const grant = parseBackendCaptureGrant(value.grant);
-          const processFence = parseNativeProcessFence(value.processFence);
-          if (grant.captureSessionId !== prepared.sessionId || sources.get(preparationId) !== source
-            || source.retiringPreparation) throw unavailable();
-          source.sourceLeaseId = grant.sourceLeaseId; source.processFence = processFence;
-          current(signal); current(operationSignal);
-          return { grant, status: "created" };
-        },
+          const source = await prepareSource(prepared, operationSignal, false);
+          // A combined owner has no Ready metadata; obtain its checked grant.
+          return { grant: source.grant!, status: "created" as const };
+        }),
         processFence: () => {
           current(signal);
           const values = [...ownedSources].map(id => sources.get(id));
@@ -271,6 +327,12 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
 const parseEncounter = parseEncounterDisplay;
 
 function unavailable(): Error { return new Error("provider_native_connection_unavailable"); }
+
+function samePrepared(left: PreparedDesktopCapture, right: PreparedDesktopCapture): boolean {
+  return left.sessionId === right.sessionId && left.captureLeaseId === right.captureLeaseId
+    && left.leaseReceiptId === right.leaseReceiptId && left.captureLeaseGeneration === right.captureLeaseGeneration
+    && left.captureAuthorizedUntil === right.captureAuthorizedUntil && (left.firstSequenceNumber ?? 0) === (right.firstSequenceNumber ?? 0);
+}
 
 function objectAccount(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw unavailable();

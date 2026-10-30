@@ -485,6 +485,20 @@ private actor SourceWire: ProviderNativeWire {
       try await f.registry.release(sourceLeaseID: grant.sourceLeaseID, stopped: true)
       checks += 1
     }
+    do {
+      let f = try Fixture(); let grant = try await f.prepare(combined: false)
+      let originalExpiry = try f.registry.preparationExpiry(id: f.id)
+      let formatter = ISO8601DateFormatter()
+      f.clock.value = formatter.date(from: originalExpiry)!.addingTimeInterval(0.001)
+      try require(try f.registry.preparationExpiry(id: f.id) == originalExpiry)
+      try await rejects { _ = try await f.registry.authorize(sourceLeaseID: grant.sourceLeaseID) }
+      // Expired unissued authority is refused locally without extending its
+      // original deadline or dispatching a remote authorization decision.
+      try require(await f.wire.requests.count == 1)
+      try await f.registry.release(sourceLeaseID: grant.sourceLeaseID, stopped: true)
+      try require(f.journal.pending.isEmpty)
+      checks += 1
+    }
     let faults = ["lost", "prepare-nonce", "authorize-nonce", "prepare-state", "prepare-session",
       "prepare-expired", "authorize-secret", "authorize-source", "authorize-consent", "authorize-expired",
       "authorize-position", "authorize-capability", "authorize-preparation-expiry"]

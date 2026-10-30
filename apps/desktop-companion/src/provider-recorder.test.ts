@@ -2287,3 +2287,59 @@ describe("deliberate desktop input selection", () => {
     } finally { await f.close(); }
   });
 });
+
+it("warms an unissued source in Ready, joins its pending reply on Record, and still authorizes only after the window choice", async () => {
+  const f = await fixture(true); interruptedDriver(f);
+  const pending = deferred(), entered = deferred();
+  const prepare = vi.fn(async (prepared: PreparedDesktopCapture) => {
+    expect(prepared.captureLeaseGeneration).toBe(1); expect(prepared.firstSequenceNumber).toBeUndefined();
+    entered.resolve(); await pending.promise; return { expiresAt: new Date(Date.now() + 60_000).toISOString() };
+  });
+  const release = vi.fn(async () => undefined), mount = vi.fn(f.options.authorizeMount);
+  const recorder = await f.open({ readySourcePreparation: { prepare, release }, authorizeMount: mount });
+  const starting = recorder.startRecording();
+  try {
+    await entered.promise;
+    expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled(); expect(mount).not.toHaveBeenCalled();
+    pending.resolve(); await starting;
+    expect(prepare).toHaveBeenCalledOnce(); expect(mount).toHaveBeenCalledOnce(); expect(f.selectWindow).toHaveBeenCalledOnce();
+    expect(f.authority).toHaveBeenCalledOnce(); expect(f.nativeStart).toHaveBeenCalledOnce();
+  } finally { pending.resolve(); await starting.catch(() => undefined); await f.close(); }
+});
+
+it("joins and cancels Ready preparation on closure before releasing the recorder's custody", async () => {
+  const f = await fixture(true), pending = deferred(), entered = deferred();
+  const prepare = vi.fn(async (_prepared: PreparedDesktopCapture, signal: AbortSignal) => {
+    entered.resolve(); await pending.promise; expect(signal.aborted).toBe(true);
+    return { expiresAt: new Date(Date.now() + 60_000).toISOString() };
+  });
+  const release = vi.fn(async () => undefined);
+  const recorder = await f.open({ readySourcePreparation: { prepare, release } });
+  try {
+    await entered.promise; release.mockClear();
+    const closing = recorder.deactivate();
+    expect(release).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+    pending.resolve(); await closing;
+    expect(release).toHaveBeenCalled(); expect(f.release).toHaveBeenCalledOnce();
+    expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+  } finally { pending.resolve(); await f.close(); }
+});
+
+it("refreshes first-source preparation at its original expiry while remaining Ready without authorizing capture", async () => {
+  const f = await fixture(true);
+  let originalExpiry = 0;
+  const prepare = vi.fn(async (prepared: PreparedDesktopCapture) => {
+    expect(prepared.captureLeaseGeneration).toBe(1);
+    if (originalExpiry) expect(Date.now()).toBeGreaterThanOrEqual(originalExpiry);
+    const expires = Date.now() + (originalExpiry ? 60_000 : 80);
+    if (!originalExpiry) originalExpiry = expires;
+    return { expiresAt: new Date(expires).toISOString() };
+  });
+  const release = vi.fn(async () => undefined);
+  const recorder = await f.open({ readySourcePreparation: { prepare, release } });
+  try {
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(2), { timeout: 1000, interval: 10 });
+    expect(recorder.snapshot.desktop?.phase).toBe("ready");
+    expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+  } finally { await f.close(); }
+});

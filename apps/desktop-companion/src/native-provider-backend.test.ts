@@ -436,3 +436,112 @@ it("binds desktop setup auth to the native version and current mount, with no so
   host.abort(); expect(() => mount.signInPreparation!.prepare(new AbortController().signal)).toThrow();
   await backend.dispose();
 });
+
+async function readySourceFixture() {
+  const abort = new AbortController(), revision = crypto.randomUUID(), workspaceId = crypto.randomUUID(), sessionId = crypto.randomUUID();
+  const suffix = "01j" + "0".repeat(23), appointmentRef = "appointment_" + suffix, bindingRef = "scribe_capture_binding_" + suffix;
+  const encounter = { appointmentRef, title: "Invented visit", detail: "Unissued preparation fixture" };
+  const prepared = { sessionId, captureLeaseId: crypto.randomUUID(), leaseReceiptId: crypto.randomUUID(),
+    captureLeaseGeneration: 1, captureAuthorizedUntil: new Date(Date.now() + 900_000).toISOString() };
+  let expiry = Date.now() + 120_000, losePrepare = false, loseRelease = false;
+  const owners = new Map<string, Record<string, unknown>>();
+  const calls: { method: string; payload: Record<string, unknown> }[] = [];
+  const request = vi.fn(async (method: string, payload: Record<string, unknown>) => {
+    calls.push({ method, payload });
+    if (method === "providerRequest") return { status: 200, body: JSON.stringify(payload.action === "catalog"
+      ? { revision, encounters: [{ ...encounter, workspaceId }] }
+      : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID() }) };
+    if (method === "sourcePrepare" || method === "sourcePrepareForStart") {
+      expect(owners.size).toBe(0);
+      const grant = { captureSessionId: sessionId, actorId: "invented-creator", consentRecordId: crypto.randomUUID(),
+        consentStatus: "granted", sessionStatus: "authorized", source: "desktop_companion", sourceLeaseId: crypto.randomUUID() };
+      owners.set(payload.preparationId as string, grant);
+      if (losePrepare) { losePrepare = false; throw new Error("lost prepare"); }
+      return { ...preparedReply(grant), ...(method === "sourcePrepare" ? { preparationExpiresAt: new Date(expiry).toISOString() } : {}) };
+    }
+    if (method === "sourcePreparationRelease") {
+      if (loseRelease) { loseRelease = false; throw new Error("lost release"); }
+      owners.delete(payload.preparationId as string); return null;
+    }
+    if (method === "sourceRelease" || method === "sourceStopped") {
+      for (const [id, grant] of owners) if (grant.sourceLeaseId === payload.sourceLeaseId) owners.delete(id);
+      return null;
+    }
+    if (method === "sourceAuthorize") return { decision: "synthetic remote authorization" };
+    throw new Error("Unexpected native request");
+  });
+  const native = { signal: new AbortController().signal, request, isReady: () => true,
+    getState: async () => ({ phase: "ready", revision, desktopSourcePreparationVersion: 1 }),
+    addListener: async () => ({ remove: async () => undefined }) } as unknown as NativeProviderClient;
+  const backend = await connectDesktopNativeBackend(native, { signal: abort.signal, openCore: async () => undefined,
+    uploadTarget: { putCompleteEnvelope: async () => undefined } });
+  await backend.listEncounters(abort.signal);
+  const mount = await backend.openEncounter(appointmentRef, abort.signal);
+  return { abort, prepared, mount, calls, owners,
+    expiry: (value: number) => { expiry = value; }, losePrepare: () => { losePrepare = true; }, loseRelease: () => { loseRelease = true; },
+    close: async () => { await mount.release?.(); await backend.dispose(); } };
+}
+
+it("prepares without authority in Ready and reuses that exact grant/fence for one real Record authorization", async () => {
+  const f = await readySourceFixture();
+  try {
+    const ready = await f.mount.readySourcePreparation!.prepare(f.prepared, f.abort.signal);
+    expect(Date.parse(ready.expiresAt)).toBeGreaterThan(Date.now());
+    await f.mount.readySourcePreparation!.prepare(f.prepared, f.abort.signal);
+    expect(f.calls.filter(call => call.method.startsWith("source")).map(call => call.method)).toEqual(["sourcePrepare"]);
+    const original = [...f.owners.values()][0];
+    const { grant } = await f.mount.authorizeRecorder(f.prepared, f.abort.signal);
+    expect(grant).toEqual(original); expect(f.mount.processFence!()).toBeDefined();
+    expect(f.calls.some(call => call.method === "sourceAuthorize" || call.method === "sourcePrepareForStart")).toBe(false);
+    await f.mount.authority.authorizeStart(grant as Parameters<typeof f.mount.authority.authorizeStart>[0], f.abort.signal);
+    expect(f.calls.filter(call => call.method.startsWith("source")).map(call => call.method)).toEqual(["sourcePrepare", "sourceAuthorize"]);
+    await f.mount.readySourcePreparation!.release(); // Claimed owner is no longer preparation-only custody.
+    expect(f.owners.size).toBe(1);
+    await f.mount.retireSource();
+  } finally { await f.close(); }
+});
+
+it("retires the expired original owner before a fresh Ready proof and blocks replacement on a lost retirement", async () => {
+  const f = await readySourceFixture();
+  let now = Date.now(); const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    await f.mount.readySourcePreparation!.prepare(f.prepared, f.abort.signal);
+    const original = f.calls.find(call => call.method === "sourcePrepare")!.payload.preparationId;
+    now += 120_001; f.expiry(now + 120_000); f.loseRelease();
+    await expect(f.mount.readySourcePreparation!.prepare(f.prepared, f.abort.signal)).rejects.toThrow("lost release");
+    expect(f.calls.filter(call => call.method === "sourcePrepare")).toHaveLength(1);
+    await f.mount.readySourcePreparation!.prepare(f.prepared, f.abort.signal);
+    const sourceCalls = f.calls.filter(call => call.method.startsWith("source"));
+    expect(sourceCalls.map(call => call.method)).toEqual(["sourcePrepare", "sourcePreparationRelease", "sourcePreparationRelease", "sourcePrepare"]);
+    expect(sourceCalls[1]!.payload.preparationId).toBe(original); expect(sourceCalls[2]!.payload.preparationId).toBe(original);
+    expect(sourceCalls[3]!.payload.preparationId).not.toBe(original);
+  } finally { clock.mockRestore(); await f.close(); }
+});
+
+it("uses the combined Record fallback only after confirmed cleanup of an ambiguous Ready dispatch", async () => {
+  const f = await readySourceFixture();
+  try {
+    f.losePrepare();
+    await expect(f.mount.readySourcePreparation!.prepare(f.prepared, f.abort.signal)).rejects.toThrow("lost prepare");
+    f.loseRelease();
+    await expect(f.mount.authorizeRecorder(f.prepared, f.abort.signal)).rejects.toThrow("lost release");
+    expect(f.calls.some(call => call.method === "sourcePrepareForStart")).toBe(false);
+    await f.mount.authorizeRecorder(f.prepared, f.abort.signal);
+    expect(f.calls.filter(call => call.method.startsWith("source")).map(call => call.method)).toEqual([
+      "sourcePrepare", "sourcePreparationRelease", "sourcePreparationRelease", "sourcePrepareForStart",
+    ]);
+  } finally { await f.close(); }
+});
+
+it("cancels the unissued owner on scope closure and never prepares a recorded continuation in Ready", async () => {
+  const f = await readySourceFixture();
+  try {
+    await expect(f.mount.readySourcePreparation!.prepare({ ...f.prepared, firstSequenceNumber: 1 }, f.abort.signal)).rejects.toThrow();
+    await expect(f.mount.readySourcePreparation!.prepare({ ...f.prepared, captureLeaseGeneration: 2 }, f.abort.signal)).rejects.toThrow();
+    await f.mount.readySourcePreparation!.prepare(f.prepared, f.abort.signal);
+    f.abort.abort();
+    await expect(f.mount.authorizeRecorder(f.prepared, f.abort.signal)).rejects.toThrow();
+    await f.mount.readySourcePreparation!.release();
+    expect(f.owners.size).toBe(0); expect(f.calls.some(call => call.method === "sourceAuthorize")).toBe(false);
+  } finally { await f.close(); }
+});

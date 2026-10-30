@@ -35,6 +35,7 @@ export interface AuthorizedDesktopProviderMount extends Omit<AuthorizedProviderE
   /** Backend-issued authority. A session/capabilities receipt is insufficient. */
   readonly retireSource: () => Promise<void>;
   readonly authorizeRecorder: (prepared: PreparedDesktopCapture, signal: AbortSignal) => ReturnType<DesktopProviderRecorderOptions["authorizeMount"]>;
+  readonly readySourcePreparation?: DesktopProviderRecorderOptions["readySourcePreparation"];
   readonly authority: DesktopProviderRecorderOptions["authority"];
   readonly processFence?: DesktopProviderRecorderOptions["native"]["getProcessFence"];
 }
@@ -400,6 +401,7 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
                   return authorization;
                 },
                 authorizeMount: (prepared, captureSignal) => selected.authorizeRecorder(prepared, captureSignal),
+                ...(selected.readySourcePreparation ? { readySourcePreparation: selected.readySourcePreparation } : {}),
                 authority: selected.authority, indicator: resources.indicator,
                 retireSource: selected.retireSource,
                 flowStore: flow, createSessionKey: flow.createSessionKey,

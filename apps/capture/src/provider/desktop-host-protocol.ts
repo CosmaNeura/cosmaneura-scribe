@@ -49,7 +49,8 @@ export function sessionState(value: unknown): ProviderSessionState {
     ...(state.phase === "ready" && typeof state.accountIdentitySHA256 === "string"
       && /^[a-f0-9]{64}$/u.test(state.accountIdentitySHA256) ? { accountIdentitySHA256: state.accountIdentitySHA256 } : {}),
     ...(name !== undefined ? { providerDisplayName: name } : {}),
-    ...(state.phase === "ready" && state.recordingSignInPreparationVersion === 1 ? { recordingSignInPreparationVersion: 1 as const } : {}) };
+    ...(state.phase === "ready" && state.recordingSignInPreparationVersion === 1 ? { recordingSignInPreparationVersion: 1 as const } : {}),
+    ...(state.phase === "ready" && state.desktopSourcePreparationVersion === 1 ? { desktopSourcePreparationVersion: 1 as const } : {}) };
 }
 export function exact(value: unknown, keys: readonly string[]): Record<string, unknown> {
   const data = object(value);

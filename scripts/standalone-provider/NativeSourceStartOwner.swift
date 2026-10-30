@@ -85,6 +85,7 @@ struct NativeSourceDecision: Sendable {
     private let record: NativeSourceProofRecord
     private var proof: String
     private var grant: NativeSourceGrant?
+    private(set) var preparationExpiresAt: String?
     private var busy = false
     private var closed = false
     private var issued = false
@@ -128,10 +129,12 @@ struct NativeSourceDecision: Sendable {
         let checked = try checkReceipt(receipt)
         guard receipt["state"] as? String == "prepared",
               let expires = receipt["preparation_expires_at"] as? String,
-              let date = sourceDate(expires), date > Date() else {
+              let date = sourceDate(expires), date > now(), date.timeIntervalSince(now()) <= 120.001,
+              let deadline = sourceDate(preparation.captureAuthorizedUntil), date <= deadline else {
             throw ProviderNativeError.response
         }
         grant = checked
+        preparationExpiresAt = expires
         return checked
     }
 
@@ -155,6 +158,11 @@ struct NativeSourceDecision: Sendable {
             return prepared
         }
 #endif
+        // Preserve the server's original unissued preparation deadline. Ready
+        // refresh must retire this owner, never renew it by changing metadata.
+        guard let expires = preparationExpiresAt, let expiry = sourceDate(expires), expiry > now() else {
+            throw ProviderNativeError.unavailable
+        }
         let result = try await send(action: "authorize", key: authorizeKey)
         return try decision(result, grant: grant)
     }

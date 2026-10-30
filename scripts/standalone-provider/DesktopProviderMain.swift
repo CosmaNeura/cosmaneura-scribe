@@ -212,7 +212,11 @@ import ScribeStorePipe
             guard auth.state().phase == .ready, auth.state().revision == revision else {
                 throw ProviderNativeError.unavailable
             }
-            return ["grant": grant.desktopPayload, "processFence": try recovery.processFence]
+            var result: [String: Any] = ["grant": grant.desktopPayload, "processFence": try recovery.processFence]
+            if method == "sourcePrepare" {
+                result["preparationExpiresAt"] = try sources.preparationExpiry(id: Self.uuid(payload["preparationId"]))
+            }
+            return result
         case "sourcePreparationRelease":
             guard Set(payload.keys) == ["revision", "preparationId"],
                   let revision = payload["revision"] as? String,
@@ -269,7 +273,10 @@ import ScribeStorePipe
     }
     private func state(_ value: NativeAuthState) -> [String: Any] {
         var payload: [String: Any] = ["phase": value.phase.rawValue, "revision": value.revision]
-        if value.phase == .ready { payload["recordingSignInPreparationVersion"] = 1 }
+        if value.phase == .ready {
+            payload["recordingSignInPreparationVersion"] = 1
+            payload["desktopSourcePreparationVersion"] = 1
+        }
         if let digest = NativeAuthPayload.accountIdentitySHA256(value) {
             payload["accountIdentitySHA256"] = digest
         }
