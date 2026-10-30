@@ -28,6 +28,12 @@ class PreparedSourceWindow:
 
 
 @dataclass(frozen=True, repr=False)
+class PreparedContinuationWindow(PreparedSourceWindow):
+    lease_generation: int
+    first_sequence_number: int
+
+
+@dataclass(frozen=True, repr=False)
 class PreparedContext:
     mount: CoreProviderMount
     token: SecretStr
@@ -35,7 +41,8 @@ class PreparedContext:
     turn: UUID
     issued_at: float
     stage: Literal[
-        "admission", "recording_window", "source_start", "unused_continuation_source"
+        "admission", "recording_window", "source_start", "unused_continuation_source",
+        "recorded_continuation_source",
     ] = "recording_window"
     native_read_done: bool = False
     native_read_supported: bool = False
@@ -43,6 +50,7 @@ class PreparedContext:
     admission_preparation_metadata_supported: bool = False
     source_start_supported: bool = False
     source_window: PreparedSourceWindow | None = None
+    continuation_window: PreparedContinuationWindow | None = None
 
 
 class PreparationHandoff:
@@ -213,7 +221,8 @@ class PreparationHandoff:
         workspace: str,
         binding: str,
         stage: Literal[
-            "admission", "recording_window", "source_start", "unused_continuation_source"
+            "admission", "recording_window", "source_start", "unused_continuation_source",
+            "recorded_continuation_source",
         ] = "recording_window",
     ) -> PreparedContext | None:
         self._expire()

@@ -49,6 +49,7 @@ from .provider_preparation_handoff import (
     PreparedContext,
     retain_source_window,
 )
+from .provider_recorded_continuation import is_recorded_continuation, retain_recorded_continuation
 from .provider_unused_continuation import is_unused_continuation, retain_unused_continuation
 
 PATH = "/service/v1/agent/scribe/native-capture"
@@ -95,6 +96,7 @@ async def prepare_then_dispatch(
     need(re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", key))
     preparation = "admission" if action == "capture-admissions" else "recording_window"
     unused_continuation = action == "capture-operations" and is_unused_continuation(payload)
+    recorded_continuation = action == "capture-operations" and is_recorded_continuation(payload)
     need(
         (
             action == "capture-admissions"
@@ -113,6 +115,7 @@ async def prepare_then_dispatch(
             and (
                 obj(payload["operation"]).get("kind") == "prepare_recording_window"
                 or unused_continuation
+                or recorded_continuation
             )
         )
     )
@@ -146,7 +149,7 @@ async def prepare_then_dispatch(
                 cast(str, binding),
                 stage=preparation,
             )
-            if handoff is not None and not unused_continuation
+            if handoff is not None and not (unused_continuation or recorded_continuation)
             else None
         )
         # Capabilities come only from the current validated mount, not caller flags.
@@ -584,6 +587,20 @@ async def prepare_then_dispatch(
             retain_unused_continuation(
                 handoff, origin, before, revision, workspace, cast(str, binding),
                 PreparedContext(mount, context, cast(str, interaction), turn, issued_at),
+                payload, answer,
+            )
+        if recorded_continuation:
+            if await fresh() != before:
+                raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise asyncio.CancelledError
+            retain_recorded_continuation(
+                handoff, origin, before, revision, workspace, cast(str, binding),
+                PreparedContext(
+                    mount, context, cast(str, interaction), turn, issued_at,
+                    source_start_supported=source_start_supported,
+                ),
                 payload, answer,
             )
         return answer

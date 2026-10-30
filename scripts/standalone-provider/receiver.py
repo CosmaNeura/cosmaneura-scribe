@@ -43,6 +43,10 @@ from cosmaneura_scribe.provider_performance import (
 )
 from cosmaneura_scribe.provider_preparation_core_transport import prepare_then_dispatch
 from cosmaneura_scribe.provider_preparation_handoff import PreparationHandoff
+from cosmaneura_scribe.provider_recorded_continuation import (
+    is_recorded_continuation,
+    prepare_recorded_source,
+)
 from cosmaneura_scribe.provider_source_preparation import prepare_source
 from cosmaneura_scribe.provider_unused_continuation import (
     is_unused_continuation,
@@ -410,6 +414,7 @@ class ProviderReceiver:
                     and (
                         operation.get("kind") == "prepare_recording_window"
                         or is_unused_continuation(body)
+                        or is_recorded_continuation(body)
                     )
                 )
                 if (
@@ -478,6 +483,18 @@ class ProviderReceiver:
                         and self._preparation_handoff is not None
                     )
                     source_preparer = prepare_unused_source if unused_source else prepare_source
+                    recorded_first = (
+                        source_payload.get("first_sequence_number")
+                        if isinstance(source_payload, dict) else None
+                    )
+                    if (
+                        isinstance(source_payload, dict)
+                        and source_payload.get("source") == "desktop_companion"
+                        and type(recorded_first) is int
+                        and recorded_first > 0
+                        and self._preparation_handoff is not None
+                    ):
+                        source_preparer = prepare_recorded_source
                     prepared_source = await source_preparer(
                         self.profile.core_origin,
                         body,
