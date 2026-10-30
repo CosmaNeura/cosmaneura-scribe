@@ -4,8 +4,54 @@ variable "deploy_production_existing_host_reuse" {
   default     = false
 }
 
+variable "prepare_production_database_migration_identity" {
+  description = "Prepare only the production migration identity and its existing Scribe registry AcrPull grant before Core's separately approved Entra administrator rung. This deploys no database, job, app, network, runtime, or capture permission."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = (
+      !var.prepare_production_database_migration_identity ||
+      (
+        var.environment == "production" &&
+        !var.deploy_production_existing_host_reuse &&
+        !var.deploy_production_native_edge &&
+        !var.deploy_postgres_foundation &&
+        !var.deploy_database_migration_job &&
+        !var.use_postgres_repository &&
+        !var.deploy_container_app &&
+        !var.enable_workflow_authentication &&
+        !var.enable_capture_protocol &&
+        !var.enable_master_platform_handoff &&
+        !var.prepare_production_existing_host_runtime_network &&
+        !var.enable_production_existing_host_runtime &&
+        !var.enable_production_native_direct_upload &&
+        !var.enable_production_native_receiver &&
+        !var.enable_production_native_encounter_creation &&
+        !var.deploy_production_captured_workers &&
+        !var.enable_production_captured_workers &&
+        !var.enable_production_captured_database_permissions &&
+        !var.deploy_private_speech_foundation &&
+        !var.deploy_speech_smoke_job &&
+        !var.enable_speech_smoke_job &&
+        !var.deploy_transcription_job &&
+        !var.enable_transcription_job &&
+        !var.deploy_delivery_reconciler_job &&
+        !var.enable_delivery_reconciler_job &&
+        !var.deploy_private_api_acceptance_job &&
+        !var.enable_private_api_acceptance_job &&
+        !var.allow_private_api_acceptance_invocation &&
+        !var.deploy_private_terraform_runner &&
+        !var.enable_private_terraform_runner &&
+        !var.connect_parallel_platform_vnet
+      )
+    )
+    error_message = "migration identity preparation is production-only and requires database, app, job, runtime, network, capture, and processing gates to remain disabled"
+  }
+}
+
 variable "production_existing_hosting_binding" {
-  description = "Exact non-secret live Core hosting selectors used only by the dark production reuse mode. A populated binding is not deployment authority."
+  description = "Exact non-secret live Core hosting selectors used by dark production preparation and reuse. A populated binding is not deployment authority."
   type = object({
     resource_group_name                      = string
     location                                 = string
@@ -19,7 +65,7 @@ variable "production_existing_hosting_binding" {
 
   validation {
     condition = (
-      !(var.deploy_production_existing_host_reuse || var.prepare_production_existing_host_runtime_network) ||
+      !(var.deploy_production_existing_host_reuse || var.prepare_production_existing_host_runtime_network || var.prepare_production_database_migration_identity) ||
       try(
         var.production_existing_hosting_binding != null &&
         var.production_existing_hosting_binding.resource_group_name == "cosmaneura-prod" &&
