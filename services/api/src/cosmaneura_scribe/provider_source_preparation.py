@@ -26,7 +26,7 @@ from .provider_core_transport import (
 )
 from .provider_encounter_transport import ProviderEncounterAccount
 from .provider_native_core_transport import PATH
-from .provider_performance import provider_phase_timing
+from .provider_performance import observe_core_response, provider_phase_timing
 from .provider_preparation_handoff import PreparationHandoff
 
 
@@ -122,6 +122,7 @@ async def prepare_source(
                             "Cache-Control": "no-store",
                         },
                     ) as response:
+                        observe_core_response(response.headers)
                         if response.status_code != 200:
                             raise ProviderCoreUnavailable(
                                 "core_provider_request_unconfirmed",
