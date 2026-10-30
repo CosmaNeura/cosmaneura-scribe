@@ -92,6 +92,13 @@ class SourceWire(MountHandoffWire):
             value = response.json()
             value["result"]["receipt"] = self.window_receipt()
             return httpx.Response(response.status_code, json=value, headers=response.headers)
+        if (
+            request.url.path.endswith("/capture-operations")
+            and data.get("operation", {}).get("kind") == "prepare_recording_window"
+        ):
+            value = response.json()
+            value["receipt"] = self.window_receipt()
+            return httpx.Response(response.status_code, json=value, headers=response.headers)
         return response
 
     def window_receipt(self):
@@ -251,6 +258,43 @@ async def test_fresh_capability_reaches_one_source_operation_without_reissuing_c
     assert s.wire.calls[0][2] == "synthetic-source-key" and s.wire.checks == 6
     assert not s.pending._pending
     assert await source(s) is None and len(s.wire.calls) == 1
+
+
+@pytest.mark.parametrize("previous_setup", [False, True])
+async def test_new_window_after_setup_miss_carries_its_fresh_context_to_one_source_call(
+    previous_setup,
+):
+    s = sequence()
+    if previous_setup:
+        await s.call(admission=True)
+        s.now += 30
+    s.wire.calls.clear()
+    await window(s)
+    assert [call[1].get("action") for call in s.wire.calls] == ["preparation_context", None]
+    retained = next(iter(s.pending._pending.values()))
+    assert retained.stage == "source_start" and retained.issued_at == s.now
+    s.wire.calls.clear()
+    s.wire.checks = 0
+    answer = await source(s)
+    assert answer["authorization"]["receipt"]["receipt"]["state"] == "issued"
+    assert [call[1]["action"] for call in s.wire.calls] == ["prepared_source"]
+    assert s.wire.checks == 6 and not s.pending._pending
+
+
+async def test_new_window_transport_close_failure_does_not_publish_source_handoff(monkeypatch):
+    from cosmaneura_scribe.provider_core_transport import ProviderCoreTransport
+
+    close = ProviderCoreTransport.close
+
+    async def failed_close(self):
+        await close(self)
+        raise RuntimeError("synthetic transport close failure")
+
+    monkeypatch.setattr(ProviderCoreTransport, "close", failed_close)
+    s = sequence()
+    with pytest.raises(RuntimeError, match="synthetic transport close failure"):
+        await window(s)
+    assert not s.pending._pending
 
 
 @pytest.mark.parametrize("supported", [False, True])
