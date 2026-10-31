@@ -89,6 +89,18 @@ def prepare_bundle_context(
     try:
         shutil.copytree(sealed, output / "sealed", symlinks=False)
         shutil.copyfile(dockerfile, output / "Dockerfile.core-bundle")
+        launcher = repository / "deployment/scribe-runtime-python"
+        expected_launcher = subprocess.run(
+            ["git", "show", revision + ":deployment/scribe-runtime-python"],
+            cwd=repository, capture_output=True, check=True,
+        ).stdout
+        if (
+            launcher.is_symlink()
+            or not launcher.is_file()
+            or launcher.read_bytes() != expected_launcher
+        ):
+            raise ValueError("core_bundle_runtime_launcher_invalid")
+        shutil.copyfile(launcher, output / "scribe-runtime-python")
         migration_files = copy_migration_assets(repository, output / "scribe-migrations", revision)
         inspect_context(output / "sealed", scribe_revision)
         manifest: dict[str, object] = {
@@ -101,6 +113,7 @@ def prepare_bundle_context(
             "receiver_manifest_sha256": sha256(output / "sealed/receiver-image-manifest.json"),
             "dockerfile_sha256": sha256(output / "Dockerfile.core-bundle"),
             "scribe_migration_files_sha256": migration_files,
+            "scribe_runtime_launcher_sha256": sha256(output / "scribe-runtime-python"),
             "configuration_embedded": False,
             "credentials_included": False,
             "image_built": False,
