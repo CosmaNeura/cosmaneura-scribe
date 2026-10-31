@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import unittest
 from pathlib import Path
 
-import unittest
-
-MODULE_PATH = Path(__file__).resolve().parents[1] / "tools/production/verify_core_bundle_database_plan.py"
+MODULE_PATH = (
+    Path(__file__).resolve().parents[1] / "tools/production/verify_core_bundle_database_plan.py"
+)
 SPEC = importlib.util.spec_from_file_location("core_bundle_database_plan", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 PLAN = importlib.util.module_from_spec(SPEC)
@@ -66,7 +67,8 @@ class DatabasePlanTests(unittest.TestCase):
                     PLAN.verify(document)
 
     def test_incomplete_or_unreconciled_plans_are_rejected(self) -> None:
-        for mutation in ["unknown", "drift", "deferred", "import", "move", "missing", "duplicate"]:
+        for mutation in ["unknown", "drift", "deferred", "incomplete", "not_applyable",
+                         "import", "move", "missing", "duplicate"]:
             with self.subTest(mutation=mutation):
                 document = _plan()
                 resource = document["resource_changes"][0]
@@ -76,6 +78,10 @@ class DatabasePlanTests(unittest.TestCase):
                     document["resource_drift"] = [{"change": {"actions": ["update"]}}]
                 elif mutation == "deferred":
                     document["deferred_changes"] = [{}]
+                elif mutation == "incomplete":
+                    document["complete"] = False
+                elif mutation == "not_applyable":
+                    document["applyable"] = False
                 elif mutation == "import":
                     resource["change"]["importing"] = {"id": "existing-database"}
                 elif mutation == "move":

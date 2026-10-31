@@ -29,7 +29,12 @@ def verify(document: dict) -> dict:
         "postgres_database_name": "cosmaneura_scribe",
     }.items()):
         raise ValueError("UnexpectedDatabaseSelection")
-    if document.get("errored") is True or document.get("deferred_changes"):
+    if (
+        document.get("errored") is True
+        or document.get("complete") is False
+        or document.get("applyable") is False
+        or document.get("deferred_changes")
+    ):
         raise ValueError("IncompletePlan")
     if document.get("resource_drift"):
         raise ValueError("UnreconciledResourceDrift")
