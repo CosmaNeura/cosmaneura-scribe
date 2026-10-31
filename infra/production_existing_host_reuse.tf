@@ -184,13 +184,21 @@ locals {
     )
   )
   production_database_server_id = (
-    var.deploy_production_existing_host_reuse
-    ? try(var.production_existing_hosting_binding.postgres_server_resource_id, "")
-    : try(azurerm_postgresql_flexible_server.scribe[0].id, "")
+    var.prepare_production_core_bundle_database
+    ? local.production_core_bundle_database_server_id
+    : (
+      var.deploy_production_existing_host_reuse
+      ? try(var.production_existing_hosting_binding.postgres_server_resource_id, "")
+      : try(azurerm_postgresql_flexible_server.scribe[0].id, "")
+    )
   )
   production_database_fqdn = (
-    var.deploy_production_existing_host_reuse
-    ? try(var.production_existing_hosting_binding.postgres_server_fqdn, "")
-    : try(azurerm_postgresql_flexible_server.scribe[0].fqdn, "")
+    var.prepare_production_core_bundle_database
+    ? local.production_core_bundle_database_fqdn
+    : (
+      var.deploy_production_existing_host_reuse
+      ? try(var.production_existing_hosting_binding.postgres_server_fqdn, "")
+      : try(azurerm_postgresql_flexible_server.scribe[0].fqdn, "")
+    )
   )
 }

@@ -51,6 +51,16 @@ cover public worker unwrap and authenticated native uploads; hashes are not
 approval. No resource, runtime, database or activation is added. See the
 [routing policy, plan limits and withdrawal](../docs/flight-plans/2026-10-31-existing-core-three-container-bundle-dark.md#separate-core-bundle-routing-preparation).
 
+`prepare_production_core_bundle_database=false` is the separate database-only
+leaf for the selected three Core hosts. Selecting it prepares only the isolated
+`cosmaneura_scribe` database on the closed existing Core server, without selecting
+the obsolete standalone app/job mode or changing identity/grant counts. Preserve
+actual protected state inputs and require exactly one database create with all
+other resources unchanged; the local saved-plan guard rejects collateral changes.
+Schema/principal bootstrap, migration assets/executor qualification and owner
+apply/activation decisions remain separate. See the
+[Tier 2 database sequence and recovery](../docs/flight-plans/2026-10-31-core-bundle-logical-database.md).
+
 For the intentionally absent production key only,
 `enable_production_arm_audio_key_bootstrap = true` selects a Terraform-owned
 `Microsoft.KeyVault/vaults/keys@2024-11-01` ARM child. This uses Azure's management

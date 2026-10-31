@@ -105,7 +105,7 @@ resource "azurerm_postgresql_flexible_server_active_directory_administrator" "mi
 }
 
 resource "azurerm_postgresql_flexible_server_database" "scribe" {
-  count = local.production_database_enabled ? 1 : 0
+  count = local.production_database_enabled || var.prepare_production_core_bundle_database ? 1 : 0
 
   name      = var.postgres_database_name
   server_id = local.production_database_server_id

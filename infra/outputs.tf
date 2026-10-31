@@ -62,11 +62,11 @@ output "parallel_platform_private_dns_link_id" {
 }
 
 output "postgres_fqdn" {
-  value = local.production_database_enabled ? local.production_database_fqdn : null
+  value = local.production_database_enabled || var.prepare_production_core_bundle_database ? local.production_database_fqdn : null
 }
 
 output "postgres_database_name" {
-  value = local.production_database_enabled ? azurerm_postgresql_flexible_server_database.scribe[0].name : null
+  value = local.production_database_enabled || var.prepare_production_core_bundle_database ? azurerm_postgresql_flexible_server_database.scribe[0].name : null
 }
 
 output "production_workload_hosting_mode" {
