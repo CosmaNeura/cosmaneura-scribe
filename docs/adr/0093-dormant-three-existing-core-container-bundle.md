@@ -21,9 +21,11 @@ shadow authority table, and authorizes no production placement decision.
 
 The child consumes the exact existing Core provider-context authority contract
 with fresh human-session and workload-token checks. Core denial or unavailable
-authority fails closed without local registry fallback. Only existing catalog
-reads are covered: native new-patient/visit creation and service-mutation parity
-remain an explicit source gap. Global Agent API and Session Prep stay disabled.
+authority fails closed without local registry fallback. The selected subset
+supports existing-patient catalog/search, visit creation for an existing
+patient, and closed capture/admission/note/source-start operations. Native
+new/provisional patients, patient matching/DOB and private-note parity remain
+outside that subset. Global Agent API and Session Prep stay disabled.
 
 ## Consequences and held prerequisites
 
@@ -36,6 +38,15 @@ remain an explicit source gap. Global Agent API and Session Prep stay disabled.
   removal must precede its held attachment to the existing worker. A shared
   worker with two identities is one trust domain. API key Reader-only access,
   worker unwrap/storage/AI grants and distinct DB roles need actual proof.
+- The default-off `prepare_production_core_bundle_grants` IAM leaf reads the
+  exact existing API/Speech/translation identities, scopes key rights to the
+  wrapping key, audio rights to the existing container (delegation at account
+  scope), and AI rights to the existing Core account. Its custom API Blob role
+  allows create/write only. It requires explicit removal of the Terraform-owned
+  translation account writer; source selection proves no completed cleanup or
+  effective least privilege. Owner policy/grant approval, state reconciliation,
+  propagation and live access verification precede worker attachment. This leaf
+  changes no network, host, identity, database, Graph grant or activation gate.
 - Existing Core PostgreSQL Entra authentication and Scribe Key Vault/Blob public
   access are disabled. Entra, schema/bootstrap/RLS and the exact Core-egress
   ciphertext read/unwrap network policy remain owner-held changes. Existing
