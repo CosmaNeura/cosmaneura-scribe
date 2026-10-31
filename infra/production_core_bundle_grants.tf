@@ -39,10 +39,14 @@ locals {
     var.resource_group_name == "cosmaneura-scribe-production" &&
     var.storage_account_name == "cosmaneurascribeprod" &&
     var.key_vault_name == "cosmaneura-scribe-prod" &&
-    !var.create_resource_group
+    # Preserve the group already managed by the production foundation. A data
+    # lookup would withdraw its managed address and propose deletion.
+    var.create_resource_group
   )
   production_core_bundle_dormant_topology_valid = (
-    !var.prepare_production_database_migration_identity &&
+    # Preserve the independently prepared identity and registry grant. This
+    # selector does not create a migration job or assign an administrator.
+    var.prepare_production_database_migration_identity &&
     !var.deploy_production_existing_host_reuse &&
     !var.deploy_production_native_edge &&
     !var.deploy_postgres_foundation &&
