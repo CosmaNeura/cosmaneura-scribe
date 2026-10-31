@@ -26,7 +26,9 @@ the same already-present exact digest is a verified no-op.
 Promotion rereads the exact three existing resources. Its safe plan retains only
 configuration fingerprints and prior images, never environment/secret values.
 All bundle enable flags must already be absent or false. The only allowed write
-is the named existing container's image. Fresh preflight and immediate postflight
+is the named existing container's image. Every host must already contain literal
+`AUTO_MIGRATE_ON_STARTUP=false`, with no `secretRef`; absent, true or opaque values
+stop promotion before any update. Fresh preflight and immediate postflight
 compare commands, environment, identity, ingress, scaling and all other resource
 configuration. Azure CLI does not provide a proven atomic compare-and-swap:
 external deployments must be excluded by the founder's maintenance window;
@@ -65,3 +67,11 @@ establish exact tag absence. Present tags require a separate exact digest read;
 list/parse/auth/transport/digest failures stop without retry. Original448/client
 provenance and all mutation/approval/journal holds remain unchanged. Any next
 read-only plan requires a new root-selected command against the merged correction.
+
+Core716 defaults startup migration to true and runs Alembic upgrade on app import.
+The separately recorded safe live read found this setting absent on all three
+hosts. Publication remains unaffected, but dark promotion is blocked until the
+founder separately approves the configuration/schema disposition and the literal
+false settings actually exist. The operator never supplies the setting or runs a
+migration. Retain the successful publication plan and original failed first run
+unchanged; this source guard changes neither artifacts nor native client inputs.
