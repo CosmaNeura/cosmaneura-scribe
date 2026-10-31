@@ -11,8 +11,12 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/scribe/runtime UV_PYTHON_DOWNLOADS=0 UV_NO_DEV=1
 WORKDIR /opt/scribe/source
 COPY sealed/pyproject.toml sealed/uv.lock sealed/README.md ./
 COPY sealed/services/api ./services/api
-RUN python -c 'import sys; assert sys.version_info[:2] == (3, 13)' \
-    && /opt/scribe/bin/uv sync --locked --no-editable --no-dev --python-preference only-system
+# Core's copied interpreter remains executable without traversing /root.
+# UV may resolve its base through /root/.nix-profile; copy as Core's venv does.
+RUN /opt/venv/bin/python -c 'import sys; assert sys.version_info[:2] == (3, 13)' \
+    && /opt/scribe/bin/uv sync --locked --no-editable --no-dev --python-preference only-system --python /opt/venv/bin/python \
+    && cp --remove-destination /opt/venv/bin/python /opt/scribe/runtime/bin/python \
+    && /opt/scribe/runtime/bin/python -c 'import sys; assert sys.prefix == "/opt/scribe/runtime"'
 FROM ${CORE_IMAGE} AS runtime
 ARG CORE_SOURCE_REVISION
 ARG SCRIBE_SOURCE_REVISION
