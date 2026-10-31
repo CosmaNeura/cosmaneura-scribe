@@ -75,6 +75,7 @@ class ReceiverConfiguration(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
     schema_version: Literal[1] = Field(default=1, alias="schema")
     enabled: bool = False
+    authority_backend: Literal["registry", "core-provider-context-v1"] = "registry"
     encounter_creation_enabled: bool = False
     platforms: tuple[Literal["ios", "desktop"], ...] = ("ios", "desktop")
     desktop_native_session_without_origin: bool = False
@@ -100,6 +101,14 @@ class ReceiverConfiguration(BaseModel):
             and self.desktop_native_session_without_origin
         ):
             raise ValueError("receiver_configuration_invalid")
+        if self.authority_backend == "core-provider-context-v1" and (
+            self.profile != "core-production-organization-v1"
+            or any(
+                value is not None
+                for value in (self.database_host, self.database_name, self.database_reader_role)
+            )
+        ):
+            raise ValueError("receiver_core_context_configuration_invalid")
         if not self.enabled:
             return self
         if (
@@ -115,16 +124,27 @@ class ReceiverConfiguration(BaseModel):
                     self.managed_identity_client_id,
                 )
             )
-            or re.fullmatch(r"[a-z0-9-]+\.postgres\.database\.azure\.com", self.database_host or "")
-            is None
-            or re.fullmatch(r"[A-Za-z0-9_-]{1,63}", self.database_name or "") is None
-            or re.fullmatch(r"[A-Za-z0-9_-]{1,63}", self.database_reader_role or "") is None
+            or (
+                self.authority_backend == "registry"
+                and (
+                    re.fullmatch(
+                        r"[a-z0-9-]+\.postgres\.database\.azure\.com", self.database_host or ""
+                    )
+                    is None
+                    or re.fullmatch(r"[A-Za-z0-9_-]{1,63}", self.database_name or "") is None
+                    or re.fullmatch(r"[A-Za-z0-9_-]{1,63}", self.database_reader_role or "") is None
+                )
+            )
             or re.fullmatch(r"api://[0-9a-f-]{36}/\.default", self.core_scope or "") is None
             or re.fullmatch(r"[A-Za-z0-9._:/-]{8,160}", self.ingress_isolation_receipt or "")
             is None
         ):
             raise ValueError("receiver_configuration_invalid")
-        UUID((self.core_scope or "")[6:-9])
+        scope_id = UUID((self.core_scope or "")[6:-9])
+        if self.authority_backend == "core-provider-context-v1" and (
+            not scope_id.int or str(scope_id) != (self.core_scope or "")[6:-9]
+        ):
+            raise ValueError("receiver_core_context_configuration_invalid")
         return self
 
 
@@ -293,75 +313,79 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
     try:
         core_connections = ProviderCoreConnections(core_origin)
 
-        async def database_password() -> str:
-            token = await credential.get_token("https://ossrdbms-aad.database.windows.net/.default")
-            if not token.token or token.expires_on <= time() + 30:
-                raise RuntimeError("receiver_database_credential_unavailable")
-            return token.token
+        if config.authority_backend == "registry":
 
-        engine = create_async_engine(
-            URL.create(
-                "postgresql+asyncpg",
-                username=config.database_reader_role,
-                host=config.database_host,
-                port=5432,
-                database=config.database_name,
-            ),
-            connect_args={
-                "password": database_password,
-                "ssl": ssl.create_default_context(),
-                "timeout": 10,
-                "server_settings": {
-                    "application_name": "scribe-native-receiver",
-                    "statement_timeout": "10000",
-                    "lock_timeout": "2000",
+            async def database_password() -> str:
+                token = await credential.get_token(
+                    "https://ossrdbms-aad.database.windows.net/.default"
+                )
+                if not token.token or token.expires_on <= time() + 30:
+                    raise RuntimeError("receiver_database_credential_unavailable")
+                return token.token
+
+            engine = create_async_engine(
+                URL.create(
+                    "postgresql+asyncpg",
+                    username=config.database_reader_role,
+                    host=config.database_host,
+                    port=5432,
+                    database=config.database_name,
+                ),
+                connect_args={
+                    "password": database_password,
+                    "ssl": ssl.create_default_context(),
+                    "timeout": 10,
+                    "server_settings": {
+                        "application_name": "scribe-native-receiver",
+                        "statement_timeout": "10000",
+                        "lock_timeout": "2000",
+                    },
                 },
-            },
-            hide_parameters=True,
-            pool_pre_ping=True,
-            pool_size=2,
-            max_overflow=0,
-        )
-        async with engine.connect() as connection:
-            row = (
-                await connection.execute(
-                    text("""
-                SELECT current_user AS principal, current_database() AS database,
-                       rolsuper OR rolbypassrls OR rolcreaterole
-                       OR rolcreatedb OR rolreplication AS unsafe
-                FROM pg_roles WHERE rolname=current_user
-            """)
-                )
-            ).one()
-            if (
-                row.principal != config.database_reader_role
-                or row.database != config.database_name
-                or row.unsafe
-                or await connection.scalar(
-                    text("SELECT has_schema_privilege(current_user,'public','CREATE')")
-                )
-            ):
-                raise RuntimeError("receiver_database_principal_unavailable")
-            for table in (
-                "principals",
-                "core_provider_accounts",
-                "encounter_workspaces",
-                "appointment_observations",
-                "patient_links",
-            ):
+                hide_parameters=True,
+                pool_pre_ping=True,
+                pool_size=2,
+                max_overflow=0,
+            )
+            async with engine.connect() as connection:
                 row = (
                     await connection.execute(
                         text("""
-                    SELECT has_table_privilege(current_user,:table,'SELECT') AS readable,
-                           has_any_column_privilege(current_user,:table,'INSERT,UPDATE,REFERENCES')
-                           OR has_table_privilege(current_user,:table,'DELETE,TRUNCATE,TRIGGER')
-                           AS writable
-                """),
-                        {"table": table},
+                    SELECT current_user AS principal, current_database() AS database,
+                           rolsuper OR rolbypassrls OR rolcreaterole
+                           OR rolcreatedb OR rolreplication AS unsafe
+                    FROM pg_roles WHERE rolname=current_user
+                """)
                     )
                 ).one()
-                if not row.readable or row.writable:
-                    raise RuntimeError("receiver_database_permissions_unavailable")
+                if (
+                    row.principal != config.database_reader_role
+                    or row.database != config.database_name
+                    or row.unsafe
+                    or await connection.scalar(
+                        text("SELECT has_schema_privilege(current_user,'public','CREATE')")
+                    )
+                ):
+                    raise RuntimeError("receiver_database_principal_unavailable")
+                for table in (
+                    "principals",
+                    "core_provider_accounts",
+                    "encounter_workspaces",
+                    "appointment_observations",
+                    "patient_links",
+                ):
+                    row = (
+                        await connection.execute(
+                            text("""
+                        SELECT has_table_privilege(current_user,:table,'SELECT') AS readable,
+                               has_any_column_privilege(current_user,:table,'INSERT,UPDATE,REFERENCES')
+                               OR has_table_privilege(current_user,:table,'DELETE,TRUNCATE,TRIGGER')
+                               AS writable
+                    """),
+                            {"table": table},
+                        )
+                    ).one()
+                    if not row.readable or row.writable:
+                        raise RuntimeError("receiver_database_permissions_unavailable")
 
         async def workload_token() -> SecretStr:
             token = await credential.get_token(config.core_scope or "")
@@ -396,7 +420,12 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
                 frozenset({origin}),
                 "clerk-organization-v1" if production else CORE_STAGING_PERSONAL,
             )
-            apps[origin] = ProviderReceiver(
+            receiver_type = ProviderReceiver
+            if config.authority_backend == "core-provider-context-v1":
+                from core_context_receiver import CoreContextReceiver
+
+                receiver_type = CoreContextReceiver
+            apps[origin] = receiver_type(
                 profile,
                 engine,
                 settings,
