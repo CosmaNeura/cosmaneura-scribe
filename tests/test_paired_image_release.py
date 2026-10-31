@@ -444,7 +444,7 @@ class PublishingBoundary(unittest.TestCase):
                 return b"", b"UNAUTHORIZED"
 
         with patch("subprocess.Popen", return_value=Denied()), self.assertRaises(RuntimeError):
-            release.Operator().remote("repo:tag")
+            release.Operator().remote(release.REPOSITORY + ":tag")
 
     def test_owned_command_timeout_terminates_group_and_reaps_without_retry(self):
         spawned = []
@@ -538,6 +538,83 @@ class PublishingBoundary(unittest.TestCase):
 
         with patch.object(self.fake, "image", side_effect=inspect_intent):
             self.execute(proposed)
+
+
+class RegistryLookupBoundary(unittest.TestCase):
+    class Reader(release.Operator):
+        def __init__(self, tags, metadata=None):
+            self.tags = tags
+            self.metadata = metadata or {"digest": "sha256:" + "8" * 64}
+            self.list_failure = False
+            self.metadata_failure = False
+            self.commands = []
+
+        def run(self, args, **kwargs):
+            self.commands.append(args)
+            if "show-tags" in args:
+                if self.list_failure:
+                    raise RuntimeError("operator_command_failed:az")
+                return self.tags if isinstance(self.tags, bytes) else json.dumps(self.tags).encode()
+            if self.metadata_failure:
+                # ACR parse_error_message discards errors[].code. CLI exit3 is
+                # not sufficient to authorize treating this as tag absence.
+                raise RuntimeError("operator_command_failed:az")
+            return json.dumps(self.metadata).encode()
+
+    def test_absent_tag_uses_complete_list_without_lost_code_lookup(self):
+        reader = self.Reader(["existing-core-tag"])
+        reader.metadata_failure = True
+        self.assertIsNone(reader.remote(release.REPOSITORY + ":new-paired-tag"))
+        self.assertEqual(len(reader.commands), 1)
+        self.assertIn("show-tags", reader.commands[0])
+        self.assertNotIn("--top", reader.commands[0])
+
+    def test_successful_empty_repository_list_establishes_absence(self):
+        self.assertIsNone(self.Reader([]).remote(release.REPOSITORY + ":new-paired-tag"))
+
+    def test_present_tag_reads_only_exact_digest_after_full_listing(self):
+        reader = self.Reader(["old-tag", "new-paired-tag"])
+        image = release.REPOSITORY + ":new-paired-tag"
+        self.assertEqual(reader.remote(image), "sha256:" + "8" * 64)
+        self.assertEqual(len(reader.commands), 2)
+        self.assertEqual(
+            reader.commands[0][reader.commands[0].index("--repository") + 1], release.REPOSITORY
+        )
+        self.assertEqual(reader.commands[1][reader.commands[1].index("--image") + 1], image)
+        self.assertTrue(all("--top" not in command for command in reader.commands))
+
+    def test_malformed_duplicate_nonstring_or_incomplete_lists_fail_closed(self):
+        for tags in (
+            None,
+            {"tags": [], "nextLink": "unconsumed"},
+            ["same", "same"],
+            [5],
+            ["invalid tag"],
+            b'["partial-tag"',
+        ):
+            with self.subTest(tags=tags), self.assertRaises(ValueError):
+                self.Reader(tags).remote(release.REPOSITORY + ":new-paired-tag")
+
+    def test_list_auth_or_partial_command_failure_does_not_establish_absence(self):
+        reader = self.Reader(["apparently-complete-prefix"])
+        reader.list_failure = True
+        with self.assertRaises(RuntimeError):
+            reader.remote(release.REPOSITORY + ":new-paired-tag")
+        self.assertEqual(len(reader.commands), 1)
+
+    def test_present_tag_disappearance_or_auth_failure_stops_without_absence(self):
+        reader = self.Reader(["new-paired-tag"])
+        reader.metadata_failure = True
+        with self.assertRaises(RuntimeError):
+            reader.remote(release.REPOSITORY + ":new-paired-tag")
+        self.assertEqual(len(reader.commands), 2)
+
+    def test_present_tag_malformed_digest_fails_closed(self):
+        for metadata in ({"digest": "not-a-digest"}, {"digest": None}, [], {"digest": 7}):
+            with self.subTest(metadata=metadata), self.assertRaises(ValueError):
+                reader = self.Reader(["new-paired-tag"])
+                reader.metadata = metadata
+                reader.remote(release.REPOSITORY + ":new-paired-tag")
 
 
 if __name__ == "__main__":

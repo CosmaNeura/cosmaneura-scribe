@@ -53,3 +53,15 @@ before merge. Discard/revert source before use; after a separately approved dark
 promotion, restore only a founder-reviewed compatible prior image/configuration
 pair after stopping admission and draining work. Preserve keys, schemas, audit,
 ciphertext and grants; never silently undo access or data changes.
+
+The first actual read-only publication plan stopped with `operator_command_failed:az`
+before producing a plan or mutation. A bounded diagnostic confirmed the exact
+registry and a tag-read CLI3; installed CLI2.89.1 formats ACR server message/detail
+without its error code. Preserve that failed run and do not infer absence from
+CLI3,404 or a broad stderr phrase. The corrected lookup reads the complete existing
+repository tag list with no `--top`; its managed and classic-fallback source paths
+follow every Link page. Only a successful well-formed unique string-tag list can
+establish exact tag absence. Present tags require a separate exact digest read;
+list/parse/auth/transport/digest failures stop without retry. Original448/client
+provenance and all mutation/approval/journal holds remain unchanged. Any next
+read-only plan requires a new root-selected command against the merged correction.

@@ -43,6 +43,13 @@ the separate verified publication receipt records publication without changing
 bytes. Commands below use placeholders; substitute the reviewed canonical paths
 and accepted hashes without putting credentials in arguments or chat.
 
+Registry absence is determined only by exact membership in a successful complete
+tag list for the existing repository, with no `--top` limit. Malformed, duplicate,
+non-string, incomplete or failed output stops; present tags require a successful
+exact digest read. CLI3/404/error-message text never substitutes for that proof.
+Retain the original failed first plan and select a fresh reviewed command after
+the source correction; do not automatically retry it.
+
 ```sh
 python3 tools/production/paired_image_release.py inspect \
   --archive /absolute/paired-image.tar \
