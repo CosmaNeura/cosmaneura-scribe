@@ -200,7 +200,8 @@ async def test_catalog_and_selection_revalidate_core_without_any_registry(monkey
             )
             assert response.status_code == 200
             value = response.json()
-            assert value["environment"] == "Production" and value["encounter_creation_v1"] is False
+            assert value["environment"] == "Production" and value["encounter_creation_v1"] is True
+            assert value["existing_patient_visits_v1"] is True
             assert value["encounters"][0]["workspaceId"] == WORKSPACE
             assert response.headers["cache-control"] == "no-store"
         selected, _ = await client.selected_current("Bearer " + token, uuid4(), UUID(WORKSPACE))
@@ -208,6 +209,73 @@ async def test_catalog_and_selection_revalidate_core_without_any_registry(monkey
         assert len(calls) >= 6 and client.engine is None
         with pytest.raises(ProviderCoreUnavailable):
             await client.encounters("Bearer " + token, {"action": "create"}, str(uuid4()))
+    finally:
+        verifier.close()
+
+
+@pytest.mark.asyncio
+async def test_qualified_existing_patient_creation_uses_native_core_and_no_registry(monkeypatch):
+    monkeypatch.setattr(
+        "receiver.Session", lambda *_args, **_kwargs: pytest.fail("Registry forbidden")
+    )
+    client, token, calls, verifier = receiver()
+    original = client.core_http
+    assert isinstance(original, httpx.MockTransport)
+    creation_key = str(uuid4())
+    patient = "patient_00000000000000000000000007"
+
+    def reply(request):
+        if request.url.path != "/service/v1/agent/scribe/native-encounters":
+            return original.handle_request(request)
+        calls.append(str(request.url))
+        assert request.headers["authorization"] == "Bearer " + token
+        assert (
+            request.headers["x-cosmaneura-workload-authorization"]
+            == "Bearer synthetic-workload-token"
+        )
+        assert request.headers["idempotency-key"] == creation_key
+        body = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "version": "1",
+                "action": "create",
+                "request_nonce": body["request_nonce"],
+                "account": {"actor_ref": ACTOR, "tenant_ref": TENANT},
+                "creation_key": creation_key,
+                "encounter": {**ROW, "patient_ref": patient},
+            },
+            headers={"Cache-Control": "no-store", "X-Cosmaneura-Scribe-Encounter-Version": "1"},
+        )
+
+    client.core_http = httpx.MockTransport(reply)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=client.app()), base_url=ORIGIN
+        ) as http:
+            response = await http.post(
+                "/provider/v1/encounters",
+                json={
+                    "action": "create",
+                    "request_nonce": str(uuid4()),
+                    "creation_key": creation_key,
+                    "patient": {"kind": "existing", "patient_ref": patient},
+                    "appointment_at": datetime.now(UTC).isoformat(),
+                    "title": "Visit",
+                },
+                headers={
+                    "Origin": "app://cosmas",
+                    "Authorization": "Bearer " + token,
+                    "X-Scribe-Native-Revision": str(uuid4()),
+                    "Idempotency-Key": creation_key,
+                },
+            )
+            assert response.status_code == 200 and response.json()["creation_key"] == creation_key
+            assert sum("native-encounters" in path for path in calls) == 1
+            assert not any("/embed/" in path for path in calls) and client.engine is None
+        client.encounter_creation_enabled = False
+        with pytest.raises(ProviderCoreUnavailable):
+            await client.encounters("Bearer " + token, {"action": "patients"}, str(uuid4()))
     finally:
         verifier.close()
 

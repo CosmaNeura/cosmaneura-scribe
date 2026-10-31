@@ -32,6 +32,7 @@ HEX_SHA256_TEXT = re.compile(r"[0-9a-f]{64}")
 RECEIVER_SOURCES = {
     "azure_ingress.py",
     "core_context_receiver.py",
+    "core_bundle_child.py",
     "image_entrypoint.py",
     "receiver.py",
     "receiver_runtime.py",

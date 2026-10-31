@@ -1,0 +1,177 @@
+"""Closed existing-patient visit calls through Core's dual-auth native facade."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+from collections.abc import Awaitable, Callable
+from typing import cast
+
+import httpx
+from pydantic import SecretStr
+
+from .provider_core_connections import ProviderCoreConnections
+from .provider_core_transport import (
+    ProviderCoreUnavailable,
+    core_wire_object,
+    core_wire_require,
+    core_wire_secret,
+    core_wire_snapshot,
+    core_wire_uuid,
+)
+from .provider_encounter_transport import ProviderEncounterAccount, ProviderEncounterTransport
+
+PATH = "/service/v1/agent/scribe/native-encounters"
+
+
+class ProviderNativeEncounterTransport(ProviderEncounterTransport):
+    # The legacy transport's construction and account checks are reused without
+    # changing its request path, token policy or current registry behavior.
+    def __init__(
+        self,
+        origin: str,
+        fresh: Callable[[], Awaitable[ProviderEncounterAccount]],
+        workload: Callable[[], Awaitable[SecretStr]],
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+        connections: ProviderCoreConnections | None = None,
+    ):
+        super().__init__(origin, fresh, transport=transport, connections=connections)
+        self.workload = workload
+
+    async def request(self, body: dict[str, object], key: str) -> dict[str, object]:
+        try:
+            async with asyncio.timeout(30):
+                payload = core_wire_snapshot(body, 4096)
+                action = payload.get("action")
+                core_wire_require(action in {"patients", "create"})
+                core_wire_require(re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", key))
+                core_wire_uuid(payload.get("request_nonce"))
+                if action == "patients":
+                    core_wire_require(set(payload) <= {"action", "request_nonce", "query"})
+                    query = payload.get("query", "")
+                    core_wire_require(
+                        isinstance(query, str) and len(query) <= 200 and "\x00" not in query
+                    )
+                else:
+                    core_wire_require(
+                        set(payload)
+                        == {
+                            "action",
+                            "request_nonce",
+                            "creation_key",
+                            "patient",
+                            "appointment_at",
+                            "title",
+                        }
+                    )
+                    core_wire_require(core_wire_uuid(payload["creation_key"]) == key)
+                    patient = core_wire_object(payload["patient"])
+                    core_wire_require(
+                        set(patient) == {"kind", "patient_ref"}
+                        and patient.get("kind") == "existing"
+                    )
+                    core_wire_require(
+                        isinstance(patient.get("patient_ref"), str)
+                        and re.fullmatch(
+                            r"patient_[0-7][0-9a-hjkmnp-tv-z]{25}",
+                            cast(str, patient.get("patient_ref")),
+                        )
+                    )
+                before = await self.account()
+                workload = core_wire_secret(await self.workload())
+                # Credential acquisition can yield; current authority must still
+                # match immediately before the one fixed mutation dispatch.
+                if await self.account() != before:
+                    raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+                async with self.client.stream(
+                    "POST",
+                    self.origin + PATH,
+                    json={
+                        **payload,
+                        "expected_actor_ref": before.actor_ref,
+                        "expected_tenant_ref": before.tenant_ref,
+                    },
+                    headers={
+                        "Authorization": "Bearer " + core_wire_secret(before.user_token),
+                        "X-Cosmaneura-Workload-Authorization": "Bearer " + workload,
+                        "X-Cosmaneura-Scribe-Encounter-Version": "1",
+                        "Idempotency-Key": key,
+                        "Content-Type": "application/json",
+                    },
+                ) as response:
+                    if response.status_code != 200:
+                        status = (
+                            response.status_code
+                            if response.status_code in {401, 403, 409, 422}
+                            else 503
+                        )
+                        raise ProviderCoreUnavailable("core_encounter_unconfirmed", status)
+                    core_wire_require(
+                        response.headers.get("x-cosmaneura-scribe-encounter-version") == "1"
+                        and response.headers.get("content-type", "").split(";", 1)[0]
+                        == "application/json"
+                        and response.headers.get("cache-control") == "no-store"
+                        and not response.headers.get_list("set-cookie")
+                    )
+                    content = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        core_wire_require(len(content) + len(chunk) <= 1_048_576)
+                        content.extend(chunk)
+
+                def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+                    result: dict[str, object] = {}
+                    for name, value in pairs:
+                        core_wire_require(name not in result)
+                        result[name] = value
+                    return result
+
+                value = core_wire_object(
+                    json.loads(
+                        content,
+                        object_pairs_hook=unique,
+                        parse_constant=lambda _: core_wire_require(False),
+                    )
+                )
+                account = core_wire_object(value.get("account"))
+                expected = {"version", "action", "request_nonce", "account"}
+                expected |= (
+                    {"creation_key", "encounter"}
+                    if action == "create"
+                    else {"patients", "more_results"}
+                )
+                core_wire_require(set(value) == expected)
+                core_wire_require(
+                    {"actor_ref", "tenant_ref"}
+                    <= set(account)
+                    <= {"actor_ref", "tenant_ref", "doctor_ref", "email"}
+                )
+                if action == "patients":
+                    patients = value["patients"]
+                    core_wire_require(
+                        isinstance(patients, list)
+                        and len(cast(list[object], patients)) <= 100
+                        and type(value["more_results"]) is bool
+                    )
+                core_wire_require(
+                    value.get("version") == "1"
+                    and value.get("action") == action
+                    and value.get("request_nonce") == payload["request_nonce"]
+                    and account.get("actor_ref") == before.actor_ref
+                    and account.get("tenant_ref") == before.tenant_ref
+                )
+                if action == "create":
+                    core_wire_require(value.get("creation_key") == key)
+                    encounter = core_wire_object(value.get("encounter"))
+                    core_wire_require(
+                        encounter.get("patient_ref")
+                        == core_wire_object(payload["patient"])["patient_ref"]
+                    )
+                if await self.account() != before:
+                    raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+                return {**value, "recoveryScope": str(before.recovery_scope)}
+        except ProviderCoreUnavailable:
+            raise
+        except Exception:
+            raise ProviderCoreUnavailable("core_encounter_unconfirmed") from None

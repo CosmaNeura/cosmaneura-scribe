@@ -23,6 +23,22 @@ function catalogFixture() {
   return { abort, catalog, scope, records, request, appointmentRef, open };
 }
 
+it("negotiates only the explicit Production existing-patient subset", async () => {
+  const f = catalogFixture();
+  f.catalog.environment = "Production"; f.catalog.existing_patient_visits_v1 = true;
+  const backend = await f.open();
+  try {
+    await backend.listEncounters(backend.signal);
+    expect(backend.account?.environment).toBe("Production");
+    expect(backend.encounterSetup?.existingPatientOnly).toBe(true);
+    expect(backend.encounterSetup?.matchPatient).toBeUndefined();
+    expect(Object.hasOwn(backend.encounterSetup!, "addDateOfBirth")).toBe(false);
+    expect(backend.encounterSetup?.savePrivateNote).toBeUndefined();
+    delete f.catalog.existing_patient_visits_v1;
+    await expect(backend.listEncounters(backend.signal)).rejects.toThrow();
+  } finally { await backend.dispose(); }
+});
+
 it("keeps hidden visits filtered after current catalog without an additional provider request", async () => {
   const f = catalogFixture(), backend = await f.open();
   try {

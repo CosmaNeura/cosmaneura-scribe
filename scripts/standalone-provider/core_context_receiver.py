@@ -11,6 +11,7 @@ from cosmaneura_scribe.provider_core_transport import (
     CoreProviderSelection,
     ProviderCoreUnavailable,
 )
+from cosmaneura_scribe.provider_native_encounter_transport import ProviderNativeEncounterTransport
 from fastapi import Request
 from fastapi.routing import APIRoute
 from receiver import (
@@ -95,6 +96,26 @@ class CoreContextReceiver(ProviderReceiver):
         return [self.core_entry(row) for row in value["encounters"]]
 
     async def encounters(self, authorization, body, key):
+        if body.get("action") in {"patients", "create"}:
+            if not self.encounter_creation_enabled:
+                raise ProviderCoreUnavailable("core_provider_operation_unavailable", 409)
+
+            async def fresh():
+                if not self.enabled or not self.encounter_creation_enabled:
+                    raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+                return await self.encounter_account(authorization, bind=None)
+
+            transport = ProviderNativeEncounterTransport(
+                self.profile.core_origin,
+                fresh,
+                self.workload_token,
+                transport=self.core_http,
+                connections=self.core_connections,
+            )
+            try:
+                return await transport.request(body, key)
+            finally:
+                await transport.close()
         if body.get("action") not in {
             "list",
             "lookup",
@@ -181,7 +202,12 @@ class CoreContextReceiver(ProviderReceiver):
                         "encounters": rows,
                         "opening_review_v1": True,
                         "note_opening_v1": True,
-                        "encounter_creation_v1": False,
+                        "encounter_creation_v1": self.encounter_creation_enabled,
+                        **(
+                            {"existing_patient_visits_v1": True}
+                            if self.encounter_creation_enabled
+                            else {}
+                        ),
                         "account": value["account"],
                         "recoveryScope": value["recoveryScope"],
                         "environment": "Production",
