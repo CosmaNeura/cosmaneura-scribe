@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from .migrations import upgrade_database
+from .migrations import upgrade_database, validate_migration_assets
 from .postgres_repository import build_postgres_provider
 from .settings import Settings, get_settings
 
@@ -1016,6 +1016,7 @@ async def bootstrap_database(settings: Settings | None = None) -> None:
     settings = settings or get_settings()
     if settings.repository_backend != "postgres":
         raise RuntimeError("Database bootstrap requires repository_backend=postgres")
+    validate_migration_assets()
     await _ensure_database_principals(settings)
     await _ensure_no_database_principal_public_ownership(settings)
     await _deny_implicit_future_permissions(settings)

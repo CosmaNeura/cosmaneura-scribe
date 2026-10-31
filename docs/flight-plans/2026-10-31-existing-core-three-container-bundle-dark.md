@@ -158,3 +158,15 @@ stop new admissions/pickup and drain work, disable Core bundle flags, restore th
 qualified prior compatible image/configuration pair, and preserve keys, mappings,
 ciphertext, schemas and audit data. Revoke network/grants only through a separate
 owner plan after drain/SAS expiry. Never fall back to registry/CLI credentials.
+# Scribe database migration assets
+
+The paired image keeps Core's working directory and Alembic configuration.
+The bundle context separately pins Scribe's `alembic.ini`, migration environment,
+and tracked revision files, and copies them to `/opt/scribe/migrations`.
+Scribe bootstrap selects that directory and refuses the Core migration chain.
+Local checkout bootstrap continues to use the checkout's Scribe configuration.
+The earlier paired image without these assets remains qualified only for its
+recorded disabled runtime checks, not for Scribe database bootstrap. This source
+correction requires a rebuilt image and the bounded schema rehearsal before any
+separately approved production migration. It changes no Core entrypoint, working
+directory, runtime setting, identity, database, or traffic.
