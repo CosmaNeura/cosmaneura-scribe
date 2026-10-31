@@ -58,8 +58,14 @@ public enum NativeAuthPayload {
         return SHA256.hash(data: Data(identity.userID.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
-    public static func state(_ state: NativeAuthState) -> [String: Any] {
-        let identity: Any = state.identity.map { $0.bridgePayload } ?? NSNull()
+    public static func state(_ state: NativeAuthState, identityProfile: NativeIdentityProfile? = nil) -> [String: Any] {
+        let identity: Any = state.identity.map { value in
+            var payload = value.bridgePayload
+            if value.organizationID == nil, let identityProfile, identityProfile.isPersonalSession {
+                payload["identityProfile"] = identityProfile.rawValue
+            }
+            return payload
+        } ?? NSNull()
         return ["phase": state.phase.rawValue, "revision": state.revision, "identity": identity]
     }
 }

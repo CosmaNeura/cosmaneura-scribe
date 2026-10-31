@@ -245,3 +245,58 @@ def test_both_enabled_clients_require_both_receiver_platforms(platforms):
     assert project(value)["desktop"]["enabled"] is False
     with pytest.raises(ValueError):
         project(value, enable_clients=True)
+
+
+def personal_config(*, audience=None, **changes):
+    return configured(
+        profile="core-production-personal-v1",
+        authority_backend="core-provider-context-v1",
+        database_host=None,
+        database_name=None,
+        database_reader_role=None,
+        production={**production(), "audience": audience, "organization_id": None},
+        **changes,
+    )
+
+
+@pytest.mark.parametrize("audience", [None, "observed-default-session-audience"])
+def test_personal_composition_requires_explicit_production_core_backend_and_receipts(audience):
+    value = personal_config(audience=audience)
+    config = validate(value)
+    for platform in config.platforms:
+        settings, verifier = identity_arguments(config, platform)
+        assert settings["clerk_audience"] == audience
+        assert settings["clerk_organization_id"] is None
+        assert settings["clerk_issuer"] == "https://clerk.cosmaneura.com"
+        assert settings["data_mode"] == "authorized_beta"
+        assert verifier["production_core_personal_session"] is True
+        assert verifier["core_provider_session"] is False
+        assert verifier["production_native_policy_receipt_sha256"] == "4" * 64
+    for changed in [
+        value | {"authority_backend": "registry"},
+        value | {"profile": "core-production-organization-v1"},
+        value | {"production": value["production"] | {"organization_id": "org_other"}},
+        value | {"production": value["production"] | {"native_policy_receipt_sha256": ""}},
+        value | {"production": value["production"] | {"audience": "contains spaces"}},
+    ]:
+        with pytest.raises(ValueError):
+            validate(changed)
+
+
+def test_personal_profile_projection_preserves_default_off_and_both_native_protocols():
+    original = profile_input()
+    original["receiver"] = personal_config() | {"enabled": False}
+    result = project(original)
+    assert result["receiver"]["enabled"] is False
+    assert result["desktop"]["enabled"] is False
+    assert result["desktop"]["profile"] == "core-production-personal-v1"
+    auth = result["ios"]["CosmasNativeAuth"]
+    assert auth["enabled"] is False
+    assert auth["identityProfile"] == "core-production-personal-v1"
+    assert "organizationId" not in auth and "audience" not in auth
+    assert result["ios"]["ScribeProviderReceiver"]["profile"] == "core-production-personal-https-v1"
+    assert result["ios"]["ScribeProviderApplication"]["profile"] == "core-production-personal-v1"
+    assert result["desktop_auth"]["CosmasNativeAuth"] == auth
+    enabled = project(original, enable_clients=True)
+    assert enabled["receiver"]["enabled"] is False
+    assert enabled["ios"]["CosmasNativeAuth"]["enabled"] is True

@@ -117,6 +117,10 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                     (settings["organizationId"] != nil || settings["audience"] != nil) {
                     throw NativeAuthError.unavailable
                 }
+                if profile == .coreProductionPersonal &&
+                    (settings["organizationId"] != nil || settings["audience"] != nil && audience == nil) {
+                    throw NativeAuthError.unavailable
+                }
                 let configuration = try NativeClerkConfiguration(publishableKey: key, frontendOrigin: origin,
                     organizationID: organization, bundleIdentifier: bundle, identityProfile: profile,
                     sessionClaimsReceiptSHA256: settings["sessionClaimsReceiptSha256"] as? String,
@@ -534,16 +538,18 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         if settings["profile"] != nil {
 #if SCRIBE_PRODUCTION_ORGANIZATION && !SCRIBE_VIRTUAL_LAB_NETWORK
             guard Set(settings.keys) == ["profile", "enabled", "coreOrigin", "uploadOrigins"],
-                  settings["profile"] as? String == "core-production-organization-v1",
                   settings["coreOrigin"] as? String == "https://app.cosmaneura.com",
                   let auth = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any],
                   auth["frontendOrigin"] as? String == "https://clerk.cosmaneura.com",
-                  auth["identityProfile"] as? String == NativeIdentityProfile.clerkOrganization.rawValue,
+                  let identityProfileName = auth["identityProfile"] as? String,
+                  let identityProfile = NativeIdentityProfile(rawValue: identityProfileName),
+                  let expectedApplicationProfile = identityProfile.productionApplicationProfile,
+                  settings["profile"] as? String == expectedApplicationProfile,
                   let receiver = Bundle.main.object(forInfoDictionaryKey: "ScribeProviderReceiver") as? [String: Any],
-                  receiver["profile"] as? String == "core-production-organization-https-v1"
+                  receiver["profile"] as? String == identityProfile.productionReceiverProfile
             else { return nil }
             coreOrigin = "https://app.cosmaneura.com"
-            applicationProfile = "core-production-organization-v1"
+            applicationProfile = expectedApplicationProfile
 #else
             return nil
 #endif
@@ -675,7 +681,9 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         call.reject("Provider request unavailable", "provider_native_unavailable")
     }
     @MainActor private static func payload(_ state: NativeAuthState) -> [String: Any] {
-        NativeAuthPayload.state(state)
+        let settings = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any]
+        let profile = (settings?["identityProfile"] as? String).flatMap(NativeIdentityProfile.init(rawValue:))
+        return NativeAuthPayload.state(state, identityProfile: profile)
     }
 
     private static func reject(_ call: CAPPluginCall) {

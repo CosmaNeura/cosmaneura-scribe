@@ -11,7 +11,7 @@ export function standaloneProviderProfile(value: unknown): Record<string, unknow
     ? ["schema", "profile", "enabled", "coreOrigin", "workspaceId", "deploymentReceiptSha256", "uploadOrigins", "auth", "audio", "presentation"]
     : ["schema", "enabled", "coreOrigin", "uploadOrigins", "auth", "audio", "presentation"]);
   if (production) {
-    if (profile.profile !== "core-production-organization-v1"
+    if (profile.profile !== "core-production-organization-v1" && profile.profile !== "core-production-personal-v1"
       || profile.coreOrigin !== "https://app.cosmaneura.com"
       || typeof profile.workspaceId !== "string"
       || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(profile.workspaceId)

@@ -28,9 +28,10 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 CORE_ORIGIN = "https://staging-app.cosmaneura.com"
 ISSUER = "https://resolved-emu-53.clerk.accounts.dev"
 ORIGINS = {"ios": "capacitor://localhost", "desktop": "app://cosmas"}
+PRODUCTION_PROFILES = {"core-production-organization-v1", "core-production-personal-v1"}
 
 
-class ProductionReceiverBinding(BaseModel):
+class _ProductionReceiverBinding(BaseModel):
     """Owner-supplied deployment inputs, never environment/request fallbacks.
 
     A receipt reference is not approval or evidence by itself. The deployment
@@ -41,15 +42,13 @@ class ProductionReceiverBinding(BaseModel):
     core_origin: Literal["https://app.cosmaneura.com"]
     issuer: Literal["https://clerk.cosmaneura.com"]
     receiver_origin: str
-    audience: str
-    organization_id: str
     deployment_receipt_sha256: str
     session_claims_receipt_sha256: str
     native_policy_receipt_sha256: str
     protected_data_receipt_sha256: str
 
     @model_validator(mode="after")
-    def exact_binding(self) -> ProductionReceiverBinding:
+    def exact_binding(self) -> _ProductionReceiverBinding:
         origin = urlsplit(self.receiver_origin)
         host = origin.hostname or ""
         if (
@@ -60,13 +59,36 @@ class ProductionReceiverBinding(BaseModel):
                 re.fullmatch(r"[a-z0-9][a-z0-9.-]*\.azurecontainerapps\.io", host)
                 or re.fullmatch(r"[a-z0-9][a-z0-9.-]*\.cosmaneura\.com", host)
             )
-            or not re.fullmatch(r"[!-~]{1,255}", self.audience)
-            or not re.fullmatch(r"org_[A-Za-z0-9_]{1,251}", self.organization_id)
             or not re.fullmatch(r"[0-9a-f]{64}", self.deployment_receipt_sha256)
             or not re.fullmatch(r"[0-9a-f]{64}", self.session_claims_receipt_sha256)
             or not re.fullmatch(r"[0-9a-f]{64}", self.native_policy_receipt_sha256)
             or not re.fullmatch(r"[0-9a-f]{64}", self.protected_data_receipt_sha256)
         ):
+            raise ValueError("receiver_production_binding_invalid")
+        return self
+
+
+class ProductionReceiverBinding(_ProductionReceiverBinding):
+    audience: str
+    organization_id: str
+
+    @model_validator(mode="after")
+    def organization_binding(self) -> ProductionReceiverBinding:
+        if not re.fullmatch(r"[!-~]{1,255}", self.audience) or not re.fullmatch(
+            r"org_[A-Za-z0-9_]{1,251}", self.organization_id
+        ):
+            raise ValueError("receiver_production_binding_invalid")
+        return self
+
+
+class ProductionPersonalReceiverBinding(_ProductionReceiverBinding):
+    # Explicit actual default-session projection, not a workload-token audience.
+    audience: str | None = None
+    organization_id: None = None
+
+    @model_validator(mode="after")
+    def personal_binding(self) -> ProductionPersonalReceiverBinding:
+        if self.audience is not None and not re.fullmatch(r"[!-~]{1,255}", self.audience):
             raise ValueError("receiver_production_binding_invalid")
         return self
 
@@ -88,10 +110,12 @@ class ReceiverConfiguration(BaseModel):
     database_reader_role: str | None = None
     core_scope: str | None = None
     ingress_isolation_receipt: str | None = None
-    profile: Literal["core-staging-personal-v1", "core-production-organization-v1"] = (
+    profile: Literal[
+        "core-staging-personal-v1", "core-production-organization-v1", "core-production-personal-v1"
+    ] = (
         "core-staging-personal-v1"
     )
-    production: ProductionReceiverBinding | None = None
+    production: ProductionReceiverBinding | ProductionPersonalReceiverBinding | None = None
 
     @model_validator(mode="after")
     def require_bindings(self) -> ReceiverConfiguration:
@@ -103,22 +127,35 @@ class ReceiverConfiguration(BaseModel):
         if self.profile == "core-staging-personal-v1" and self.production is not None:
             raise ValueError("receiver_configuration_invalid")
         if (
-            self.profile == "core-production-organization-v1"
+            self.profile in PRODUCTION_PROFILES
             and self.desktop_native_session_without_origin
         ):
             raise ValueError("receiver_configuration_invalid")
         if self.authority_backend == "core-provider-context-v1" and (
-            self.profile != "core-production-organization-v1"
+            self.profile not in PRODUCTION_PROFILES
             or any(
                 value is not None
                 for value in (self.database_host, self.database_name, self.database_reader_role)
             )
         ):
             raise ValueError("receiver_core_context_configuration_invalid")
+        if (
+            self.profile == "core-production-personal-v1"
+            and (
+                self.authority_backend != "core-provider-context-v1"
+                or self.production is not None
+                and not isinstance(self.production, ProductionPersonalReceiverBinding)
+            )
+        ) or (
+            self.profile == "core-production-organization-v1"
+            and self.production is not None
+            and not isinstance(self.production, ProductionReceiverBinding)
+        ):
+            raise ValueError("receiver_configuration_invalid")
         if not self.enabled:
             return self
         if (
-            (self.profile == "core-production-organization-v1" and self.production is None)
+            (self.profile in PRODUCTION_PROFILES and self.production is None)
             or not self.platforms
             or len(set(self.platforms)) != len(self.platforms)
             or (self.desktop_native_session_without_origin and "desktop" not in self.platforms)
@@ -184,8 +221,8 @@ def identity_arguments(
     # full OS application activation. Mode/receipt text grants no patient access;
     # the reviewed protected-data deployment and fresh Core authority are needed.
     origin = ORIGINS[platform]
-    production = config.production if config.profile == "core-production-organization-v1" else None
-    if config.profile == "core-production-organization-v1" and production is None:
+    production = config.production if config.profile in PRODUCTION_PROFILES else None
+    if config.profile in PRODUCTION_PROFILES and production is None:
         raise RuntimeError("receiver_configuration_unavailable")
     issuer = production.issuer if production else ISSUER
     settings: dict[str, object] = dict(
@@ -221,6 +258,8 @@ def identity_arguments(
             production_native_origin=origin,
             production_native_policy_receipt_sha256=production.native_policy_receipt_sha256,
         )
+        if config.profile == "core-production-personal-v1":
+            verifier["production_core_personal_session"] = True
     return settings, verifier
 
 
@@ -282,7 +321,7 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
 
     if not config.enabled:
         raise RuntimeError("receiver_disabled")
-    production = config.production if config.profile == "core-production-organization-v1" else None
+    production = config.production if config.profile in PRODUCTION_PROFILES else None
     core_origin = production.core_origin if production else CORE_ORIGIN
     receiver_origin = production.receiver_origin if production else STAGING_ORIGIN
     credential = ManagedIdentityCredential(client_id=str(config.managed_identity_client_id))
@@ -424,7 +463,11 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
                 core_origin,
                 config.environment_id,
                 frozenset({origin}),
-                "clerk-organization-v1" if production else CORE_STAGING_PERSONAL,
+                (
+                    "core-production-personal-v1"
+                    if config.profile == "core-production-personal-v1"
+                    else "clerk-organization-v1" if production else CORE_STAGING_PERSONAL
+                ),
             )
             receiver_type = ProviderReceiver
             if config.authority_backend == "core-provider-context-v1":

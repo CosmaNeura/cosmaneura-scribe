@@ -18,7 +18,7 @@ public struct NativeTokenPolicy: Sendable {
         guard !production else { throw NativeAuthError.unavailable }
 #endif
         if production {
-            guard identityProfile == .clerkOrganization,
+            guard identityProfile == .clerkOrganization || identityProfile == .coreProductionPersonal,
                   let productionNativePolicyReceiptSHA256,
                   productionNativePolicyReceiptSHA256.range(
                     of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
@@ -35,6 +35,13 @@ public struct NativeTokenPolicy: Sendable {
             guard audience == nil, issuer == "https://resolved-emu-53.clerk.accounts.dev",
                   (authorizedParty == NativeWorkspaceOrigin.appleWebView.rawValue
                    || authorizedParty == NativeWorkspaceOrigin.desktopApp.rawValue)
+            else { throw NativeAuthError.unavailable }
+        case .coreProductionPersonal:
+            guard production,
+                  audience == nil || audience.map({ value in
+                    !value.isEmpty && value.utf8.count <= 255
+                      && value.unicodeScalars.allSatisfy({ $0.isASCII && $0.value >= 33 && $0.value <= 126 })
+                  }) == true
             else { throw NativeAuthError.unavailable }
         }
         guard let origin = URLComponents(string: issuer), origin.scheme == "https",
@@ -57,7 +64,7 @@ public struct NativeTokenPolicy: Sendable {
             || (identityProfile == .coreStagingPersonal
                 && authorizedParty == NativeWorkspaceOrigin.desktopApp.rawValue)
             || (issuer == "https://clerk.cosmaneura.com"
-                && identityProfile == .clerkOrganization
+                && (identityProfile == .clerkOrganization || identityProfile == .coreProductionPersonal)
                 && productionNativePolicyReceiptSHA256 != nil)
         else { throw NativeAuthError.tokenUnavailable }
         guard token.utf8.count <= 8192 else { throw NativeAuthError.tokenUnavailable }
@@ -82,13 +89,23 @@ public struct NativeTokenPolicy: Sendable {
             guard let audience, audiences.contains(audience), !organizations.isEmpty,
                   organizations.allSatisfy({ $0 == identity.organizationID })
             else { throw NativeAuthError.tokenUnavailable }
-        case .coreStagingPersonal:
+        case .coreStagingPersonal, .coreProductionPersonal:
             // Core verifies its Clerk session without a workload audience.
             // Tenant/provider authority is rechecked by Core, never derived here.
             guard identity.organizationID == nil,
                   claims["org_id"] == nil || claims["org_id"] is NSNull,
                   claims["o"] == nil || claims["o"] is NSNull
             else { throw NativeAuthError.tokenUnavailable }
+            if identityProfile == .coreProductionPersonal {
+                // The explicit receipt binds the actual default-session audience,
+                // including its absence. Core rechecks current account/record access.
+                if let audience {
+                    let audiences = (claims["aud"] as? String).map { [$0] } ?? claims["aud"] as? [String] ?? []
+                    guard audiences.contains(audience) else { throw NativeAuthError.tokenUnavailable }
+                } else if claims["aud"] != nil {
+                    throw NativeAuthError.tokenUnavailable
+                }
+            }
         }
         guard let expiration = time(claims["exp"]), let issued = time(claims["iat"]),
               let notBefore = time(claims["nbf"]), expiration > now.timeIntervalSince1970,

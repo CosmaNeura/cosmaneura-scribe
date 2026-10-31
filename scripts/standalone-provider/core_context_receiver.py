@@ -49,9 +49,12 @@ class CoreContextReceiver(ProviderReceiver):
     ):
         if (
             engine is not None
-            or profile.identity_profile != "clerk-organization-v1"
+            or profile.identity_profile
+            not in {"clerk-organization-v1", "core-production-personal-v1"}
             or not isinstance(verifier, ClerkTokenVerifier)
             or verifier.core_provider_session
+            or (profile.identity_profile == "core-production-personal-v1")
+            != (getattr(verifier, "production_core_personal_session", False) is True)
             or verifier._settings != settings
         ):
             raise ValueError("core_context_requires_production_organization")

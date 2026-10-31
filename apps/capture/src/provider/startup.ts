@@ -31,7 +31,8 @@ export function mountProviderStartup(root: HTMLElement, host: StartupHost): () =
         show("Setup required", "Scribe is not enabled for this build.");
         return;
       }
-      const production = configuration.profile === "core-production-organization-v1";
+      const production = configuration.profile === "core-production-organization-v1"
+        || configuration.profile === "core-production-personal-v1";
       if ((production ? configuration.coreOrigin !== "https://app.cosmaneura.com"
         : configuration.profile !== undefined || configuration.coreOrigin !== "https://staging-app.cosmaneura.com")
         || configuration.uploadOrigins.length !== 1
