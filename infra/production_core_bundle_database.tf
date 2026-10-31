@@ -9,7 +9,7 @@ variable "prepare_production_core_bundle_database" {
     condition = (
       !var.prepare_production_core_bundle_database ||
       (
-        local.production_core_bundle_target_valid &&
+        local.production_core_bundle_database_owned_target_valid &&
         var.postgres_database_name == "cosmaneura_scribe" &&
         !var.deploy_postgres_foundation &&
         !var.deploy_production_existing_host_reuse &&
@@ -46,6 +46,16 @@ variable "prepare_production_core_bundle_database" {
 }
 
 locals {
+  # Keep the already Terraform-owned group selected. Turning its count off
+  # would withdraw ownership and propose deleting the production foundation.
+  production_core_bundle_database_owned_target_valid = (
+    var.environment == "production" &&
+    var.subscription_id == "bab2a709-1fcb-4c87-a9fc-802f7477ec13" &&
+    var.resource_group_name == "cosmaneura-scribe-production" &&
+    var.storage_account_name == "cosmaneurascribeprod" &&
+    var.key_vault_name == "cosmaneura-scribe-prod" &&
+    var.create_resource_group
+  )
   production_core_bundle_database_server_id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.DBforPostgreSQL/flexibleServers/cosmaneura-prod-postgres"
   production_core_bundle_database_fqdn      = "cosmaneura-prod-postgres.postgres.database.azure.com"
 }

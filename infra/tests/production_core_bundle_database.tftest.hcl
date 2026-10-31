@@ -3,6 +3,12 @@
 mock_provider "azapi" {}
 
 mock_provider "azurerm" {
+  mock_resource "azurerm_resource_group" {
+    defaults = {
+      id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-scribe-production"
+    }
+  }
+
   mock_resource "azurerm_postgresql_flexible_server" {
     defaults = {
       id   = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-scribe-production/providers/Microsoft.DBforPostgreSQL/flexibleServers/synthetic-scribe-server"
@@ -104,9 +110,20 @@ variables {
   tenant_id               = "00000000-0000-4000-8000-000000000001"
   environment             = "production"
   resource_group_name     = "cosmaneura-scribe-production"
+  create_resource_group   = true
   storage_account_name    = "cosmaneurascribeprod"
   key_vault_name          = "cosmaneura-scribe-prod"
   container_registry_name = "cosmaneurascribeprod"
+
+  production_existing_hosting_binding = {
+    resource_group_name                      = "cosmaneura-prod"
+    location                                 = "northcentralus"
+    container_app_environment_id             = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/managedEnvironments/cosmaneura-prod-app-environment"
+    container_app_environment_default_domain = "lemonsmoke-1009414c.northcentralus.azurecontainerapps.io"
+    container_apps_outbound_ipv4             = "64.236.176.41"
+    postgres_server_resource_id              = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.DBforPostgreSQL/flexibleServers/cosmaneura-prod-postgres"
+    postgres_server_fqdn                     = "cosmaneura-prod-postgres.postgres.database.azure.com"
+  }
 }
 
 run "false_default_adds_no_database_or_workload" {
@@ -162,6 +179,15 @@ run "reject_shared_core_database_name" {
   expect_failures = [var.prepare_production_core_bundle_database]
 }
 
+run "reject_owned_resource_group_withdrawal" {
+  command = plan
+  variables {
+    prepare_production_core_bundle_database = true
+    create_resource_group                   = false
+  }
+  expect_failures = [var.prepare_production_core_bundle_database]
+}
+
 run "reject_nonproduction_environment" {
   command = plan
   variables {
@@ -187,4 +213,38 @@ run "reject_dedicated_server_topology" {
     deploy_postgres_foundation              = true
   }
   expect_failures = [var.prepare_production_core_bundle_database]
+}
+
+run "retain_explicit_literal_case_of_same_existing_registry" {
+  command = plan
+  variables {
+    prepare_production_database_migration_identity = true
+    retained_production_migration_registry_scope   = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourcegroups/cosmaneura-scribe-production/providers/microsoft.containerregistry/registries/cosmaneurascribeprod"
+  }
+  assert {
+    condition = (
+      azurerm_role_assignment.database_migrations_acr[0].scope == var.retained_production_migration_registry_scope &&
+      azurerm_role_assignment.database_migrations_acr[0].role_definition_name == "AcrPull" &&
+      length(azurerm_postgresql_flexible_server_database.scribe) == 0 &&
+      length(azurerm_container_app_job.database_migrations) == 0
+    )
+    error_message = "retain the selected literal on the identical registry without selecting database or job creation"
+  }
+}
+
+run "reject_broader_registry_scope" {
+  command = plan
+  variables {
+    prepare_production_database_migration_identity = true
+    retained_production_migration_registry_scope   = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-scribe-production"
+  }
+  expect_failures = [var.retained_production_migration_registry_scope]
+}
+
+run "reject_retained_scope_without_migration_preparation" {
+  command = plan
+  variables {
+    retained_production_migration_registry_scope = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-scribe-production/providers/Microsoft.ContainerRegistry/registries/cosmaneurascribeprod"
+  }
+  expect_failures = [var.retained_production_migration_registry_scope]
 }

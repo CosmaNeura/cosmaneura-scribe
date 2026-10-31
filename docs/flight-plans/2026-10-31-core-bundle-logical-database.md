@@ -8,7 +8,11 @@ obsolete standalone app/job reuse topology. This leaf adds a false-default
 existing `azurerm_postgresql_flexible_server_database.scribe[0]` address.
 
 The selector fixes the existing server resource ID and FQDN, requires the exact
-production foundation and isolated database name, and refuses dedicated-server,
+production foundation and isolated database name, and retains the already-owned
+resource group with `create_resource_group=true`. The one-database saved-plan
+guard requires that group to remain no-op; this setting does not authorize a new
+group create. Withdrawing its ownership would propose deletion of the existing
+foundation, so the database leaf refuses that selection. It refuses dedicated-server,
 app, job, repository, capture and runtime activation selectors. It changes no
 identity/grant/admin/job count. Existing approved preparation settings can remain
 selected so protected state inputs do not accidentally delete an owned identity
@@ -58,6 +62,18 @@ Terraform/SQL. Its success is scope validation, not approval, state freshness,
 server authorization, absence proof, role/schema readiness or production release.
 The saved plan, export, exact source, provider locks, protected-input identity and
 fresh preflight receipt must be bound before the reserved owner apply decision.
+
+If the already-created migration identity and AcrPull assignment are absent from
+state, prepare their separate full import-only saved plan before selecting the
+database. Retain the actual owned group, key custody and migration preparation
+inputs. `retained_production_migration_registry_scope=null` keeps the existing
+scope selector. A protected explicit selection retains the live ARM scope's
+literal case only after comparison against the case-insensitively identical
+fixed owned registry and its actual resource ID. It never suppresses a diff,
+ignores changes, widens scope or approves replacement. The full preview must show
+two imports with zero resource creates/updates/deletes/replacements; any existing
+writer address move and refreshed-state differences require explicit separate
+owner disposition. Preserve the initial failed replacement preview as evidence.
 
 ## Separate schema and principal rungs
 
