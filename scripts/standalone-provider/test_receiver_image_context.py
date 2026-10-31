@@ -312,6 +312,7 @@ def test_prepared_context_is_exact_disabled_and_tamper_evident(
     assert result["receiver_sources"] == {
         name: checker.sha256(context / "receiver" / name) for name in preparer.RECEIVER_FILES
     }
+    assert set(result["receiver_sources"]) == image_entrypoint.RECEIVER_SOURCES
     report = checker.inspect_context(context, revision)
     assert report == {
         "status": "pass",
