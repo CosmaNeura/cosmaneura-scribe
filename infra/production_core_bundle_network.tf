@@ -123,4 +123,3 @@ data "azapi_resource" "production_core_bundle_scheduler_egress" {
     }
   }
 }
-
