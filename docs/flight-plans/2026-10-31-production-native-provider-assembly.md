@@ -14,6 +14,8 @@ Keep the default profile projector and assembler disabled. The explicit
 --enable-production-clients` option create enabled local client profiles only.
 They use the existing closed production receiver configuration and exact
 organization/workspace/issuer/audience/policy/deployment receipts. They do not
+enable both clients unless the receiver configuration admits both platforms.
+They do not
 enable or deploy the receiver, change an Azure setting, grant access, install,
 launch, sign or submit a client. Never supply invented production values or
 treat the resulting unsigned assembly as a qualified release.

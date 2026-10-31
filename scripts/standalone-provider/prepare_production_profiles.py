@@ -29,6 +29,8 @@ def project(value: dict, *, enable_clients: bool = False) -> dict:
     config = ReceiverConfiguration.model_validate_json(json.dumps({**receiver, "enabled": True}))
     if config.profile != "core-production-organization-v1" or config.production is None:
         raise ValueError("production_profile_input_invalid")
+    if enable_clients and set(config.platforms) != {"ios", "desktop"}:
+        raise ValueError("production_profile_input_invalid")
     client = value["client"]
     if not isinstance(client, dict) or set(client) != {
         "publishable_key",

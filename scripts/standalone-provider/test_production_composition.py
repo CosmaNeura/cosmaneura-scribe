@@ -236,3 +236,12 @@ def test_explicit_client_enablement_leaves_receiver_and_source_disabled(tmp_path
     assert json.loads((output / "status.json").read_text())["production_qualified"] is False
     with pytest.raises(ValueError):
         project(value, enable_clients="true")
+
+
+@pytest.mark.parametrize("platforms", [["ios"], ["desktop"]])
+def test_both_enabled_clients_require_both_receiver_platforms(platforms):
+    value = profile_input()
+    value["receiver"]["platforms"] = platforms
+    assert project(value)["desktop"]["enabled"] is False
+    with pytest.raises(ValueError):
+        project(value, enable_clients=True)
