@@ -1,0 +1,10 @@
+.scribe-account-deletion { box-sizing:border-box; position:fixed; inset:0; width:100%; height:100dvh; max-width:none; max-height:none; margin:0; border:0; padding:calc(24px + env(safe-area-inset-top)) max(24px,calc((100vw - 620px)/2)) calc(24px + env(safe-area-inset-bottom)); color:#16392c; background:#fff; font:18px/1.5 system-ui,sans-serif; overflow:auto; overscroll-behavior:contain; }
+.scribe-account-deletion::backdrop { background:#16392c99; }
+.scribe-account-deletion h1 { font-size:1.8rem; line-height:1.2; }
+.scribe-account-deletion input { box-sizing:border-box; display:block; width:100%; min-height:48px; margin-top:8px; padding:10px; border:2px solid #547363; border-radius:8px; color:#16392c; background:white; font:inherit; }
+.scribe-deletion-actions { display:flex; flex-wrap:wrap; gap:12px; padding-bottom:24px; }
+.scribe-account-deletion button { min-height:48px; padding:12px 18px; border:1px solid #547363; border-radius:8px; color:#16392c; background:white; font:inherit; cursor:pointer; }
+.scribe-account-deletion button[data-submit] { color:white; background:#a51e29; border-color:#a51e29; }
+.scribe-account-deletion button:disabled { opacity:.5; cursor:default; }
+.scribe-account-deletion :focus-visible { outline:3px solid #225ed8; outline-offset:3px; }
+.scribe-account-deletion [hidden] { display:none; }
