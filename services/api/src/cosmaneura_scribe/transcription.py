@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
@@ -25,6 +26,7 @@ from azure.core.exceptions import (
 )
 from azure.identity.aio import DefaultAzureCredential
 
+from .core_ai_network import ai_endpoint_guard
 from .external_transcript_v1 import SourceLocale, TranscriptLanguageMode
 from .schemas import CaptureChannel
 from .settings import Settings
@@ -34,7 +36,6 @@ from .speech_observation import (
     azure_sdk_version,
     inspect_wave_header,
 )
-from .speech_private_network import PrivateSpeechEndpointGuard
 
 
 class AudioTrackReader(Protocol):
@@ -182,17 +183,23 @@ class AzureSpeechTranscriber:
         hostname = urlsplit(endpoint).hostname
         if hostname is None:
             raise ValueError("azure_speech_endpoint is required for Azure transcription")
-        endpoint_guard = PrivateSpeechEndpointGuard(
+        endpoint_guard = ai_endpoint_guard(
             hostname,
             settings.azure_speech_private_endpoint_cidrs,
+            existing_core_public=settings.existing_core_public_ai_enabled,
         )
+        if (
+            settings.existing_core_public_ai_enabled
+            and os.environ.get("AZURE_TOKEN_CREDENTIALS") != "ManagedIdentityCredential"
+        ):
+            raise ValueError("existing_core_ai_managed_identity_required")
         credential = DefaultAzureCredential(
             managed_identity_client_id=(
                 str(settings.managed_identity_client_id)
                 if settings.managed_identity_client_id is not None
                 else None
             ),
-            require_envvar=False,
+            require_envvar=settings.existing_core_public_ai_enabled,
         )
         client = TranscriptionClient(
             endpoint=endpoint,

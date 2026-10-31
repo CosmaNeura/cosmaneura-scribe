@@ -21,6 +21,7 @@ from .captured_source_runtime import CapturedSourceRepositoryProvider
 from .captured_transcription_worker import CapturedTranscriptionWorker, SpeechPublicationObserver
 from .captured_translation_worker import CapturedTranslationWorker
 from .captured_worker_settings import CapturedWorkerSettings
+from .core_ai_network import ai_endpoint_guard
 from .postgres_repository import build_postgres_provider
 from .safe_logging import configure_standalone_logging, log_event
 from .scoped_speech_observation import capture_speech_observer
@@ -184,9 +185,17 @@ async def _execute(settings: CapturedWorkerSettings, tenant: UUID, session: UUID
                     settings.azure_translation_endpoint, settings.azure_translation_deployment
                 ),
                 credential=credential,
-                endpoint_guard=PrivateSpeechEndpointGuard(
-                    urlsplit(settings.azure_translation_endpoint).hostname or "",
-                    settings.azure_translation_private_endpoint_cidrs,
+                endpoint_guard=(
+                    ai_endpoint_guard(
+                        urlsplit(settings.azure_translation_endpoint).hostname or "",
+                        settings.azure_translation_private_endpoint_cidrs,
+                        existing_core_public=True,
+                    )
+                    if settings.existing_core_public_ai_enabled
+                    else PrivateSpeechEndpointGuard(
+                        urlsplit(settings.azure_translation_endpoint).hostname or "",
+                        settings.azure_translation_private_endpoint_cidrs,
+                    )
                 ),
             )
             worker = CapturedTranslationWorker(

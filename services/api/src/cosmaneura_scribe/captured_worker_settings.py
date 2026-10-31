@@ -9,8 +9,14 @@ from pydantic import Field, model_validator
 from pydantic_settings import SettingsConfigDict
 
 from .azure_translation import AzureTranslationProfile
+from .core_ai_network import (
+    CORE_OPENAI_HOST,
+    CORE_POSTGRES_HOST,
+    CORE_TRANSLATION_DEPLOYMENT,
+    ai_endpoint_guard,
+)
 from .settings import Settings
-from .speech_private_network import IpNetwork, PrivateSpeechEndpointGuard
+from .speech_private_network import IpNetwork
 
 
 class CapturedWorkerSettings(Settings):
@@ -73,8 +79,16 @@ class CapturedWorkerSettings(Settings):
             profile = AzureTranslationProfile(
                 self.azure_translation_endpoint, self.azure_translation_deployment
             )
-            PrivateSpeechEndpointGuard(
+            if self.existing_core_public_ai_enabled and (
+                self.database_host != CORE_POSTGRES_HOST
+                or self.managed_identity_client_id.int == 0
+                or urlsplit(profile.endpoint).hostname != CORE_OPENAI_HOST
+                or profile.deployment != CORE_TRANSLATION_DEPLOYMENT
+            ):
+                raise ValueError("existing_core_ai_transport_bindings_invalid")
+            ai_endpoint_guard(
                 urlsplit(profile.endpoint).hostname or "",
                 self.azure_translation_private_endpoint_cidrs,
+                existing_core_public=self.existing_core_public_ai_enabled,
             )
         return self

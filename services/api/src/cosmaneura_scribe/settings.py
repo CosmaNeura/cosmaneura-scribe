@@ -12,6 +12,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .audio_keys import versionless_key_id
 from .capture_protocol_v1 import MAX_AGGREGATE_PLAINTEXT_BYTES
+from .core_ai_network import CORE_POSTGRES_HOST, CORE_SPEECH_HOST
 
 _PRIVATE_API_IPV4_NETWORKS = (
     IPv4Network("10.0.0.0/8"),
@@ -123,6 +124,7 @@ class Settings(BaseSettings):
 
     transcription_backend: Literal["none", "azure"] = "none"
     azure_speech_endpoint: AnyHttpUrl | None = None
+    existing_core_public_ai_enabled: bool = False
     azure_speech_private_endpoint_cidrs: tuple[IPv4Network | IPv6Network, ...] = ()
     azure_speech_max_speakers: int = Field(default=4, ge=2, le=36)
     speech_smoke_enabled: bool = False
@@ -351,7 +353,21 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "azure_speech_endpoint must be an exact Azure Cognitive Services HTTPS origin"
                 )
-            if not self.azure_speech_private_endpoint_cidrs:
+            if self.existing_core_public_ai_enabled and (
+                self.repository_backend != "postgres"
+                or self.database_url is not None
+                or self.database_host != CORE_POSTGRES_HOST
+                or not self.database_ssl
+                or self.managed_identity_client_id is None
+                or self.managed_identity_client_id.int == 0
+                or self.azure_speech_endpoint.host != CORE_SPEECH_HOST
+                or self.azure_speech_private_endpoint_cidrs
+            ):
+                raise ValueError("existing_core_ai_transport_bindings_invalid")
+            if (
+                not self.existing_core_public_ai_enabled
+                and not self.azure_speech_private_endpoint_cidrs
+            ):
                 raise ValueError(
                     "azure_speech_private_endpoint_cidrs are required when Azure "
                     "transcription is enabled"
