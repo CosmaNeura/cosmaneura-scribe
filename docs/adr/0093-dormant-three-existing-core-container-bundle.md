@@ -65,3 +65,14 @@ revocation requires a separate owner plan after drain and SAS expiry; flags are
 not rollback for security or data changes. Never fall back to registry or CLI
 credentials. The [Tier 2 flight plan](../flight-plans/2026-10-31-existing-core-three-container-bundle-dark.md)
 defines the paired source and remaining activation holds.
+
+## Additive full native visit contract
+
+The dormant bundle can opt in to the receiver-first full native visit v2
+contract while preserving existing-patient v1 callers. Core remains the only
+patient, explicit identity, and encrypted author-reminder writer; fresh Core
+capability and account checks precede the fixed dual-auth dispatch. The full
+marker changes renderer behavior only after that source opt-in is confirmed.
+The [full native flight plan](../flight-plans/2026-10-31-native-full-visit-actions-v2-dark.md)
+defines the five ordinary action gaps, default-off controls, client provenance
+and recovery. It grants no production activation or schema application.

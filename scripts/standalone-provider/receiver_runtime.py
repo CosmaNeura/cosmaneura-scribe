@@ -77,6 +77,7 @@ class ReceiverConfiguration(BaseModel):
     enabled: bool = False
     authority_backend: Literal["registry", "core-provider-context-v1"] = "registry"
     encounter_creation_enabled: bool = False
+    native_visit_actions_v2_enabled: bool = False
     platforms: tuple[Literal["ios", "desktop"], ...] = ("ios", "desktop")
     desktop_native_session_without_origin: bool = False
     environment_id: UUID | None = None
@@ -94,6 +95,11 @@ class ReceiverConfiguration(BaseModel):
 
     @model_validator(mode="after")
     def require_bindings(self) -> ReceiverConfiguration:
+        if self.native_visit_actions_v2_enabled and (
+            self.authority_backend != "core-provider-context-v1"
+            or not self.encounter_creation_enabled
+        ):
+            raise ValueError("receiver_native_visit_actions_configuration_invalid")
         if self.profile == "core-staging-personal-v1" and self.production is not None:
             raise ValueError("receiver_configuration_invalid")
         if (
@@ -435,6 +441,11 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
                 core_connections=core_connections,
                 encounter_creation_enabled=config.encounter_creation_enabled,
                 provider_trace_enabled=production is None,
+                **(
+                    {"native_visit_actions_v2_enabled": config.native_visit_actions_v2_enabled}
+                    if config.authority_backend == "core-provider-context-v1"
+                    else {}
+                ),
             ).app()
         return ReceiverResources(
             AzureIngress(

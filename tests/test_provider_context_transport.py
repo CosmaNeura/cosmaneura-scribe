@@ -44,7 +44,7 @@ def connection():
     return value
 
 
-def fixture(*, fault=None, action="connection"):
+def fixture(*, fault=None, action="connection", include=False, capability=False):
     user = signed(
         iss=ISSUER,
         sub="user_synthetic",
@@ -91,14 +91,24 @@ def fixture(*, fault=None, action="connection"):
             and claims["idtyp"] == "app"
         )
         body = json.loads(request.content)
-        assert set(body) == {"action", "request_nonce"} and body["action"] == action
+        assert (
+            set(body)
+            == {"action", "request_nonce"}
+            | ({"include_native_visit_actions_v2"} if include else set())
+            and body["action"] == action
+        )
+        if include:
+            assert body["include_native_visit_actions_v2"] is True
         value = {
             "contract_version": "1",
-            **body,
+            "action": body["action"],
+            "request_nonce": body["request_nonce"],
             "checked_at": datetime.now(UTC).isoformat(),
             "connection": connection(),
             "catalog": None,
         }
+        if include:
+            value["native_visit_actions_v2"] = capability
         if action == "catalog":
             value["catalog"] = {
                 "version": "1",
@@ -202,5 +212,28 @@ async def test_mutation_and_missing_human_bearer_never_reach_core():
             with pytest.raises(ProviderCoreUnavailable):
                 await client.request(token, action)
         assert seen == []
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize("capability", [False, True])
+async def test_full_visit_capability_is_opted_in_and_bound_into_current_account(capability):
+    client, authorization, _ = fixture(include=True, capability=capability)
+    try:
+        account, _ = await client.request(
+            authorization, "connection", include_native_visit_actions_v2=True
+        )
+        assert account.native_visit_actions_v2 is capability
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize("capability", [None, 1, "true", {}])
+async def test_full_visit_capability_cannot_be_inferred_from_a_malformed_reply(capability):
+    client, authorization, seen = fixture(include=True, capability=capability)
+    try:
+        with pytest.raises(ProviderCoreUnavailable):
+            await client.request(authorization, "connection", include_native_visit_actions_v2=True)
+        assert seen.count("request") == 1
     finally:
         await client.close()

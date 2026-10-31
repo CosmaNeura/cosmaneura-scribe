@@ -10,7 +10,7 @@ import type { DesktopProviderBackend } from "./provider-workspace-factory.js";
 import { parseBackendCaptureGrant } from "./protocol.js";
 import { parseNativeProcessFence, type NativeProcessFence } from "./native-process-fence.js";
 import type { NativeProviderClient } from "./native-provider-client.js";
-import { parseProviderAccount, existingPatientSetup, type ProviderAccount, createEncounterSetup, type CreationRecords } from "../../capture/src/provider/encounter-setup";
+import { parseProviderAccount, existingPatientSetup, fullNativeVisitSetup, providerVisitCapabilities, type ProviderAccount, createEncounterSetup, type CreationRecords } from "../../capture/src/provider/encounter-setup";
 import { claimDesktopInitialWindow } from "./desktop-initial-window.js";
 import type { PreparedDesktopCapture } from "./provider-recorder.js";
 
@@ -35,7 +35,7 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
   const lifetime = AbortSignal.any([options.signal, native.signal, abort.signal]);
   let openingReviewSupported = false, noteOpeningSupported = false, creationSupported = false;
   let account: ProviderAccount | undefined;
-  let existingPatientOnly = false;
+  let existingPatientOnly = false, fullNativeVisits = false;
   const encounters = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
   type Source = { sourceLeaseId?: string; retiringPreparation: boolean; processFence?: NativeProcessFence;
     grant?: ReturnType<typeof parseBackendCaptureGrant>;
@@ -117,7 +117,7 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
     },
   }) : undefined;
   return {
-    get encounterSetup() { return creationSupported && encounterSetup ? existingPatientOnly ? existingPatientSetup(encounterSetup) : encounterSetup : undefined; },
+    get encounterSetup() { return creationSupported && encounterSetup ? existingPatientOnly ? existingPatientSetup(encounterSetup) : fullNativeVisits ? fullNativeVisitSetup(encounterSetup) : encounterSetup : undefined; },
     get account() { return account; },
     signal: lifetime,
     dispose: () => disposal ??= (async () => {
@@ -135,9 +135,9 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
         if (next.has(encounter.appointmentRef)) throw unavailable();
         next.set(encounter.appointmentRef, { workspaceId: uuid(row.workspaceId), encounter });
       }
-      const supportsCreation = value.encounter_creation_v1 === true;
-      const nextExistingPatientOnly = supportsCreation && value.existing_patient_visits_v1 === true;
-      const nextAccount = supportsCreation ? parseProviderAccount({ email: objectAccount(value.account).email, environment: value.environment }, nextExistingPatientOnly ? "Production" : "Staging") : undefined;
+      const capabilities = providerVisitCapabilities(value);
+      const { supportsCreation, existingPatientOnly: nextExistingPatientOnly } = capabilities;
+      const nextAccount = supportsCreation ? parseProviderAccount({ email: objectAccount(value.account).email, environment: value.environment }, capabilities.environment) : undefined;
       if (supportsCreation) {
         if ("recoveryScope" in value) uuid(value.recoveryScope);
         encounterSetup?.initializeCatalog(value, signal);
@@ -146,7 +146,7 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
       openingReviewSupported = value.opening_review_v1 === true;
       noteOpeningSupported = value.note_opening_v1 === true;
       creationSupported = supportsCreation;
-      existingPatientOnly = nextExistingPatientOnly;
+      existingPatientOnly = nextExistingPatientOnly; fullNativeVisits = capabilities.fullNativeVisits;
       account = nextAccount;
       for (const [id, value] of next) encounters.set(id, value);
       return [...next.values()].map(value => value.encounter);

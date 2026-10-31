@@ -23,6 +23,38 @@ function catalogFixture() {
   return { abort, catalog, scope, records, request, appointmentRef, open };
 }
 
+it("exposes full Production visit actions only with the additive v2 capability", async () => {
+  const f = catalogFixture();
+  Object.assign(f.catalog, { environment: "Production", existing_patient_visits_v1: true,
+    native_visit_actions_v2: true });
+  const backend = await f.open();
+  try {
+    await backend.listEncounters(backend.signal);
+    expect(backend.account?.environment).toBe("Production");
+    expect(backend.encounterSetup?.existingPatientOnly).toBeUndefined();
+    expect(typeof backend.encounterSetup?.matchPatient).toBe("function");
+    expect(typeof backend.encounterSetup?.readPrivateNote).toBe("function");
+    expect(typeof backend.encounterSetup?.savePrivateNote).toBe("function");
+    expect(typeof backend.encounterSetup?.addDateOfBirth).toBe("undefined");
+    expect(f.request.mock.calls.map(([, value]) => value.action)).toEqual(["catalog"]);
+  } finally { await backend.dispose(); }
+});
+
+it.each(["Staging", "missing-subset", "no-creation", "malformed"])("rejects ambiguous full native negotiation (%s)", async bad => {
+  const f = catalogFixture();
+  Object.assign(f.catalog, { environment: "Production", existing_patient_visits_v1: true,
+    native_visit_actions_v2: true });
+  if (bad === "Staging") f.catalog.environment = "Staging";
+  if (bad === "missing-subset") delete f.catalog.existing_patient_visits_v1;
+  if (bad === "no-creation") f.catalog.encounter_creation_v1 = false;
+  if (bad === "malformed") f.catalog.native_visit_actions_v2 = "true";
+  const backend = await f.open();
+  try {
+    await expect(backend.listEncounters(backend.signal)).rejects.toThrow();
+    expect(backend.encounterSetup).toBeUndefined();
+  } finally { await backend.dispose(); }
+});
+
 it("negotiates only the explicit Production existing-patient subset", async () => {
   const f = catalogFixture();
   f.catalog.environment = "Production"; f.catalog.existing_patient_visits_v1 = true;

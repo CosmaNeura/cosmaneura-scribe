@@ -35,8 +35,12 @@ class ProviderEncounterAccount:
     # Server-only digest of the freshly verified issuer/subject/session. General
     # receivers and older callers retain the exact-token match by leaving None.
     session_fingerprint: bytes | None = None
+    # A fresh, opted-in Core reply owns this capability; it is never renderer input.
+    native_visit_actions_v2: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.native_visit_actions_v2) is not bool:
+            raise ValueError("provider_visit_capability_invalid")
         if self.session_fingerprint is not None and (
             type(self.session_fingerprint) is not bytes or len(self.session_fingerprint) != 32
         ):
@@ -89,9 +93,15 @@ class ProviderEncounterTransport:
                     or set(body) & {"expected_actor_ref", "expected_tenant_ref"}
                     or body.get("action")
                     not in {
-                        "patients", "list", "lookup", "create", "add_birth_date",
-                        "private_note_read", "private_note_save",
-                        "patient_match_candidates", "patient_match_save",
+                        "patients",
+                        "list",
+                        "lookup",
+                        "create",
+                        "add_birth_date",
+                        "private_note_read",
+                        "private_note_save",
+                        "patient_match_candidates",
+                        "patient_match_save",
                     }
                 ):
                     raise ValueError
