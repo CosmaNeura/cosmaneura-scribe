@@ -31,6 +31,17 @@ Key Vault, an RSA-3072 wrapping key, private endpoints, a runtime managed identi
 least-privilege data-plane roles. The runtime can read only the key's public metadata; it cannot
 unwrap a session key.
 
+The selected three-existing-Core-host bundle has a separate IAM-only leaf:
+`prepare_production_core_bundle_grants` and
+`remove_owned_production_translation_blob_writer` both default false. It
+prepares exact API public-key/delegated-create-write, Speech unwrap/read/Speech,
+and translation unwrap/OpenAI rights; translation receives no Blob grant. Both
+selectors require explicit owner policy/grant approval before apply, including
+removal of this state's existing translation account-wide Blob writer before
+worker attachment. It changes no network, host, identity attachment, database,
+Graph service role or runtime activation. See the
+[Tier 2 IAM sequence and recovery](../docs/flight-plans/2026-10-31-existing-core-three-container-bundle-dark.md#separate-existing-identity-iam-preparation).
+
 For the intentionally absent production key only,
 `enable_production_arm_audio_key_bootstrap = true` selects a Terraform-owned
 `Microsoft.KeyVault/vaults/keys@2024-11-01` ARM child. This uses Azure's management

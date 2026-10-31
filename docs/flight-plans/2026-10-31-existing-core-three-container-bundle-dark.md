@@ -46,9 +46,56 @@ access is Disabled, DB/grant/schema/cohort/source/image/Clerk receipts remain
 unqualified. Existing unapplied exact-Core-egress/ciphertext flags need a worker
 read/unwrap network decision; AI transport alone does not complete hosting.
 There are no separate Scribe Apps/jobs/PEs in this bundle; do not enable the old
-reuse Terraform as a substitute. Native new-patient/visit and service-mutation
-parity remains a distinct source gap; Core-context catalog is read-only. No
+reuse Terraform as a substitute. The selected Core-context subset now supports
+existing-patient catalog/search, visit creation for an existing patient, and
+closed capture/admission/note/source-start operations. New/provisional patient,
+patient matching/DOB and private-note parity remain outside that subset. No
 Session Prep/global Agent API gate is enabled here.
+
+## Separate existing-identity IAM preparation
+
+`prepare_production_core_bundle_grants=false` and
+`remove_owned_production_translation_blob_writer=false` preserve the current
+foundation writer and add no selected-identity lookups or grants. The counted
+writer address has an explicit state move; the false default must not replace
+or delete it. This Tier 2 leaf leaves the existing key-custody selector unchanged
+and does not bootstrap a key, create/attach an identity, deploy a host/app/job,
+register a Graph application/role, alter a database/network, or activate capture.
+
+After owner approval of the policy and grants, both IAM selectors must be true
+for one reviewed IAM-only plan. All obsolete topology and activation selectors
+and the network-preparation selector must remain false. Reconcile the existing
+foundation state and exact identity metadata first; stop if the plan includes
+any non-IAM resource change or an assignment that is not owned by this state.
+The IAM plan must remove only `runtime_audio[0]`, the existing translation
+identity's account-wide Blob Data Contributor, and prepare these exact rights:
+
+- API `c7bae168-fbf5-4658-b0d9-dd4b5373a1be`: wrapping-key Reader, account Blob
+  Delegator, and audio-container custom create/write only; no Blob read/delete
+  or key unwrap. Owner approval of that custom data-action policy is required.
+- Speech `5696041c-ee89-4ef5-bc5d-fdf846cd7364`: wrapping-key Crypto User,
+  audio-container Blob Reader, and existing Core AI account Speech User. Preserve
+  unrelated existing health-services grants.
+- Translation `39d00a14-ca79-4cbf-8821-3e2af90ea0e2`: wrapping-key Crypto User
+  and existing Core AI account OpenAI User; no Blob grant. Scheduler needs none.
+
+No cleanup receipt, role propagation or effective permissions are asserted by
+the source flags. Before attaching translation to the existing worker, verify
+the owned writer was actually removed and inspect inherited/out-of-state grants
+for broader Blob access; separately obtain owner disposition for any such grant.
+Prepare/apply network policy separately after actual storage/Key Vault routing
+evidence and owner approval. Existing Core service app-role permissions, Entra
+database roles, exact key availability and tenant/cohort remain separate holds.
+
+Before IAM apply, discard/revert this leaf. After an approved IAM apply, keep the
+owned-writer removal selector true: reverting it would recreate the broad grant.
+Stop admissions/pickup and drain work if runtime has since been enabled, wait for
+SAS expiry, then use an owner-reviewed IAM plan to revoke only these new grants
+and the unused custom role by selecting grant preparation false while retaining
+owned-writer removal true. This combination is confined to the exact production
+foundation with all obsolete topology/network/activation selectors false.
+Preserve existing resources and unrelated grants;
+never automatically restore the removed writer or change key custody/network.
 
 Review paired exact source independently. Offline checks cover closed profile
 bindings, credential isolation, distinct identities, disabled startup, separate

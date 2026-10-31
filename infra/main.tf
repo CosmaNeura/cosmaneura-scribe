@@ -255,7 +255,16 @@ resource "azurerm_private_endpoint" "key_vault" {
   tags = local.tags
 }
 
+# Preserve the existing assignment/address by default. The selected translation
+# stage has no Blob client; its explicitly owned writer removal must be applied
+# and verified before attachment, independently of network/activation decisions.
+moved {
+  from = azurerm_role_assignment.runtime_audio
+  to   = azurerm_role_assignment.runtime_audio[0]
+}
+
 resource "azurerm_role_assignment" "runtime_audio" {
+  count                = var.remove_owned_production_translation_blob_writer ? 0 : 1
   scope                = azurerm_storage_account.audio.id
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = azurerm_user_assigned_identity.runtime.principal_id
