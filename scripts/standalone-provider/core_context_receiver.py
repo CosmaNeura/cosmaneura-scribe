@@ -36,7 +36,17 @@ from starlette.concurrency import run_in_threadpool
 
 
 class CoreContextReceiver(ProviderReceiver):
-    def __init__(self, profile, engine, settings, verifier, workload_token, **kwargs):
+    def __init__(
+        self,
+        profile,
+        engine,
+        settings,
+        verifier,
+        workload_token,
+        *,
+        native_visit_actions_v2_enabled=False,
+        **kwargs,
+    ):
         if (
             engine is not None
             or profile.identity_profile != "clerk-organization-v1"
@@ -48,6 +58,11 @@ class CoreContextReceiver(ProviderReceiver):
         # None is never a database fallback: every registry entry point below
         # is replaced or denied, and this mode never creates a SQL engine.
         super().__init__(profile, cast(Engine, None), settings, verifier, workload_token, **kwargs)
+        if type(native_visit_actions_v2_enabled) is not bool or (
+            native_visit_actions_v2_enabled and not self.encounter_creation_enabled
+        ):
+            raise ValueError("core_native_visit_actions_configuration_invalid")
+        self.native_visit_actions_v2_enabled = native_visit_actions_v2_enabled
 
     async def registry_read(self, operation):
         value = operation(None)
@@ -85,7 +100,11 @@ class CoreContextReceiver(ProviderReceiver):
             connections=self.core_connections,
         )
         try:
-            return await transport.request(authorization, action)
+            return await transport.request(
+                authorization,
+                action,
+                include_native_visit_actions_v2=self.native_visit_actions_v2_enabled,
+            )
         finally:
             await transport.close()
 
@@ -103,7 +122,16 @@ class CoreContextReceiver(ProviderReceiver):
         return [self.core_entry(row) for row in value["encounters"]]
 
     async def encounters(self, authorization, body, key):
-        if body.get("action") in {"patients", "create"}:
+        if body.get("action") in {"patients", "create"} or (
+            self.native_visit_actions_v2_enabled
+            and body.get("action")
+            in {
+                "patient_match_candidates",
+                "patient_match_save",
+                "private_note_read",
+                "private_note_save",
+            }
+        ):
             if not self.encounter_creation_enabled:
                 raise ProviderCoreUnavailable("core_provider_operation_unavailable", 409)
 
@@ -112,12 +140,17 @@ class CoreContextReceiver(ProviderReceiver):
                     raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
                 return await self.encounter_account(authorization, bind=None)
 
+            version = "1"
+            if self.native_visit_actions_v2_enabled:
+                initial = await fresh()
+                version = "2" if initial.native_visit_actions_v2 else "1"
             transport = ProviderNativeEncounterTransport(
                 self.profile.core_origin,
                 fresh,
                 self.workload_token,
                 transport=self.core_http,
                 connections=self.core_connections,
+                version=version,
             )
             try:
                 return await transport.request(body, key)
@@ -149,6 +182,7 @@ class CoreContextReceiver(ProviderReceiver):
             "action": body["action"],
             "request_nonce": nonce,
             "recoveryScope": str(account.recovery_scope),
+            **({"native_visit_actions_v2": True} if account.native_visit_actions_v2 else {}),
         }
         if body["action"] == "lookup":
             wanted = str(_uuid(body.get("workspace_id")))
@@ -218,6 +252,11 @@ class CoreContextReceiver(ProviderReceiver):
                         "account": value["account"],
                         "recoveryScope": value["recoveryScope"],
                         "environment": "Production",
+                        **(
+                            {"native_visit_actions_v2": True}
+                            if value.get("native_visit_actions_v2") is True
+                            else {}
+                        ),
                     },
                 )
             except ProviderCoreUnavailable as error:

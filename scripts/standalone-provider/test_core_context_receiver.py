@@ -59,7 +59,7 @@ def test_new_mode_is_default_off_and_cannot_mix_registry_or_staging():
             ReceiverConfiguration.model_validate_json(json.dumps(values))
 
 
-def receiver(*, deny=False, revoke_after_native=False):
+def receiver(*, deny=False, revoke_after_native=False, full=False, core_full=None):
     projected = settings(Settings, "app://cosmas")
     verifier = auth.ClerkTokenVerifier(
         projected,
@@ -153,7 +153,13 @@ def receiver(*, deny=False, revoke_after_native=False):
             200,
             json={
                 "contract_version": "1",
-                **body,
+                "action": body["action"],
+                "request_nonce": body["request_nonce"],
+                **(
+                    {"native_visit_actions_v2": full if core_full is None else core_full}
+                    if "include_native_visit_actions_v2" in body
+                    else {}
+                ),
                 "checked_at": datetime.now(UTC).isoformat(),
                 "connection": connection,
                 "catalog": catalog,
@@ -173,6 +179,7 @@ def receiver(*, deny=False, revoke_after_native=False):
         workload,
         enabled=True,
         encounter_creation_enabled=True,
+        native_visit_actions_v2_enabled=full,
         core_http=httpx.MockTransport(reply),
     )
     return result, token, calls, verifier
@@ -385,5 +392,171 @@ async def test_native_read_brackets_one_core_call_with_current_context(revoked, 
             assert value["operation"] == "encryption_key"
         assert sum(url.endswith("/native-capture") for url in calls) == 1
         assert sum(url.endswith("/provider-context") for url in calls) >= 2
+    finally:
+        verifier.close()
+
+
+def test_full_visit_configuration_is_default_off_and_requires_the_core_creation_backend():
+    assert not ReceiverConfiguration().native_visit_actions_v2_enabled
+    assert config(
+        native_visit_actions_v2_enabled=True, encounter_creation_enabled=True
+    ).native_visit_actions_v2_enabled
+    with pytest.raises(ValueError):
+        config(native_visit_actions_v2_enabled=True)
+    with pytest.raises(ValueError):
+        ReceiverConfiguration(native_visit_actions_v2_enabled=True, encounter_creation_enabled=True)
+
+
+@pytest.mark.asyncio
+async def test_full_receiver_opt_in_without_core_gate_keeps_the_existing_only_catalog():
+    client, token, calls, verifier = receiver(full=True, core_full=False)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=client.app()), base_url=ORIGIN
+        ) as http:
+            catalog = await http.post(
+                "/provider/v1/catalog",
+                json={},
+                headers={
+                    "Origin": "app://cosmas",
+                    "Authorization": "Bearer " + token,
+                    "X-Scribe-Native-Revision": str(uuid4()),
+                },
+            )
+            assert catalog.status_code == 200
+            assert catalog.json()["existing_patient_visits_v1"] is True
+            assert "native_visit_actions_v2" not in catalog.json()
+        with pytest.raises(ProviderCoreUnavailable):
+            await client.encounters(
+                "Bearer " + token,
+                {
+                    "action": "private_note_read",
+                    "request_nonce": str(uuid4()),
+                    "appointment_ref": ROW["appointment_ref"],
+                },
+                str(uuid4()),
+            )
+        assert not any("native-encounters" in url for url in calls)
+    finally:
+        verifier.close()
+
+
+@pytest.mark.asyncio
+async def test_full_native_catalog_and_five_actions_use_fresh_core_v2_without_registry(monkeypatch):
+    monkeypatch.setattr(
+        "receiver.Session", lambda *_args, **_kwargs: pytest.fail("Registry forbidden")
+    )
+    client, token, calls, verifier = receiver(full=True)
+    original = client.core_http
+    assert isinstance(original, httpx.MockTransport)
+    patient = "patient_00000000000000000000000007"
+    current = {
+        "state": "provisional",
+        "version": 0,
+        "canonical_patient_ref": patient,
+        "name": ROW["patient_name"],
+        "date_of_birth": None,
+    }
+
+    def reply(request):
+        if request.url.path != "/service/v1/agent/scribe/native-encounters":
+            return original.handle_request(request)
+        calls.append(str(request.url))
+        assert request.headers["x-cosmaneura-scribe-encounter-version"] == "2"
+        body = json.loads(request.content)
+        assert body["expected_actor_ref"] == ACTOR and body["expected_tenant_ref"] == TENANT
+        value = {
+            "version": "2",
+            "action": body["action"],
+            "request_nonce": body["request_nonce"],
+            "account": {"actor_ref": ACTOR, "tenant_ref": TENANT},
+        }
+        encounter = {
+            **ROW,
+            "patient_ref": patient,
+            "date_of_birth": None,
+            "appointment_at": "2026-10-31T00:00:00Z",
+            "identity": current,
+        }
+        if body["action"] == "create":
+            value.update(creation_key=body["creation_key"], encounter=encounter)
+        elif body["action"] == "patient_match_candidates":
+            value.update(patients=[], more_results=False, identity=current)
+        elif body["action"] == "patient_match_save":
+            saved = {**current, "state": "confirmed", "version": 1}
+            value.update(
+                change_key=body["change_key"],
+                identity=saved,
+                encounter={**encounter, "identity": saved},
+            )
+        else:
+            value["private_note"] = {
+                "text": body.get("text", ""),
+                "version": body.get("expected_version", -1) + 1,
+                "updated_at": None,
+            }
+            if body["action"] == "private_note_save":
+                value["change_key"] = body["change_key"]
+        return httpx.Response(
+            200,
+            json=value,
+            headers={"Cache-Control": "no-store", "X-Cosmaneura-Scribe-Encounter-Version": "2"},
+        )
+
+    client.core_http = httpx.MockTransport(reply)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=client.app()), base_url=ORIGIN
+        ) as http:
+            headers = {
+                "Origin": "app://cosmas",
+                "Authorization": "Bearer " + token,
+                "X-Scribe-Native-Revision": str(uuid4()),
+            }
+            catalog = await http.post("/provider/v1/catalog", json={}, headers=headers)
+            assert catalog.status_code == 200
+            assert catalog.json()["native_visit_actions_v2"] is True
+            assert catalog.json()["existing_patient_visits_v1"] is True
+            for action in (
+                "create",
+                "patient_match_candidates",
+                "patient_match_save",
+                "private_note_read",
+                "private_note_save",
+            ):
+                key = str(uuid4())
+                body = {"action": action, "request_nonce": str(uuid4())}
+                if action == "create":
+                    body.update(
+                        creation_key=key,
+                        patient={
+                            "kind": "new",
+                            "name": ROW["patient_name"],
+                            "date_of_birth": None,
+                            "provisional": True,
+                        },
+                        appointment_at="2026-10-31T00:00:00Z",
+                        title="Visit",
+                    )
+                else:
+                    body["appointment_ref"] = ROW["appointment_ref"]
+                    if action == "patient_match_candidates":
+                        body.update(query="Synthetic", date_of_birth=None)
+                    if action == "patient_match_save":
+                        body.update(
+                            change_key=key,
+                            expected_version=0,
+                            selection={"kind": "confirm_new", "date_of_birth": None},
+                        )
+                    if action == "private_note_save":
+                        body.update(change_key=key, expected_version=0, text="Invented reminder")
+                response = await http.post(
+                    "/provider/v1/encounters",
+                    json=body,
+                    headers={**headers, "Idempotency-Key": key},
+                )
+                assert response.status_code == 200 and response.json()["version"] == "2"
+            assert len([p for p in calls if "native-encounters" in p]) == 5
+            assert not any("/embed/" in p for p in calls) and client.engine is None
     finally:
         verifier.close()

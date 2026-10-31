@@ -73,11 +73,12 @@ class ProviderContextTransport:
         await self.client.aclose()
 
     async def request(
-        self, authorization: str, action: str
+        self, authorization: str, action: str, *, include_native_visit_actions_v2: bool = False
     ) -> tuple[ProviderEncounterAccount, dict[str, object] | None]:
         try:
             async with asyncio.timeout(30):
                 core_wire_require(action in {"connection", "catalog"})
+                core_wire_require(type(include_native_visit_actions_v2) is bool)
                 core_wire_require(authorization.startswith("Bearer "))
                 token = core_wire_secret(SecretStr(authorization[7:]))
                 before = await self.verify(token)
@@ -86,7 +87,15 @@ class ProviderContextTransport:
                 async with self.client.stream(
                     "POST",
                     self.origin + PATH,
-                    json={"action": action, "request_nonce": nonce},
+                    json={
+                        "action": action,
+                        "request_nonce": nonce,
+                        **(
+                            {"include_native_visit_actions_v2": True}
+                            if include_native_visit_actions_v2
+                            else {}
+                        ),
+                    },
                     headers={
                         "Authorization": "Bearer " + token,
                         "X-Cosmaneura-Workload-Authorization": "Bearer " + workload,
@@ -127,7 +136,11 @@ class ProviderContextTransport:
                         "connection",
                         "catalog",
                     }
+                    | ({"native_visit_actions_v2"} if include_native_visit_actions_v2 else set())
                 )
+                capability = value.get("native_visit_actions_v2", False)
+                core_wire_require(type(capability) is bool)
+                assert isinstance(capability, bool)
                 core_wire_require(
                     value["contract_version"] == "1"
                     and value["action"] == action
@@ -189,6 +202,7 @@ class ProviderContextTransport:
                     str(connection["actor_ref"]),
                     str(connection["tenant_ref"]),
                     SecretStr(token),
+                    native_visit_actions_v2=capability,
                 )
                 raw_catalog = value["catalog"]
                 catalog: dict[str, object] | None = None

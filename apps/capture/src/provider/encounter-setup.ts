@@ -38,6 +38,19 @@ export function parseProviderAccount(value: unknown, environment: "Staging" | "P
     || value.environment !== environment) throw fail();
   return { email: text(value.email, 320), environment };
 }
+/** Full Production is an explicit additive contract, never an environment guess. */
+export function providerVisitCapabilities(value: Record<string, unknown>): {
+  supportsCreation: boolean; existingPatientOnly: boolean; fullNativeVisits: boolean;
+  environment: "Staging" | "Production";
+} {
+  if ("native_visit_actions_v2" in value && typeof value.native_visit_actions_v2 !== "boolean") throw fail();
+  const supportsCreation = value.encounter_creation_v1 === true;
+  const fullNativeVisits = value.native_visit_actions_v2 === true;
+  if (fullNativeVisits && (!supportsCreation || value.existing_patient_visits_v1 !== true || value.environment !== "Production")) throw fail();
+  const existingPatientOnly = supportsCreation && value.existing_patient_visits_v1 === true && !fullNativeVisits;
+  return { supportsCreation, existingPatientOnly, fullNativeVisits,
+    environment: fullNativeVisits || existingPatientOnly ? "Production" : "Staging" };
+}
 export function parseSetupState(value: unknown): EncounterSetupState {
   if (!record(value) || Object.keys(value).sort().join(",") !== "account,moreResults,patients,pending"
     || !Array.isArray(value.patients) || value.patients.length > 100 || typeof value.moreResults !== "boolean") throw fail();
@@ -271,4 +284,11 @@ export function existingPatientSetup(setup: ProviderEncounterSetup): ProviderEnc
     submit: (draft, signal) => setup.submit(draft, signal),
     ...(setup.hidden ? { hidden: signal => setup.hidden!(signal) } : {}),
     ...(setup.setHidden ? { setHidden: (ref, hidden, signal) => setup.setHidden!(ref, hidden, signal) } : {}) };
+}
+
+/** V2 supports matching DOB, not the obsolete separate demographic mutation. */
+export function fullNativeVisitSetup(setup: ProviderEncounterSetup): ProviderEncounterSetup {
+  const result = { ...setup };
+  delete result.addDateOfBirth;
+  return result;
 }

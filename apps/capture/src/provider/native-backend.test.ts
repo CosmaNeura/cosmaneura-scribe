@@ -79,6 +79,38 @@ function fixture() {
 }
 
 describe("native provider connection", () => {
+  it.each([false, true])("keeps the Production subset unless full v2 is explicitly confirmed (%s)", async full => {
+    const f = fixture();
+    f.plugin.providerRequest.mockImplementation(async request => f.reply(request, {
+      ...JSON.parse(f.reply(request).body), encounter_creation_v1: true,
+      existing_patient_visits_v1: true, native_visit_actions_v2: full,
+      environment: "Production", recoveryScope: recovery,
+      account: { email: "provider@synthetic.invalid" } }));
+    const backend = await f.connect();
+    try {
+      await backend.listEncounters(backend.signal);
+      expect(backend.account?.environment).toBe("Production");
+      expect(backend.encounterSetup?.existingPatientOnly).toBe(full ? undefined : true);
+      expect(typeof backend.encounterSetup?.matchPatient).toBe(full ? "function" : "undefined");
+      expect(typeof backend.encounterSetup?.readPrivateNote).toBe(full ? "function" : "undefined");
+      expect(typeof backend.encounterSetup?.savePrivateNote).toBe(full ? "function" : "undefined");
+      expect(typeof backend.encounterSetup?.addDateOfBirth).toBe("undefined");
+      expect(f.plugin.getToken).not.toHaveBeenCalled();
+    } finally { await backend.dispose(); }
+  });
+  it.each(["true", 1, null])("rejects malformed full native capability (%s)", async capability => {
+    const f = fixture();
+    f.plugin.providerRequest.mockImplementation(async request => f.reply(request, {
+      ...JSON.parse(f.reply(request).body), encounter_creation_v1: true,
+      existing_patient_visits_v1: true, native_visit_actions_v2: capability,
+      environment: "Production", recoveryScope: recovery,
+      account: { email: "provider@synthetic.invalid" } }));
+    const backend = await f.connect();
+    try {
+      await expect(backend.listEncounters(backend.signal)).rejects.toThrow();
+      expect(backend.account).toBeUndefined();
+    } finally { await backend.dispose(); }
+  });
   it.each([undefined, 1])("offers native saved passage only with the declared version (%s), never a recorder acquisition", async version => {
     const f = fixture();f.setState({ ...f.state, ...(version ? { nativePassagePlaybackVersion: version } : {}) });
     const play = vi.fn(async () => ({ available: false }));
