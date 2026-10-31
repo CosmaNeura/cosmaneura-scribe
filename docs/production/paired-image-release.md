@@ -122,6 +122,11 @@ This plan reads only `cosmaneura-prod-app`, `cosmaneura-prod-worker`, and
 Environment/secret/configuration values remain in memory and only fingerprints
 are retained. Existing bundle flags must be literal false or absent. Confirm the
 prior images, `replace_image_only` drift disposition and preserved configuration.
+All three hosts must already contain literal `AUTO_MIGRATE_ON_STARTUP=false`
+without `secretRef`. Core's default when absent enables startup migrations, so an
+absent, true or opaque setting blocks promotion before any image update. The
+operator never changes environment or runs migrations; configuration/schema
+disposition is a separate owner-approved prerequisite. Publication is unaffected.
 Exclude concurrent Core deployment/infrastructure writes during execution; there
 is no cross-repository workflow lock or claimed atomic compare-and-swap.
 

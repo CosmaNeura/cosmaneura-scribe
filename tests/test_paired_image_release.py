@@ -133,6 +133,7 @@ def resource(name: str) -> dict:
                         "args": ["keep"],
                         "env": [
                             {"name": "EXISTING", "value": "private-value-never-in-plan"},
+                            {"name": "AUTO_MIGRATE_ON_STARTUP", "value": "false"},
                             {"name": release.FLAGS[0], "value": "false"},
                         ],
                         "resources": {"cpu": 1, "memory": "2Gi"},
@@ -210,7 +211,9 @@ class Fake(release.Operator):
         self.updates.append(name)
         self.resources[name]["properties"]["template"]["containers"][0]["image"] = reference
         if self.corrupt_after_update:
-            self.resources[name]["properties"]["template"]["containers"][0]["env"] = []
+            self.resources[name]["properties"]["template"]["containers"][0]["env"][0]["value"] = (
+                "changed"
+            )
 
 
 class PublishingBoundary(unittest.TestCase):
@@ -351,6 +354,46 @@ class PublishingBoundary(unittest.TestCase):
             env[-1] = item
             with self.assertRaisesRegex(ValueError, "bundle"):
                 self.make_plan()
+
+    def test_each_host_requires_literal_disabled_startup_migrations(self):
+        for name in release.HOSTS:
+            for setting in (
+                None,
+                {"value": "true"},
+                {"value": "False"},
+                {"value": False},
+                {"value": "unknown"},
+                {"secretRef": "opaque"},
+                {"value": "false", "secretRef": "opaque"},
+            ):
+                with self.subTest(host=name, setting=setting):
+                    self.fake.resources = {host: resource(host) for host in release.HOSTS}
+                    env = self.fake.resources[name]["properties"]["template"]["containers"][0][
+                        "env"
+                    ]
+                    env[:] = [item for item in env if item["name"] != "AUTO_MIGRATE_ON_STARTUP"]
+                    if setting is not None:
+                        env.append({"name": "AUTO_MIGRATE_ON_STARTUP", **setting})
+                    with self.assertRaisesRegex(ValueError, "startup_migrations"):
+                        self.make_plan()
+                    self.assertEqual(self.fake.updates, [])
+
+    def test_fresh_promotion_check_refuses_missing_flag_before_any_host_update(self):
+        proposed = self.make_plan()
+        name = list(release.HOSTS)[-1]
+        env = self.fake.resources[name]["properties"]["template"]["containers"][0]["env"]
+        env[:] = [item for item in env if item["name"] != "AUTO_MIGRATE_ON_STARTUP"]
+        with self.assertRaisesRegex(ValueError, "startup_migrations"):
+            self.execute(proposed)
+        self.assertEqual(self.fake.updates, [])
+
+    def test_publication_does_not_require_or_read_host_startup_migration_settings(self):
+        with patch.object(self.fake, "resource", side_effect=AssertionError("host read")):
+            proposed = self.make_plan("publish")
+            receipt = self.execute(proposed)
+        self.assertEqual(proposed["existing_hosts"], {})
+        self.assertTrue(receipt["remote_digest_verified"])
+        self.assertEqual(self.fake.updates, [])
 
     def test_founder_noninteractive_and_expired_plan_are_refused(self):
         proposed = self.make_plan()

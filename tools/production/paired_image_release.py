@@ -574,6 +574,10 @@ def projection(resource: dict[str, Any], name: str) -> dict[str, Any]:
         raise ValueError("bundle_must_already_be_disabled")
     if any(item["name"] in FLAGS and "secretRef" in item for item in env):
         raise ValueError("bundle_enable_flag_must_be_literal")
+    if values.get("AUTO_MIGRATE_ON_STARTUP") != "false" or any(
+        item["name"] == "AUTO_MIGRATE_ON_STARTUP" and "secretRef" in item for item in env
+    ):
+        raise ValueError("startup_migrations_must_already_be_disabled_literal")
     return result
 
 
