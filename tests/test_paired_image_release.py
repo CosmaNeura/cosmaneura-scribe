@@ -476,6 +476,32 @@ class PublishingBoundary(unittest.TestCase):
             self.execute(proposed)
         self.assertEqual(self.fake.updates, before)
 
+    def test_owned_process_interruption_cleans_group_before_propagating(self):
+        spawned = []
+        original = subprocess.Popen
+
+        def start(args, **kwargs):
+            process = original(args, **kwargs)
+            spawned.append(process)
+            communicate = process.communicate
+
+            def interrupted(timeout):
+                process.communicate = communicate
+                raise KeyboardInterrupt
+
+            process.communicate = interrupted
+            return process
+
+        with (
+            patch("subprocess.Popen", side_effect=start) as launch,
+            patch("os.killpg", wraps=os.killpg) as terminate,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            release.Operator().run([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.assertEqual(launch.call_count, 1)
+        terminate.assert_called_with(spawned[0].pid, signal.SIGTERM)
+        self.assertIsNotNone(spawned[0].poll())
+
     def test_interrupted_publication_retains_intent_and_blocks_replay(self):
         self.fake.remote_digest = None
         proposed = self.make_plan("publish")

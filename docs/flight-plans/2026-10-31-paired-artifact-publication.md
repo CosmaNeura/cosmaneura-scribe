@@ -38,7 +38,7 @@ confirmation, unexpired plan, unchanged merged source and fresh resource reads.
 Every execution has an exclusive fsynced plan-hash journal at a fixed private
 owner directory, with durable intent before push/each host update. Interruption
 or timeout leaves pending/unconfirmed state and blocks same-plan replay pending
-founder reconciliation. Command deadlines terminate/reap only their owned group;
+founder reconciliation. Command deadlines/interruption terminate/reap only their owned group;
 they do not imply remote cancellation. No automatic retry is provided.
 The confirmation records self-authorization, not independent approval. Agents
 must never invoke mutation modes. Access/credential changes, database/schema,

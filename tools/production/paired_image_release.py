@@ -298,38 +298,45 @@ class Operator:
         try:
             output, error = process.communicate(timeout=self.timeout(args))
         except subprocess.TimeoutExpired:
-            # Only this newly owned session/group, never a shared daemon or UI.
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                process.communicate(timeout=3)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                try:
-                    process.communicate(timeout=3)
-                except subprocess.TimeoutExpired:
-                    # An inherited pipe held outside the owned group cannot
-                    # turn cleanup into an unbounded wait. Reap our process.
-                    if process.stdout:
-                        process.stdout.close()
-                    if process.stderr:
-                        process.stderr.close()
-                    try:
-                        process.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        raise RuntimeError("owned_process_cleanup_unconfirmed:" + args[0]) from None
+            self.stop_owned(process, args[0])
             raise RuntimeError("operator_timeout_unconfirmed:" + args[0]) from None
+        except BaseException:
+            # Founder Ctrl-C/SystemExit must not leave a CLI mutation running.
+            self.stop_owned(process, args[0])
+            raise
         if process.returncode:
             # Authentication/transport/authorization failures are never absence.
             if optional_missing and re.search(rb"\b(MANIFEST_UNKNOWN|ManifestUnknown)\b", error):
                 return None
             raise RuntimeError("operator_command_failed:" + args[0])
         return output
+
+    def stop_owned(self, process: subprocess.Popen[bytes], command: str) -> None:
+        # Only this newly owned session/group, never a shared daemon or UI.
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                process.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                # An inherited pipe outside the owned group cannot make cleanup
+                # unbounded. Close those pipes and reap the process we launched.
+                if process.stdout:
+                    process.stdout.close()
+                if process.stderr:
+                    process.stderr.close()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    raise RuntimeError("owned_process_cleanup_unconfirmed:" + command) from None
 
     def json(self, args: list[str]) -> Any:
         return decode(self.run(args) or b"null")

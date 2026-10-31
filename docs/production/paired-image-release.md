@@ -93,7 +93,7 @@ without founder review of actual remote/host state and a separately approved
 reconciliation/new plan. The tool has no automatic resume, retry or rollback.
 
 Commands have fixed deadlines: 60 seconds for reads, five minutes for loading,
-and ten minutes for a push or host update. On timeout, only the newly owned
+and ten minutes for a push or host update. On timeout or founder interruption, only the newly owned
 command process group is terminated/killed and reaped with bounded cleanup.
 The remote mutation remains unconfirmed; killing a CLI is not remote rollback.
 Both publication and promotion require an operator maintenance window excluding
