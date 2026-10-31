@@ -25,6 +25,8 @@ def verify(document: dict) -> dict:
     if any(variables.get(key, {}).get("value") != value for key, value in {
         "environment": "production",
         "subscription_id": SUBSCRIPTION,
+        "resource_group_name": "cosmaneura-scribe-production",
+        "create_resource_group": True,
         "prepare_production_core_bundle_database": True,
         "postgres_database_name": "cosmaneura_scribe",
     }.items()):

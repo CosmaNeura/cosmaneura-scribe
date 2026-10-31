@@ -19,6 +19,8 @@ def _plan() -> dict:
         "variables": {key: {"value": value} for key, value in {
             "environment": "production",
             "subscription_id": PLAN.SUBSCRIPTION,
+            "resource_group_name": "cosmaneura-scribe-production",
+            "create_resource_group": True,
             "prepare_production_core_bundle_database": True,
             "postgres_database_name": "cosmaneura_scribe",
         }.items()},
@@ -55,6 +57,15 @@ class DatabasePlanTests(unittest.TestCase):
                     "mode": "managed", "change": {"actions": actions},
                 })
                 with self.assertRaisesRegex(ValueError, "UnexpectedResourceAction"):
+                    PLAN.verify(document)
+
+    def test_owned_resource_group_selection_is_preserved(self) -> None:
+        for key, value in [("create_resource_group", False),
+                           ("resource_group_name", "another-group")]:
+            with self.subTest(field=key):
+                document = _plan()
+                document["variables"][key]["value"] = value
+                with self.assertRaisesRegex(ValueError, "UnexpectedDatabaseSelection"):
                     PLAN.verify(document)
 
     def test_shared_or_wrong_database_contract_is_rejected(self) -> None:

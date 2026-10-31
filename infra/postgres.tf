@@ -47,9 +47,18 @@ resource "azurerm_user_assigned_identity" "database_migrations" {
 resource "azurerm_role_assignment" "database_migrations_acr" {
   count = local.production_database_enabled || var.prepare_production_database_migration_identity ? 1 : 0
 
-  scope                = azurerm_container_registry.scribe.id
+  scope                = var.retained_production_migration_registry_scope != null ? var.retained_production_migration_registry_scope : azurerm_container_registry.scribe.id
   role_definition_name = "AcrPull"
   principal_id         = azurerm_user_assigned_identity.database_migrations[0].principal_id
+
+  lifecycle {
+    precondition {
+      condition = var.retained_production_migration_registry_scope == null ? true : (
+        lower(var.retained_production_migration_registry_scope) == lower(azurerm_container_registry.scribe.id)
+      )
+      error_message = "retained migration scope must also identify the actual owned registry resource"
+    }
+  }
 }
 
 resource "azurerm_postgresql_flexible_server" "scribe" {
