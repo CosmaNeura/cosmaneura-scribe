@@ -10,6 +10,7 @@ export interface ProviderSessionState {
   readonly accountIdentitySHA256?: string;
   readonly providerDisplayName?: string;
   readonly recordingSignInPreparationVersion?: 1;
+  readonly desktopSourcePreparationVersion?: 1;
 }
 export interface NativeProviderSession {
   getState(): Promise<ProviderSessionState>;

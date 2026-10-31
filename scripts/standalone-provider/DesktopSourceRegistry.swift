@@ -64,6 +64,15 @@ import Foundation
         return decision
     }
 
+    func preparationExpiry(id: UUID) throws -> String {
+        guard !closed, let entry = entries.values.first(where: { $0.preparationID == id }),
+              !entry.forStart, !entry.retiring, !entry.authorizationRequested,
+              entry.grant != nil, let expires = entry.owner.preparationExpiresAt else {
+            throw ProviderNativeError.unavailable
+        }
+        return expires
+    }
+
     func releasePreparation(id: UUID) async throws {
         guard !closed else { throw ProviderNativeError.unavailable }
         if retiredPreparations.contains(id) { return }
