@@ -528,6 +528,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         let enabled = settings["enabled"] as? Bool == true
         let origins = settings["uploadOrigins"] as? [String] ?? []
         var coreOrigin = "https://staging-app.cosmaneura.com"
+        var applicationProfile: String?
         if let auth = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any],
            auth["frontendOrigin"] as? String == "https://clerk.cosmaneura.com", settings["profile"] == nil { return nil }
         if settings["profile"] != nil {
@@ -542,6 +543,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                   receiver["profile"] as? String == "core-production-organization-https-v1"
             else { return nil }
             coreOrigin = "https://app.cosmaneura.com"
+            applicationProfile = "core-production-organization-v1"
 #else
             return nil
 #endif
@@ -549,7 +551,9 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         guard origins.count <= 1, (!enabled || origins.count == 1),
               origins.allSatisfy({ $0.range(of: "^https://[a-z0-9]{3,24}\\.blob\\.core\\.windows\\.net$",
                                               options: .regularExpression) != nil }) else { return nil }
-        return ["enabled": enabled, "coreOrigin": coreOrigin, "uploadOrigins": origins]
+        var configuration: [String: Any] = ["enabled": enabled, "coreOrigin": coreOrigin, "uploadOrigins": origins]
+        if let applicationProfile { configuration["profile"] = applicationProfile }
+        return configuration
     }
 
     @objc nonisolated public func prepareProviderSource(_ call: CAPPluginCall) {

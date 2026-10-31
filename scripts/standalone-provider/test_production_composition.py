@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import plistlib
 
 import pytest
 from azure_ingress import ACA_PROFILE, PRODUCTION_ACA_PROFILE, STAGING_HOST, AzureIngress
@@ -78,7 +79,9 @@ def test_production_composition_selects_receipt_gated_native_organization_verifi
             "core_provider_session": False,
             "allow_native_session_without_origin": False,
             "allow_staging_desktop_session_without_origin": False,
-            "production_native_origin": "capacitor://localhost" if platform == "ios" else "app://cosmas",
+            "production_native_origin": "capacitor://localhost"
+            if platform == "ios"
+            else "app://cosmas",
             "production_native_policy_receipt_sha256": "4" * 64,
         }
 
@@ -213,3 +216,23 @@ def test_owner_projection_rejects_staging_key_and_active_input():
     value["receiver"]["production"]["native_policy_receipt_sha256"] = "G" * 64
     with pytest.raises(ValueError):
         project(value)
+
+
+def test_explicit_client_enablement_leaves_receiver_and_source_disabled(tmp_path):
+    value = profile_input()
+    source = tmp_path / "owner.json"
+    original = json.dumps(value).encode()
+    source.write_bytes(original)
+    output = tmp_path / "enabled-client-projection"
+    prepare(source, output, enable_clients=True)
+    ios = plistlib.loads((output / "ios-info-fragment.plist").read_bytes())
+    desktop = json.loads((output / "desktop-profile.json").read_bytes())
+    receiver = json.loads((output / "receiver-profile.json").read_bytes())
+    assert ios["CosmasNativeAuth"]["enabled"] is True
+    assert ios["ScribeProviderApplication"]["enabled"] is True
+    assert desktop["enabled"] is True and desktop["schema"] == 2
+    assert receiver["enabled"] is False and value["receiver"]["enabled"] is False
+    assert source.read_bytes() == original
+    assert json.loads((output / "status.json").read_text())["production_qualified"] is False
+    with pytest.raises(ValueError):
+        project(value, enable_clients="true")
