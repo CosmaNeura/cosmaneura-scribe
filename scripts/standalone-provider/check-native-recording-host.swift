@@ -183,11 +183,26 @@ import Security
         authorizedUntil: lease.expiresAt, reservations: rows)
     }
   }
-  private final class Source: NativeProviderMicrophoneSource {
+  private final class Source: NativeProviderReadyMicrophoneSource {
     let recordingPreparation: NativeSourcePreparation
     var stops = 0, failStop = false, confirmed = false
+    var preparations = 0, issued = 0, cancellations = 0, failCancellation = false
+    var preparationExpiresAt: Date?
+    var holdPreparation = false, preparationWait: CheckedContinuation<Void, Never>?
+    var preparationLifetime: TimeInterval = 60
+    var now: @MainActor () -> Date = { Date() }
     init(_ value: NativeSourcePreparation) { recordingPreparation = value }
-    func prepare() throws -> NativeSourceGrant { throw Failed(line: #line) }
+    func prepareRecordingReady() async throws {
+      preparations += 1
+      if holdPreparation { await withCheckedContinuation { preparationWait = $0 } }
+      preparationExpiresAt = min(now().addingTimeInterval(preparationLifetime),
+        ISO8601DateFormatter().date(from: recordingPreparation.captureAuthorizedUntil)!)
+    }
+    func cancelPreparation() throws {
+      cancellations += 1
+      if failCancellation || issued != 0 || preparationWait != nil { throw Failed(line: #line) }
+      confirmed = true
+    }
     func consumeForMicrophone() throws -> NativeCapturePermit { throw Failed(line: #line) }
     func requireActiveMicrophone(runID: String) throws { throw Failed(line: #line) }
     func requireMicrophoneFinalization(runID: String) throws { throw Failed(line: #line) }
@@ -235,6 +250,7 @@ import Security
     }
     func captureSignal() -> PCMSignalMonitor.Snapshot { meter.snapshot() }
     func start() {
+      source.issued += 1
       phase = .recording
       isPhysicallyIdle = false
     }
@@ -267,6 +283,8 @@ import Security
     let service: Service
     var sources: [Source] = [], runs: [Interval] = [], failFactory = false, deny = false
     var failSourceStop = false
+    var holdSourcePreparation = false
+    var sourcePreparationLifetime: TimeInterval = 60
     init() throws {
       scope = try NativeRecordingScope(
         tenantID: UUID(), sessionID: UUID(), workspaceID: UUID(),
@@ -305,6 +323,9 @@ import Security
               captureAuthorizedUntil: lease.expiresAt, source: .ios,
               firstSequenceNumber: batch.reservations[0].sequence))
           source.failStop = self.failSourceStop
+          source.holdPreparation = self.holdSourcePreparation
+          source.preparationLifetime = self.sourcePreparationLifetime
+          source.now = now
           self.sources.append(source)
           return source
         },
@@ -321,6 +342,95 @@ import Security
 
   static func run() async throws -> Int {
     var checks = 0
+    do {
+      let f = try Fixture(), host = f.host()
+      try await host.open()
+      try await wait { f.sources.first?.preparationExpiresAt != nil }
+      let ready = f.sources[0]
+      try check(host.phase == .ready && f.runs.isEmpty && ready.issued == 0)
+      try await host.start()
+      try check(f.sources.count == 1 && f.runs[0].source === ready)
+      try check(ready.preparations == 1 && ready.issued == 1)
+      try await host.close(); checks += 3
+    }
+    do {
+      let f = try Fixture(), host = f.host()
+      try await host.open()
+      try await wait { f.sources.first?.preparationExpiresAt != nil }
+      let original = f.sources[0]
+      original.preparationExpiresAt = Date().addingTimeInterval(-1)
+      original.failCancellation = true
+      try await rejects { try await host.start() }
+      try await wait { host.phase == .failed }
+      try check(f.sources.count == 1 && f.runs.isEmpty && original.issued == 0)
+      // Failure retains original custody; normal stop must settle before retry.
+      try check(original.cancellations == 1 && original.stops == 0 && !original.confirmed)
+      try await host.close()
+      try check(original.stops == 1 && original.confirmed)
+      let reopened = f.host(); try await reopened.open(); try await reopened.start()
+      try check(f.sources.count == 2 && f.runs.count == 1)
+      try await reopened.close(); checks += 4
+    }
+    do {
+      let f = try Fixture(), host = f.host()
+      try await host.open()
+      try await wait { f.sources.first?.preparationExpiresAt != nil }
+      let original = f.sources[0]
+      original.preparationExpiresAt = Date().addingTimeInterval(-1)
+      try await rejects { try await host.start() }
+      try await wait { host.phase == .ready && f.sources.count == 2 }
+      try await host.start()
+      try check(original.cancellations == 1 && original.confirmed && original.issued == 0)
+      try check(f.sources.count == 2 && f.runs[0].source === f.sources[1])
+      try await host.close(); checks += 2
+    }
+    do {
+      let f = try Fixture(), host = f.host()
+      f.holdSourcePreparation = true
+      let opening = Task { try await host.open() }
+      try await wait { f.sources.first?.preparationWait != nil }
+      try check(host.phase == .opening && host.busy)
+      try await rejects { try await host.start() }
+      let original = f.sources[0], closing = Task { try await host.close() }
+      try await wait { host.requiresReopen }
+      try check(original.stops == 0 && original.issued == 0 && f.runs.isEmpty)
+      original.preparationWait?.resume(); original.preparationWait = nil
+      try await closing.value
+      try await rejects { try await opening.value }
+      try check(original.stops == 1 && original.confirmed && host.phase == .closed)
+      checks += 4
+    }
+    do {
+      let f = try Fixture(), host = f.host()
+      f.sourcePreparationLifetime = 0.05
+      try await host.open()
+      try await wait { f.sources.first?.preparationExpiresAt != nil }
+      let original = f.sources[0]
+      f.sourcePreparationLifetime = 60
+      f.holdSourcePreparation = true
+      try await wait { f.sources.count == 2 && f.sources[1].preparationWait != nil }
+      try check(host.phase == .opening && host.busy && f.runs.isEmpty)
+      try await rejects { try await host.start() }
+      f.sources[1].preparationWait?.resume(); f.sources[1].preparationWait = nil
+      try await wait { host.phase == .ready && f.sources.count == 2
+        && f.sources[1].preparationExpiresAt != nil }
+      try check(original.cancellations == 1 && original.confirmed && original.issued == 0)
+      try check(f.runs.isEmpty && f.sources[1].issued == 0)
+      try await host.start()
+      try check(f.runs[0].source === f.sources[1])
+      try await host.close(); checks += 5
+    }
+    do {
+      let f = try Fixture(), host = f.host()
+      f.sourcePreparationLifetime = -1
+      try await rejects { try await host.open() }
+      try check(host.phase == .failed && host.failure == .preparationFailed)
+      try check(f.sources.count == 1 && f.sources[0].issued == 0 && f.runs.isEmpty)
+      try await rejects { try await host.start() }
+      try await host.close()
+      try check(f.sources[0].confirmed && f.sources[0].stops == 1)
+      checks += 3
+    }
     do {
       let f = try Fixture(), host = f.host(), gate = PassageGate()
       try await host.open();try await host.start();f.records.passageGate = gate
@@ -365,56 +475,44 @@ import Security
       let f = try Fixture()
       let host = f.host()
       await f.service.configure(hold: true)
-      try await host.open()
+      let opening = Task { try await host.open() }
       try await wait { await f.service.pending != nil }
       let key = f.keys.value
       let intent = host.saved!.completionIntent
-      var settled = false
-      let start = Task {
-        defer { settled = true }
-        do {
-          try await host.start()
-          return true
-        } catch { return false }
-      }
-      try await wait { host.phase == .starting }
-      try await host.pause()
-      // The held service deliberately ignores cancellation. Cancel must settle
-      // the visible Start while the original preparation remains in custody.
-      try await wait { settled && !host.busy }
-      try check(await start.value == false)
-      try check(host.phase == .paused && host.failure == nil)
+      try check(host.phase == .opening && host.busy)
+      try await rejects { try await host.start() }
+      let closing = Task { try await host.close() }
+      try await wait { host.requiresReopen }
       try check(await f.service.pending != nil)
       try check(f.sources.isEmpty && f.runs.isEmpty)
-      // Retrying waits behind the same retained request, never overlaps it or
-      // changes its idempotency key. Late completion cannot start the old run.
-      let retry = Task { try await host.start() }
-      try await wait { host.phase == .starting }
       try check(await f.service.leaseIntents.count == 1)
       try check(f.sources.isEmpty && f.runs.isEmpty)
       await f.service.release()
-      try await retry.value
+      try await rejects { try await opening.value }
+      try await closing.value
+      let reopened = f.host()
+      try await reopened.open(); try await reopened.start()
       let intents = await f.service.leaseIntents
       try check(intents.count == 2 && Set(intents).count == 1)
       try check(await f.service.issues == 1)
-      try check(host.phase == .recording && f.runs.count == 1)
-      try check(f.keys.value == key && host.saved!.completionIntent == intent)
-      try await host.close()
+      try check(reopened.phase == .recording && f.runs.count == 1)
+      try check(f.keys.value == key && reopened.saved!.completionIntent == intent)
+      try await reopened.close()
       checks += 1
     }
     do {
       let f = try Fixture()
       let host = f.host()
       await f.service.configure(hold: true)
-      try await host.open()
+      let opening = Task { try await host.open() }
       try await wait { await f.service.pending != nil }
-      try check(host.phase == .ready && !host.busy && f.sources.isEmpty && f.runs.isEmpty)
+      try check(host.phase == .opening && host.busy && f.sources.isEmpty && f.runs.isEmpty)
       let key = f.keys.value
-      let start = Task { try await host.start() }
-      await Task.yield()
+      try await rejects { try await host.start() }
       try check(f.sources.isEmpty && f.runs.isEmpty)
       await f.service.release()
-      try await start.value
+      try await opening.value
+      try await host.start()
       try check(await f.service.leaseIntents.count == 1)
       try check(await f.service.reservationSizes == [30])
       try check(host.phase == .recording && f.runs.count == 1 && f.keys.value == key)
@@ -430,18 +528,21 @@ import Security
       let f = try Fixture()
       let host = f.host()
       await f.service.configure(loseLeaseReply: true)
-      try await host.open()
+      try await rejects { try await host.open() }
       try await wait { await f.service.leaseIntents.count == 1 }
       for _ in 0..<10 { await Task.yield() }
       try check(await f.service.leaseIntents.count == 1)
-      try check(host.phase == .ready && host.failure == nil && f.sources.isEmpty)
-      try await host.start()
+      try check(host.phase == .failed && host.failure == .preparationFailed && f.sources.isEmpty)
+      try await rejects { try await host.start() }
+      try await host.close()
+      let reopened = f.host()
+      try await reopened.open(); try await reopened.start()
       let intents = await f.service.leaseIntents
       try check(intents.count == 2 && Set(intents).count == 1)
       try check(await f.service.issues == 1)
       try check(await f.service.reservationSizes == [30])
-      try check(host.phase == .recording && f.runs.count == 1)
-      try await host.close()
+      try check(reopened.phase == .recording && f.runs.count == 1)
+      try await reopened.close()
       checks += 1
     }
     do {
@@ -451,13 +552,15 @@ import Security
       await f.service.configure(now: now)
       try await host.open()
       try await wait { await f.service.reservations == 1 }
-      try check(host.phase == .ready && f.sources.isEmpty)
+      try check(host.phase == .ready && f.runs.isEmpty && f.sources.allSatisfy { $0.issued == 0 })
       now = now.addingTimeInterval(901)
       await f.service.configure(now: now)
+      try await rejects { try await host.start() }
+      try await wait { host.phase == .ready && f.sources.last?.recordingPreparation.leaseGeneration == 2 }
       try await host.start()
       try check(await f.service.renewals == 1)
       try check(await f.service.reservationSizes == [30, 30])
-      try check(f.sources[0].recordingPreparation.leaseGeneration == 2)
+      try check(f.sources.last!.recordingPreparation.leaseGeneration == 2)
       try check(host.phase == .recording)
       try await host.close()
       checks += 1
@@ -466,7 +569,7 @@ import Security
       let f = try Fixture()
       let host = f.host()
       await f.service.configure(hold: true)
-      try await host.open()
+      let opening = Task { try await host.open() }
       try await wait { await f.service.pending != nil }
       let close = Task { try await host.close() }
       try await wait { host.requiresReopen }
@@ -476,6 +579,7 @@ import Security
       try check(f.sources.isEmpty && f.runs.isEmpty)
       await f.service.release()
       try await close.value
+      try await rejects { try await opening.value }
       try check(host.phase == .closed)
       let reopened = f.host()
       try await reopened.open()
@@ -633,7 +737,7 @@ import Security
       try await host.open()
       let key = f.keys.value
       let intent = host.saved!.completionIntent
-      try check(host.phase == .ready && f.sources.isEmpty && f.runs.isEmpty)
+      try check(host.phase == .ready && f.sources.count == 1 && f.sources[0].issued == 0 && f.runs.isEmpty)
       let bindings = await f.service.bindings
       try check(bindings == 1)
       let other = f.host()
@@ -674,15 +778,16 @@ import Security
       let f = try Fixture()
       let host = f.host()
       await f.service.configure(hold: true)
-      try await host.open()
+      let opening = Task { try await host.open() }
       let first = Task { try await host.start() }
       let duplicate = Task { try await host.start() }
       try await wait { await f.service.pending != nil }
-      try await host.pause()
+      try await rejects { try await host.pause() }
       await f.service.release()
       try await rejects { try await first.value }
       try await rejects { try await duplicate.value }
-      try check(host.phase == .paused && f.sources.isEmpty && f.runs.isEmpty)
+      try await opening.value
+      try check(host.phase == .ready && f.sources[0].issued == 0 && f.runs.isEmpty)
       try await host.close()
       checks += 1
     }
@@ -715,9 +820,9 @@ import Security
     for stopFails in [false, true] {
       let f = try Fixture()
       let host = f.host()
-      try await host.open()
       f.failFactory = true
       f.failSourceStop = stopFails
+      try await host.open()
       try await rejects { try await host.start() }
       try check(
         f.sources.count == 1 && f.sources[0].stops == 1
@@ -763,13 +868,14 @@ import Security
       let f = try Fixture()
       let host = f.host()
       await f.service.configure(hold: true)
-      try await host.open()
+      let opening = Task { try await host.open() }
       let start = Task { try await host.start() }
       try await wait { await f.service.pending != nil }
       host.retire()
       f.deny = true
       await f.service.release()
       try await rejects { try await start.value }
+      try await rejects { try await opening.value }
       try await host.close()
       try check(f.sources.isEmpty && f.runs.isEmpty)
       checks += 1
@@ -805,7 +911,8 @@ import Security
       try await host.open()
       f.records.failCheckpoint = true
       try await rejects { try await host.start() }
-      try check(f.sources.isEmpty && f.runs.isEmpty)
+      try check(f.sources.count == 1 && f.sources[0].issued == 0
+        && f.sources[0].confirmed && f.runs.isEmpty)
       f.records.failCheckpoint = false
       try await host.close()
       let reopened = f.host()
@@ -864,7 +971,7 @@ import Security
         selection, current: {}, make: { f.host() }, inputMuted: { false })
       let state = opened["recording"] as! [String: Any]
       let id = state["recorderId"] as! String
-      try check(state["phase"] as? String == "ready" && f.sources.isEmpty)
+      try check(state["phase"] as? String == "ready" && f.sources.count == 1 && f.sources[0].issued == 0)
       try check(JSONSerialization.isValidJSONObject(opened))
       try check(bridge.navigationMetadata(revision: revision) == nil)
       func command(_ kind: String, revision override: String? = nil) throws

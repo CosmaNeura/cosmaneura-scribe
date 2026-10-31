@@ -242,8 +242,16 @@ private actor SourceWire: ProviderNativeWire {
         throw ProviderNativeError.unavailable
       }
     }
+    var value = response(action: action, body: body)
+    if action == "prepare", fault == "prepare-deadline" {
+      var receipt = value["receipt"] as! [String: Any]
+      let format = ISO8601DateFormatter()
+      receipt["preparation_expires_at"] = format.string(
+        from: format.date(from: preparation.captureAuthorizedUntil)!.addingTimeInterval(1))
+      value["receipt"] = receipt
+    }
     return ProviderNativeReply(status: 200,
-      body: try JSONSerialization.data(withJSONObject: response(action: action, body: body)))
+      body: try JSONSerialization.data(withJSONObject: value))
   }
   private func response(action: String, body: [String: Any]) -> [String: Any] {
     let operation = body["operation"] as! [String: Any]
@@ -261,7 +269,8 @@ private actor SourceWire: ProviderNativeWire {
       "source": "ios_microphone", "lease_id": preparation.leaseID.uuidString.lowercased(),
       "lease_receipt_id": preparation.leaseReceiptID.uuidString.lowercased(),
       "lease_generation": preparation.leaseGeneration,
-      "state": action == "prepare" ? "prepared" : (action == "stop" ? "stopped" : "issued"),
+      "state": action == "prepare" ? "prepared"
+        : (action == "stop" ? "stopped" : (action == "cancel" ? "cancelled" : "issued")),
       "preparation_expires_at": format.string(from: now.addingTimeInterval(60)),
       "capture_authorized_until": preparation.captureAuthorizedUntil,
       "issued_at": action == "prepare" ? NSNull() : format.string(from: now),
@@ -642,6 +651,32 @@ private actor SourceWire: ProviderNativeWire {
 
   @MainActor static func checkSourceSequence() async throws -> Int {
     var checks = 0
+    do {
+      let f = try BoundSource()
+      try await f.source.prepareRecordingReady()
+      let before = await f.wire.requests
+      try runRequire(before.count == 1 && before[0].action == .sourceStart)
+      let body = try JSONSerialization.jsonObject(with: before[0].body) as! [String: Any]
+      try runRequire((body["operation"] as! [String: Any])["action"] as? String == "prepare")
+      try runRequire(f.source.preparationExpiresAt! > Date() && f.fixture.recorder.starts == 0)
+      let run = try f.run()
+      try await run.start()
+      let requests = await f.wire.requests
+      try runRequire(requests.map(\.action) == [.sourceStart, .sourceStart])
+      let authorization = try JSONSerialization.jsonObject(with: requests[1].body) as! [String: Any]
+      try runRequire((authorization["operation"] as! [String: Any])["action"] as? String == "authorize")
+      try runRequire(f.fixture.recorder.starts == 1)
+      try await run.stop(); try runRequire(f.journal.pending.isEmpty)
+      checks += 7
+    }
+    do {
+      let f = try BoundSource()
+      await f.wire.configure(fault: "prepare-deadline")
+      try await rejects { try await f.source.prepareRecordingReady() }
+      try runRequire(f.source.preparationExpiresAt == nil && f.fixture.recorder.starts == 0)
+      try runRequire(await f.wire.requests.count == 1 && f.journal.pending.count == 1)
+      try await f.source.confirmStopped(); checks += 3
+    }
     do {
       let f = try BoundSource(), original = try BoundSource()
       // The new string action must never be available to renderer callers.

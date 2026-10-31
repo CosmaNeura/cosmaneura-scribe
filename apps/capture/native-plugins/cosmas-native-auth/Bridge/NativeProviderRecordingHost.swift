@@ -68,6 +68,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   private(set) var capturePriorPlaintextBytes = 0
   private var capturePriorAudioFrames = 0
   private var warming: (id: UUID, task: Task<Void, Never>)?
+  private var readySourceRefresh: Task<Void, Never>?
   private var opening: Task<Void, Error>?
   private var starting: Task<Void, Error>?
   private var stopping: Task<Void, Error>?
@@ -131,9 +132,9 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
       scope: scope, recoveryScope: recoveryScope, service: service, records: records)
   }
 
-  /// Opens authorized key custody, then prepares lease/reservation metadata
-  /// without delaying the screen. Microphone permission and source admission
-  /// remain exclusively in the deliberate start path.
+  /// Opens authorized key custody. An unused visit stays in the existing
+  /// opening state until unissued source metadata is prepared; permission and
+  /// source authorization remain exclusively in the deliberate start path.
   func open() async throws {
     guard !retired else { throw ProviderNativeError.unavailable }
     if let opening { return try await opening.value }
@@ -174,8 +175,13 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
           failure = .recordingIncomplete
           return
         }
-        phase = saved!.committedChunks == 0 ? .ready : .paused
+        phase = saved!.committedChunks == 0 ? .opening : .paused
         warmRecordingWindow()
+        if phase == .opening, let warming {
+          await warming.task.value
+          try current(ticket)
+          guard phase == .ready else { throw ProviderNativeError.unavailable }
+        }
       } catch {
         await service.abandonFreshInitialWindow()
         if phase == .opening {
@@ -199,8 +205,20 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
       saved.committedPlaintextBytes < NativeRecordingFlowOwner.maximumPlaintextBytes
     else { throw ProviderNativeError.unavailable }
     try current(generation)
+    if phase == .ready, saved.committedChunks == 0, saved.committedPlaintextBytes == 0 {
+      guard let ready = source as? any NativeProviderReadyMicrophoneSource,
+        let expiry = ready.preparationExpiresAt, expiry > now() else {
+        readySourceRefresh?.cancel()
+        readySourceRefresh = nil
+        phase = .opening
+        warmRecordingWindow()
+        throw ProviderNativeError.unavailable
+      }
+    }
     let recoverSavedPosition = failure == .recoveryFailed
     PCMStartupDiagnostics.shared.record(.startRequested)
+    readySourceRefresh?.cancel()
+    readySourceRefresh = nil
     phase = .starting
     failure = nil
     interruptionObserved = false
@@ -238,13 +256,14 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
         try current(ticket)
         let (lease, batch) = try await prepareRecordingWindow(
           checkpoint: checkpoint, ticket: ticket, reportStartup: true)
+        try await retainReadySourceForStart(lease: lease, batch: batch, ticket: ticket)
         let checkpointID = UUID()
         self.saved = try await flow.beginSource(checkpoint: checkpointID)
         sourceCheckpoint = checkpointID
         try current(ticket)
         // Retain the original source proof even if graph construction fails.
         // No discarded constructor error may orphan stop-only custody.
-        source = try makeSource(lease, batch)
+        if source == nil { source = try makeSource(lease, batch) }
         run = nil
         let next = try makeRun(
           source!, cipher, checkpoint.committedPlaintextBytes, lease, batch, leases, reservations,
@@ -367,7 +386,9 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     // Add its accepted frames only to the baseline taken before that run.
     return max(retained, run.map { capturePriorAudioFrames + $0.capturedAudioFrames } ?? 0)
   }
-  var busy: Bool { changingInput || opening != nil || starting != nil || stopping != nil || sealing != nil }
+  var busy: Bool {
+    changingInput || phase == .opening || opening != nil || starting != nil || stopping != nil || sealing != nil
+  }
   var requiresReopen: Bool { retired }
   var microphoneInput: AppleMicrophoneInput { input.selected }
 
@@ -470,11 +491,11 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     if Self.owner == id { Self.owner = nil }
   }
 
-  /// One bounded attempt per successful open/pause. These existing owners
-  /// persist their original intents before I/O; no permission, source proof or
-  /// microphone graph is created. A failed attempt never schedules a retry.
+  /// Prepare durable window metadata and, for an unused first interval, an
+  /// unissued source with original stop custody. No permission/capability or
+  /// microphone graph is created. Failed/ambiguous preparation never retries.
   private func warmRecordingWindow() {
-    guard !retired, [.ready, .paused].contains(phase), failure != .recoveryFailed,
+    guard !retired, [.opening, .ready, .paused].contains(phase), failure != .recoveryFailed,
       let checkpoint = saved, checkpoint.phase == .open,
       checkpoint.committedChunks < 2048,
       checkpoint.committedPlaintextBytes < NativeRecordingFlowOwner.maximumPlaintextBytes
@@ -489,13 +510,75 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
       if let previous { await previous.value }
       do {
         try current(ticket)
-        _ = try await prepareRecordingWindow(
+        let (lease, batch) = try await prepareRecordingWindow(
           checkpoint: checkpoint, ticket: ticket, reportStartup: false)
+        if phase == .opening, checkpoint.committedChunks == 0,
+          checkpoint.committedPlaintextBytes == 0 {
+          try await prepareReadySource(lease: lease, batch: batch, ticket: ticket)
+          try current(ticket)
+          phase = .ready
+        }
       } catch {
-        // Deliberate Start uses the normal durable recovery path.
+        if phase == .opening {
+          phase = .failed
+          failure = .preparationFailed
+        }
+        // Original custody remains retained for explicit close/recovery.
       }
     }
     warming = (id, task)
+  }
+
+  private func matchesSource(_ source: any NativeProviderMicrophoneSource,
+    lease: NativeRecordingLease, batch: NativeRecordingReservationBatch) -> Bool {
+    let prepared = source.recordingPreparation
+    return prepared.source == .ios && prepared.workspaceID == scope.workspaceID
+      && prepared.sessionID == lease.sessionID && prepared.leaseID == lease.leaseID
+      && prepared.leaseReceiptID == lease.receiptID && prepared.leaseGeneration == lease.generation
+      && prepared.captureAuthorizedUntil == lease.expiresAt
+      && prepared.firstSequenceNumber == batch.reservations.first?.sequence
+  }
+
+  private func retainReadySourceForStart(lease: NativeRecordingLease,
+    batch: NativeRecordingReservationBatch, ticket: UUID) async throws {
+    guard let source else { return }
+    guard run == nil, let ready = source as? any NativeProviderReadyMicrophoneSource else {
+      throw ProviderNativeError.unavailable
+    }
+    if matchesSource(source, lease: lease, batch: batch),
+      let expiry = ready.preparationExpiresAt, expiry > now() { return }
+    // Expired, changed or uncertain preparation is never reauthorized. Keep
+    // its proof until cancellation is acknowledged before selecting a new owner.
+    try await ready.cancelPreparation()
+    self.source = nil
+    try current(ticket)
+  }
+
+  private func prepareReadySource(lease: NativeRecordingLease,
+    batch: NativeRecordingReservationBatch, ticket: UUID) async throws {
+    try await retainReadySourceForStart(lease: lease, batch: batch, ticket: ticket)
+    if source == nil { source = try makeSource(lease, batch) }
+    guard let ready = source as? any NativeProviderReadyMicrophoneSource else {
+      throw ProviderNativeError.unavailable
+    }
+    if ready.preparationExpiresAt == nil { try await ready.prepareRecordingReady() }
+    try current(ticket)
+    guard let expiry = ready.preparationExpiresAt, expiry > now(),
+      expiry <= (try Self.expires(lease)) else { throw ProviderNativeError.response }
+    readySourceRefresh?.cancel()
+    readySourceRefresh = Task { @MainActor [self] in
+      do {
+        try await Task.sleep(for: .seconds(max(0.001, expiry.timeIntervalSince(now()))))
+        try current(ticket)
+        readySourceRefresh = nil
+        // Native expiry remains unchanged. The next preparation first cancels
+        // the original owner; only a successful response schedules a refresh.
+        if phase == .ready {
+          phase = .opening
+          warmRecordingWindow()
+        }
+      } catch {}
+    }
   }
 
   private func prepareRecordingWindow(
@@ -559,6 +642,8 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
       interruptionObserved = true
     }
     generation = UUID()
+    readySourceRefresh?.cancel()
+    readySourceRefresh = nil
     warming?.task.cancel()
     opening?.cancel()
     starting?.cancel()
@@ -591,6 +676,9 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   private func stopSource() async throws -> Bool {
     if let closingSource { return try await closingSource.value }
     let task = Task { @MainActor [self] in
+      // A cancelled Ready request may still return. Join it before confirming
+      // its original proof, rather than racing the source owner's busy fence.
+      if source != nil, run == nil, let warming { await warming.task.value }
       if let run {
         try await run.stop()
         guard run.isPhysicallyIdle, run.phase == .stopped else {
