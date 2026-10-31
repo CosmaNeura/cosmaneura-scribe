@@ -69,14 +69,14 @@ resource "azurerm_storage_account" "audio" {
   infrastructure_encryption_enabled = true
   local_user_enabled                = false
   min_tls_version                   = "TLS1_2"
-  public_network_access_enabled     = var.enable_production_native_direct_upload
+  public_network_access_enabled     = var.enable_production_native_direct_upload || var.enable_production_core_bundle_native_ciphertext_upload
   shared_access_key_enabled         = false
 
   blob_properties {
     versioning_enabled = true
 
     dynamic "cors_rule" {
-      for_each = var.enable_production_native_direct_upload ? [1] : []
+      for_each = var.enable_production_native_direct_upload || var.enable_production_core_bundle_native_ciphertext_upload ? [1] : []
 
       content {
         allowed_headers = [
@@ -115,7 +115,17 @@ resource "azurerm_storage_account" "audio" {
       condition     = local.production_existing_host_runtime_contract_valid
       error_message = "existing-host runtime requires the Core-owned additive Entra auth rung and qualified private workers/cohort; password auth must remain enabled"
     }
+    precondition {
+      condition     = local.production_core_bundle_network_contract_valid
+      error_message = "Core-bundle routing requires paired selectors, exact three-host egress and policy bindings, persistent IAM/owned-writer removal, and all obsolete topology/network/activation modes disabled"
+    }
   }
+
+  depends_on = [
+    data.azapi_resource.production_core_bundle_api_egress,
+    data.azapi_resource.production_core_bundle_worker_egress,
+    data.azapi_resource.production_core_bundle_scheduler_egress,
+  ]
 
   tags = local.tags
 }
@@ -135,17 +145,30 @@ resource "azurerm_key_vault" "scribe" {
   sku_name                      = "standard"
   rbac_authorization_enabled    = true
   purge_protection_enabled      = true
-  public_network_access_enabled = var.prepare_production_existing_host_runtime_network
+  public_network_access_enabled = var.prepare_production_existing_host_runtime_network || var.prepare_production_core_bundle_network
   soft_delete_retention_days    = 90
 
   dynamic "network_acls" {
-    for_each = var.prepare_production_existing_host_runtime_network ? [1] : []
+    for_each = var.prepare_production_existing_host_runtime_network || var.prepare_production_core_bundle_network ? [1] : []
     content {
       default_action = "Deny"
       bypass         = "None"
-      ip_rules       = ["${var.production_existing_hosting_binding.container_apps_outbound_ipv4}/32"]
+      ip_rules       = var.prepare_production_core_bundle_network ? ["${local.production_core_bundle_outbound_ipv4}/32"] : ["${var.production_existing_hosting_binding.container_apps_outbound_ipv4}/32"]
     }
   }
+
+  lifecycle {
+    precondition {
+      condition     = local.production_core_bundle_network_contract_valid
+      error_message = "Core-bundle routing requires paired selectors, exact three-host egress and policy bindings, persistent IAM/owned-writer removal, and all obsolete topology/network/activation modes disabled"
+    }
+  }
+
+  depends_on = [
+    data.azapi_resource.production_core_bundle_api_egress,
+    data.azapi_resource.production_core_bundle_worker_egress,
+    data.azapi_resource.production_core_bundle_scheduler_egress,
+  ]
 
   tags = local.tags
 }

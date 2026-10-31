@@ -14,7 +14,7 @@ variable "prepare_production_core_bundle_grants" {
         var.remove_owned_production_translation_blob_writer
       )
     )
-    error_message = "Core bundle grant preparation requires the exact existing production foundation, explicit owned translation-writer removal, and all topology, database, network and activation gates disabled"
+    error_message = "Core bundle grant preparation requires the exact existing production foundation, explicit owned translation-writer removal, and all obsolete topology, database, network and activation gates disabled"
   }
 }
 
@@ -28,7 +28,7 @@ variable "remove_owned_production_translation_blob_writer" {
       !var.remove_owned_production_translation_blob_writer ||
       (local.production_core_bundle_target_valid && local.production_core_bundle_dormant_topology_valid)
     )
-    error_message = "owned translation writer removal is limited to the exact production foundation with topology, network, database and activation gates disabled"
+    error_message = "owned translation writer removal is limited to the exact production foundation with obsolete topology, network, database and activation gates disabled"
   }
 }
 

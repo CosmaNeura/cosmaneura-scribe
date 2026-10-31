@@ -136,6 +136,16 @@ run "false_defaults_preserve_the_owned_writer_and_add_no_grants" {
     condition = (
       !var.prepare_production_core_bundle_grants &&
       !var.remove_owned_production_translation_blob_writer &&
+      !var.prepare_production_core_bundle_network &&
+      !var.enable_production_core_bundle_native_ciphertext_upload &&
+      var.production_core_bundle_network_policy_receipt_sha256 == "" &&
+      var.production_core_bundle_upload_policy_receipt_sha256 == "" &&
+      var.production_core_bundle_hosting_binding == null &&
+      length(data.azapi_resource.production_core_bundle_api_egress) == 0 &&
+      length(data.azapi_resource.production_core_bundle_worker_egress) == 0 &&
+      length(data.azapi_resource.production_core_bundle_scheduler_egress) == 0 &&
+      length(azurerm_key_vault.scribe.network_acls) == 0 &&
+      length(azurerm_storage_account.audio.blob_properties[0].cors_rule) == 0 &&
       length(data.azurerm_user_assigned_identity.production_core_bundle_api) == 0 &&
       length(data.azurerm_user_assigned_identity.production_core_bundle_speech) == 0 &&
       length(data.azurerm_user_assigned_identity.production_core_bundle_translation) == 0 &&
@@ -274,4 +284,307 @@ run "existing_identity_recreation_cannot_redirect_the_grants" {
     }
   }
   expect_failures = [data.azurerm_user_assigned_identity.production_core_bundle_speech]
+}
+
+# The following policy hashes and host responses are synthetic provider mocks.
+# They exercise source contracts and confer no owner approval or live access.
+
+override_data {
+  target = data.azapi_resource.production_core_bundle_api_egress
+  values = {
+    output = {
+      id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-app"
+      properties = {
+        environmentId       = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/managedEnvironments/cosmaneura-prod-app-environment"
+        outboundIpAddresses = ["64.236.176.41"]
+      }
+    }
+  }
+}
+
+override_data {
+  target = data.azapi_resource.production_core_bundle_worker_egress
+  values = {
+    output = {
+      id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-worker"
+      properties = {
+        environmentId       = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/managedEnvironments/cosmaneura-prod-app-environment"
+        outboundIpAddresses = ["64.236.176.41"]
+      }
+    }
+  }
+}
+
+override_data {
+  target = data.azapi_resource.production_core_bundle_scheduler_egress
+  values = {
+    output = {
+      id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-scheduler"
+      properties = {
+        environmentId       = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/managedEnvironments/cosmaneura-prod-app-environment"
+        outboundIpAddresses = ["64.236.176.41"]
+      }
+    }
+  }
+}
+
+run "core_bundle_routing_preserves_iam_cleanup_and_exact_native_policy" {
+  command = plan
+  variables {
+    prepare_production_core_bundle_grants                  = true
+    remove_owned_production_translation_blob_writer        = true
+    prepare_production_core_bundle_network                 = true
+    enable_production_core_bundle_native_ciphertext_upload = true
+    production_core_bundle_network_policy_receipt_sha256   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    production_core_bundle_upload_policy_receipt_sha256    = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    production_core_bundle_hosting_binding = {
+      container_app_environment_id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/managedEnvironments/cosmaneura-prod-app-environment"
+      container_app_resource_ids = {
+        api       = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-app"
+        worker    = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-worker"
+        scheduler = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-scheduler"
+      }
+      container_apps_outbound_ipv4 = "64.236.176.41"
+    }
+  }
+
+  assert {
+    condition = (
+      length(data.azapi_resource.production_core_bundle_api_egress) == 1 &&
+      length(data.azapi_resource.production_core_bundle_worker_egress) == 1 &&
+      length(data.azapi_resource.production_core_bundle_scheduler_egress) == 1 &&
+      azurerm_key_vault.scribe.public_network_access_enabled &&
+      azurerm_key_vault.scribe.rbac_authorization_enabled &&
+      azurerm_key_vault.scribe.purge_protection_enabled &&
+      length(azurerm_key_vault.scribe.network_acls) == 1 &&
+      azurerm_key_vault.scribe.network_acls[0].default_action == "Deny" &&
+      azurerm_key_vault.scribe.network_acls[0].bypass == "None" &&
+      toset(azurerm_key_vault.scribe.network_acls[0].ip_rules) == toset(["64.236.176.41/32"]) &&
+      length(coalesce(azurerm_key_vault.scribe.network_acls[0].virtual_network_subnet_ids, toset([]))) == 0 &&
+      azurerm_storage_account.audio.public_network_access_enabled &&
+      !azurerm_storage_account.audio.shared_access_key_enabled &&
+      !azurerm_storage_account.audio.allow_nested_items_to_be_public &&
+      !azurerm_storage_account.audio.local_user_enabled &&
+      azurerm_storage_account.audio.default_to_oauth_authentication &&
+      azurerm_storage_account.audio.https_traffic_only_enabled &&
+      azurerm_storage_account.audio.min_tls_version == "TLS1_2" &&
+      azurerm_storage_container.audio.container_access_type == "private" &&
+      azurerm_storage_account.audio.blob_properties[0].versioning_enabled &&
+      azurerm_storage_account.audio.blob_properties[0].delete_retention_policy[0].days == 7 &&
+      azurerm_storage_account.audio.blob_properties[0].container_delete_retention_policy[0].days == 7 &&
+      length(azurerm_storage_account.audio.blob_properties[0].cors_rule) == 1 &&
+      toset(azurerm_storage_account.audio.blob_properties[0].cors_rule[0].allowed_origins) == toset(["app://cosmas", "capacitor://localhost"]) &&
+      toset(azurerm_storage_account.audio.blob_properties[0].cors_rule[0].allowed_methods) == toset(["OPTIONS", "PUT"]) &&
+      toset(azurerm_storage_account.audio.blob_properties[0].cors_rule[0].allowed_headers) == toset(["content-type", "x-ms-blob-type"]) &&
+      toset(azurerm_storage_account.audio.blob_properties[0].cors_rule[0].exposed_headers) == toset(["ETag"]) &&
+      azurerm_storage_account.audio.blob_properties[0].cors_rule[0].max_age_in_seconds == 300 &&
+      length(azurerm_role_assignment.runtime_audio) == 0 &&
+      length(azurerm_role_assignment.production_core_bundle_key) == 3 &&
+      length(azurerm_role_assignment.production_core_bundle_ai) == 2 &&
+      length(azurerm_role_assignment.production_core_bundle_api_delegator) == 1 &&
+      length(azurerm_role_assignment.production_core_bundle_api_audio_upload) == 1 &&
+      length(azurerm_role_assignment.production_core_bundle_speech_audio_reader) == 1 &&
+      length(azurerm_container_app.api) == 0 &&
+      length(azurerm_container_app.production_native_receiver) == 0 &&
+      length(azurerm_container_app_job.production_captured) == 0 &&
+      length(azurerm_postgresql_flexible_server.scribe) == 0 &&
+      !var.prepare_production_existing_host_runtime_network &&
+      !var.enable_production_native_direct_upload &&
+      !var.enable_capture_protocol
+    )
+    error_message = "routing must preserve exact deny-by-default KV egress, authenticated native Blob protections/CORS, persistent IAM and writer cleanup, without obsolete workloads or activation"
+  }
+}
+
+run "core_bundle_routing_requires_paired_selectors" {
+  command = plan
+  variables {
+    prepare_production_core_bundle_grants                  = true
+    remove_owned_production_translation_blob_writer        = true
+    prepare_production_core_bundle_network                 = true
+    enable_production_core_bundle_native_ciphertext_upload = false
+    production_core_bundle_network_policy_receipt_sha256   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    production_core_bundle_upload_policy_receipt_sha256    = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    production_core_bundle_hosting_binding = {
+      container_app_environment_id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/managedEnvironments/cosmaneura-prod-app-environment"
+      container_app_resource_ids = {
+        api       = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-app"
+        worker    = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-worker"
+        scheduler = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-scheduler"
+      }
+      container_apps_outbound_ipv4 = "64.236.176.41"
+    }
+  }
+  expect_failures = [azurerm_storage_account.audio, azurerm_key_vault.scribe]
+}
+
+run "core_bundle_routing_requires_upload_policy_hash" {
+  command = plan
+  variables {
+    prepare_production_core_bundle_grants                  = true
+    remove_owned_production_translation_blob_writer        = true
+    prepare_production_core_bundle_network                 = true
+    enable_production_core_bundle_native_ciphertext_upload = true
+    production_core_bundle_network_policy_receipt_sha256   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    production_core_bundle_upload_policy_receipt_sha256    = ""
+    production_core_bundle_hosting_binding = {
+      container_app_environment_id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/managedEnvironments/cosmaneura-prod-app-environment"
+      container_app_resource_ids = {
+        api       = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-app"
+        worker    = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-worker"
+        scheduler = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-scheduler"
+      }
+      container_apps_outbound_ipv4 = "64.236.176.41"
+    }
+  }
+  expect_failures = [azurerm_storage_account.audio, azurerm_key_vault.scribe]
+}
+
+run "core_bundle_routing_rejects_ingress_as_outbound" {
+  command = plan
+  variables {
+    prepare_production_core_bundle_grants                  = true
+    remove_owned_production_translation_blob_writer        = true
+    prepare_production_core_bundle_network                 = true
+    enable_production_core_bundle_native_ciphertext_upload = true
+    production_core_bundle_network_policy_receipt_sha256   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    production_core_bundle_upload_policy_receipt_sha256    = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    production_core_bundle_hosting_binding = {
+      container_app_environment_id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/managedEnvironments/cosmaneura-prod-app-environment"
+      container_app_resource_ids = {
+        api       = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-app"
+        worker    = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-worker"
+        scheduler = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-scheduler"
+      }
+      container_apps_outbound_ipv4 = "135.224.13.80"
+    }
+  }
+  expect_failures = [azurerm_storage_account.audio, azurerm_key_vault.scribe]
+}
+
+run "core_bundle_routing_rejects_obsolete_activation_mode" {
+  command = plan
+  variables {
+    prepare_production_core_bundle_grants                  = true
+    remove_owned_production_translation_blob_writer        = true
+    prepare_production_core_bundle_network                 = true
+    enable_production_core_bundle_native_ciphertext_upload = true
+    production_core_bundle_network_policy_receipt_sha256   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    production_core_bundle_upload_policy_receipt_sha256    = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    enable_workflow_authentication                         = true
+    workflow_api_audience                                  = "00000000-0000-4000-8000-000000000020"
+    trusted_platform_client_id                             = "00000000-0000-4000-8000-000000000021"
+    production_core_bundle_hosting_binding = {
+      container_app_environment_id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/managedEnvironments/cosmaneura-prod-app-environment"
+      container_app_resource_ids = {
+        api       = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-app"
+        worker    = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-worker"
+        scheduler = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-scheduler"
+      }
+      container_apps_outbound_ipv4 = "64.236.176.41"
+    }
+  }
+  expect_failures = [var.remove_owned_production_translation_blob_writer]
+}
+
+run "core_bundle_routing_rejects_api_metadata_drift" {
+  command = plan
+  variables {
+    prepare_production_core_bundle_grants                  = true
+    remove_owned_production_translation_blob_writer        = true
+    prepare_production_core_bundle_network                 = true
+    enable_production_core_bundle_native_ciphertext_upload = true
+    production_core_bundle_network_policy_receipt_sha256   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    production_core_bundle_upload_policy_receipt_sha256    = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    production_core_bundle_hosting_binding = {
+      container_app_environment_id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/managedEnvironments/cosmaneura-prod-app-environment"
+      container_app_resource_ids = {
+        api       = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-app"
+        worker    = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-worker"
+        scheduler = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-scheduler"
+      }
+      container_apps_outbound_ipv4 = "64.236.176.41"
+    }
+  }
+  override_data {
+    target = data.azapi_resource.production_core_bundle_api_egress
+    values = {
+      output = {
+        id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/unselected"
+        properties = {
+          environmentId       = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/managedEnvironments/cosmaneura-prod-app-environment"
+          outboundIpAddresses = ["64.236.176.41"]
+        }
+      }
+    }
+  }
+  expect_failures = [data.azapi_resource.production_core_bundle_api_egress]
+}
+
+run "core_bundle_routing_rejects_worker_metadata_drift" {
+  command = plan
+  variables {
+    prepare_production_core_bundle_grants                  = true
+    remove_owned_production_translation_blob_writer        = true
+    prepare_production_core_bundle_network                 = true
+    enable_production_core_bundle_native_ciphertext_upload = true
+    production_core_bundle_network_policy_receipt_sha256   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    production_core_bundle_upload_policy_receipt_sha256    = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    production_core_bundle_hosting_binding = {
+      container_app_environment_id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/managedEnvironments/cosmaneura-prod-app-environment"
+      container_app_resource_ids = {
+        api       = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-app"
+        worker    = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-worker"
+        scheduler = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-scheduler"
+      }
+      container_apps_outbound_ipv4 = "64.236.176.41"
+    }
+  }
+  override_data {
+    target = data.azapi_resource.production_core_bundle_worker_egress
+    values = {
+      output = {
+        id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-worker"
+        properties = {
+          environmentId       = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/managedEnvironments/cosmaneura-prod-app-environment"
+          outboundIpAddresses = ["64.236.176.42"]
+        }
+      }
+    }
+  }
+  expect_failures = [data.azapi_resource.production_core_bundle_worker_egress]
+}
+
+run "core_bundle_routing_rejects_scheduler_metadata_drift" {
+  command = plan
+  variables {
+    prepare_production_core_bundle_grants                  = true
+    remove_owned_production_translation_blob_writer        = true
+    prepare_production_core_bundle_network                 = true
+    enable_production_core_bundle_native_ciphertext_upload = true
+    production_core_bundle_network_policy_receipt_sha256   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    production_core_bundle_upload_policy_receipt_sha256    = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    production_core_bundle_hosting_binding = {
+      container_app_environment_id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/managedEnvironments/cosmaneura-prod-app-environment"
+      container_app_resource_ids = {
+        api       = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-app"
+        worker    = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-worker"
+        scheduler = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-scheduler"
+      }
+      container_apps_outbound_ipv4 = "64.236.176.41"
+    }
+  }
+  override_data {
+    target = data.azapi_resource.production_core_bundle_scheduler_egress
+    values = {
+      output = {
+        id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/containerApps/cosmaneura-prod-scheduler"
+        properties = {
+          environmentId       = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/managedEnvironments/unselected"
+          outboundIpAddresses = ["64.236.176.41"]
+        }
+      }
+    }
+  }
+  expect_failures = [data.azapi_resource.production_core_bundle_scheduler_egress]
 }

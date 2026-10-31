@@ -42,6 +42,15 @@ worker attachment. It changes no network, host, identity attachment, database,
 Graph service role or runtime activation. See the
 [Tier 2 IAM sequence and recovery](../docs/flight-plans/2026-10-31-existing-core-three-container-bundle-dark.md#separate-existing-identity-iam-preparation).
 
+The separate Core-bundle routing selectors also default false, with empty policy
+receipt hashes and a null exact three-host binding. Their selected mode retains
+the IAM grants and owned-writer removal while all old standalone modes stay off.
+It changes only existing Key Vault public/egress-ACL and Blob public/native-CORS
+properties, after fresh exact host metadata. Owner approval must explicitly
+cover public worker unwrap and authenticated native uploads; hashes are not
+approval. No resource, runtime, database or activation is added. See the
+[routing policy, plan limits and withdrawal](../docs/flight-plans/2026-10-31-existing-core-three-container-bundle-dark.md#separate-core-bundle-routing-preparation).
+
 For the intentionally absent production key only,
 `enable_production_arm_audio_key_bootstrap = true` selects a Terraform-owned
 `Microsoft.KeyVault/vaults/keys@2024-11-01` ARM child. This uses Azure's management

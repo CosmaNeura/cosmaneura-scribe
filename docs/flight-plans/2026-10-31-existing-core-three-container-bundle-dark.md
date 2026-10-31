@@ -97,6 +97,59 @@ foundation with all obsolete topology/network/activation selectors false.
 Preserve existing resources and unrelated grants;
 never automatically restore the removed writer or change key custody/network.
 
+## Separate Core-bundle routing preparation
+
+`prepare_production_core_bundle_network=false` and
+`enable_production_core_bundle_native_ciphertext_upload=false`, with empty
+policy hashes and a null `production_core_bundle_hosting_binding`, preserve
+private routing and add no host metadata lookups. The selected routing mode
+requires both selectors, both separately reviewed policy receipt hashes, and
+the exact existing Core environment, API/worker/scheduler IDs and single egress
+`64.236.176.41`. All three hosts are reread before either resource can change;
+a different resource, environment or egress stops preparation. Hashes and
+bindings are source contracts, not founder approval or live qualification.
+
+Keep IAM preparation and owned-writer removal true through this separate rung.
+All obsolete standalone topology, network, database and activation selectors
+remain false. Core activation belongs to the separate Core bundle controls;
+this Scribe leaf creates no host, identity, job, database, service or resource.
+
+Founder policy approval must cover Key Vault public TLS access for API public
+JWK reads **and both worker unwraps**. The existing vault's ACL is default Deny,
+bypass None and only `64.236.176.41/32`. Keep RBAC, key custody, private endpoint,
+purge protection and existing key attributes unchanged. Blob public TLS must
+serve the approved native cohort's actual networks as well as Core. A Core-only
+Blob firewall would block direct native uploads; no production relay exists.
+Public reachability permits authenticated requests, not anonymous Blob access.
+Preserve shared-key/local-user/anonymous access disabled, private container,
+OAuth default, HTTPS/TLS1.2, encryption, versioning/retention and private endpoint.
+The existing native CORS remains only app://cosmas and capacitor://localhost,
+OPTIONS/PUT, content-type/x-ms-blob-type, ETag and max-age300; CORS is not authority.
+
+After policy approval, reconcile current resource/state/identity ownership and
+review a **network-only** plan: only the approved existing vault public/ACL and
+Blob public/CORS properties may change. Existing IAM and writer cleanup must be
+no-ops; stop on replacements, other resource changes or an unapproved Blob ACL.
+Fresh three-host metadata, plan expiry and postflight remain operator controls;
+the source data lookup does not provide an atomic read-to-write guarantee.
+
+Qualify actual DNS/TLS/role propagation, permitted API JWK/delegation and worker
+read/unwrap, denied API unwrap/read and translation Blob access, and denial from
+unapproved Key Vault networks. Installed synthetic native uploads must succeed
+from intended networks while no-SAS, expired/wrong-object/read/list/delete/HTTP
+requests fail. Neither these source tests nor a routing apply qualifies DB/RLS,
+Graph/auth, startup, production image/cohort, note quality or the full canary.
+
+Before apply, discard this leaf. After approved routing apply, stopping new
+admissions/pickup and draining in-flight work/queues plus waiting for signed SAS
+expiry precedes an owner-reviewed routing withdrawal. Select both routing flags
+false while retaining IAM preparation and owned-writer removal true; this
+removes public routes/CORS without deleting ciphertext, keys or schema and
+without restoring the broad writer. Routing withdrawal can interrupt existing
+SAS and worker operations even though those credentials remain valid. IAM
+revocation is a separate reviewed step; never treat toggling routing as a
+transactional rollback or automatic production authorization.
+
 Review paired exact source independently. Offline checks cover closed profile
 bindings, credential isolation, distinct identities, disabled startup, separate
 API/receiver dispatch, both lifespan closures and the sealed source seam.
