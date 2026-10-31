@@ -451,7 +451,23 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   };
   const showSetup = (query = ""): void => {
     requireValue(setupState); setupQuery = query;
-    show(encounterSetupMarkup(setupState, query));
+    show(encounterSetupMarkup(setupState, query, host.encounterSetup?.existingPatientOnly === true));
+    const searchForm = content.querySelector<HTMLFormElement>("[data-existing-patient-search]");
+    if (searchForm) {
+      const search = (event: SubmitEvent): void => {
+        event.preventDefault();
+        const query = searchForm.querySelector<HTMLInputElement>('input[name="existing-patient-query"]')!.value;
+        const n = generation;
+        void run(async () => {
+          const state = await host.encounterSetup!.search(query, host.signal);
+          if (!current(n) || !setupState || setupState.pending) return;
+          setupState = { ...state, pending: null }; showSetup(query);
+        }, "patient-search");
+      };
+      searchForm.addEventListener("submit", search);
+      disposeContent = () => searchForm.removeEventListener("submit", search);
+      return;
+    }
     const form = content.querySelector<HTMLFormElement>("[data-walk-in]");
     const submit = (event: SubmitEvent): void => {
       event.preventDefault(); if (!form?.reportValidity()) return;

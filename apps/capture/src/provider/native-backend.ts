@@ -17,7 +17,7 @@ import { nativeProviderPlugin, type ProviderAction as Action, type NativeProvide
 import type { NativeRecordingPort } from "./native-recorder";
 import type { ProviderEncounter } from "./workspace";
 import { SecureQueue } from "@cosmaneura-scribe/capacitor-secure-queue";
-import { parseProviderAccount, type ProviderAccount, createEncounterSetup } from "./encounter-setup";
+import { parseProviderAccount, existingPatientSetup, type ProviderAccount, createEncounterSetup } from "./encounter-setup";
 
 const limits: Record<Action, number> = { catalog: 2, encounters: 16384, mount: 256, recorder: 1024, "recorder-context": 1024, "note-opening": 1024,
   "capture-admissions": 2048, "capture-operations": 4_194_304, "capture-notes": 262_144 + 8192 };
@@ -52,6 +52,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
   let checking: Promise<void> | null = null, disposal: Promise<void> | null = null;
   let openingReviewSupported = false, noteOpeningSupported = false, creationSupported = false;
   let account: ProviderAccount | undefined;
+  let existingPatientOnly = false;
   let providerDisplayName: string | undefined;
   const owners: { setup?: ReturnType<typeof createEncounterSetup> } = {};
   const encounters = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
@@ -177,6 +178,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
   };
 
   const encounterSetup = owners.setup = createEncounterSetup({
+    existingPatientOnly: () => existingPatientOnly,
     current,
     records: () => Promise.resolve({ records: SecureQueue, close: () => Promise.resolve() }),
     created: entry => { encounters.set(entry.appointmentRef, { workspaceId: entry.workspaceId, encounter: entry }); },
@@ -199,7 +201,8 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       next.set(entry.appointmentRef, { workspaceId: row.workspaceId, encounter: entry });
     }
     const supportsCreation = value.encounter_creation_v1 === true;
-    const nextAccount = supportsCreation ? parseProviderAccount({ email: objectAccount(value.account).email, environment: value.environment }) : undefined;
+    const nextExistingPatientOnly = supportsCreation && value.existing_patient_visits_v1 === true;
+      const nextAccount = supportsCreation ? parseProviderAccount({ email: objectAccount(value.account).email, environment: value.environment }, nextExistingPatientOnly ? "Production" : "Staging") : undefined;
     if (supportsCreation) {
       if ("recoveryScope" in value && !isUuid(value.recoveryScope)) throw unavailable();
       encounterSetup.initializeCatalog(value, signal);
@@ -208,6 +211,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     openingReviewSupported = value.opening_review_v1 === true;
     noteOpeningSupported = value.note_opening_v1 === true;
     creationSupported = supportsCreation;
+      existingPatientOnly = nextExistingPatientOnly;
     account = nextAccount;
     for (const [key, row] of next) encounters.set(key, row);
     return [...next.values()].map(row => row.encounter);
@@ -237,7 +241,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
   };
   return {
     get providerDisplayName() { return !abort.signal.aborted && !options.signal.aborted ? providerDisplayName : undefined; },
-    get encounterSetup() { return creationSupported ? encounterSetup : undefined; },
+    get encounterSetup() { return creationSupported ? existingPatientOnly ? existingPatientSetup(encounterSetup) : encounterSetup : undefined; },
     get account() { return account; },
     signal: abort.signal, dispose,
     recordReadyDiagnostic: durationMs => {

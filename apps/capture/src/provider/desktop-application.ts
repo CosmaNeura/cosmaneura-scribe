@@ -4,7 +4,7 @@ import { parsePrivateNote, parsePatientIdentity } from "./visit-features";
 import { assertPendingPatientMatch } from "./patient-match-journal";
 import { parseEncounterDisplay } from "./encounter-display";
 import { openDesktopAudioPreflight } from "./desktop-audio-preflight";
-import { parseProviderAccount, parseSetupState, parseEncounterDraft, type ProviderEncounterSetup, type ProviderAccount } from "./encounter-setup";
+import { parseProviderAccount, existingPatientSetup, parseSetupState, parseEncounterDraft, type ProviderEncounterSetup, type ProviderAccount } from "./encounter-setup";
 import { mountProviderApplication, type ProviderApplicationHost } from "./application";
 import type { ProviderSessionState } from "./native-plugin";
 import type { ProviderWorkspaceHost } from "./workspace";
@@ -132,7 +132,7 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
         operationSignal = abort.signal): Promise<unknown> => {
         current(operationSignal); return request(method, payload, id, encounterId, AbortSignal.any([abort.signal, operationSignal]));
       };
-      let creationEnabled = false, account: ProviderAccount | undefined;
+      let creationEnabled = false, existingPatientOnly = false, account: ProviderAccount | undefined;
       let currentEncounter: { id: string; appointmentRef: string } | null = null;
       const visitRequest = (selected: ProviderEncounter, payload: Record<string, unknown>, extra: AbortSignal): Promise<unknown> => {
         if (!currentEncounter || currentEncounter.appointmentRef !== selected.appointmentRef) throw unavailable();
@@ -204,15 +204,19 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
             && state.revision === expected.revision ? state.providerDisplayName : undefined;
         },
         get account() { return account; },
-        get encounterSetup() { return creationEnabled ? setup : undefined; },
+        get encounterSetup() { return creationEnabled ? existingPatientOnly ? existingPatientSetup(setup) : setup : undefined; },
         signal: abort.signal,
         listEncounters: async operationSignal => {
           const values = await send("list", {}, null, operationSignal); current(operationSignal);
           if (!Array.isArray(values) || values.length > 1000) throw unavailable();
-          const info = exact(await send("encounter_setup", { action: "info" }, null, operationSignal), ["enabled", "account"]);
+          const rawInfo = await send("encounter_setup", { action: "info" }, null, operationSignal);
+          const scoped = typeof rawInfo === "object" && rawInfo !== null && "existingPatientOnly" in rawInfo;
+          const info = exact(rawInfo, ["enabled", "account", ...(scoped ? ["existingPatientOnly"] : [])]);
+          if (scoped && info.existingPatientOnly !== true) throw unavailable();
           current(operationSignal);
           if (typeof info.enabled !== "boolean") throw unavailable();
-          creationEnabled = info.enabled; account = info.account === null ? undefined : parseProviderAccount(info.account);
+          creationEnabled = info.enabled; existingPatientOnly = scoped;
+          account = info.account === null ? undefined : parseProviderAccount(info.account, scoped ? "Production" : "Staging");
           return values.map(encounter);
         },
         createEncounter: async operationSignal => { await send("create", {}, null, operationSignal); current(operationSignal); },

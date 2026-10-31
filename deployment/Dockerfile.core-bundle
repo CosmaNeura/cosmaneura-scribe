@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1
+# Both references and source revisions are required immutable operator inputs.
+# The Core image must already contain the reviewed default-off Core bundle hooks.
+ARG CORE_IMAGE
+ARG UV_BUILDER_IMAGE
+FROM ${UV_BUILDER_IMAGE} AS uv
+FROM ${CORE_IMAGE} AS scribe-builder
+USER 0:0
+COPY --from=uv /usr/local/bin/uv /opt/scribe/bin/uv
+ENV UV_PROJECT_ENVIRONMENT=/opt/scribe/runtime UV_PYTHON_DOWNLOADS=0 UV_NO_DEV=1 UV_LINK_MODE=copy
+WORKDIR /opt/scribe/source
+COPY sealed/pyproject.toml sealed/uv.lock sealed/README.md ./
+COPY sealed/services/api ./services/api
+RUN python -c 'import sys; assert sys.version_info[:2] == (3, 13)' \
+    && /opt/scribe/bin/uv sync --locked --no-editable --no-dev --python-preference only-system
+FROM ${CORE_IMAGE} AS runtime
+ARG CORE_SOURCE_REVISION
+ARG SCRIBE_SOURCE_REVISION
+ARG CORE_RUNTIME_USER
+LABEL com.cosmaneura.core-source-revision="${CORE_SOURCE_REVISION}" \
+      com.cosmaneura.scribe-source-revision="${SCRIBE_SOURCE_REVISION}"
+COPY --from=scribe-builder /opt/scribe/runtime /opt/scribe/runtime
+COPY --chown=10001:10001 sealed/receiver /app/provider
+COPY --chown=10001:10001 sealed/identity-source /app/provider/identity-source
+COPY --chown=10001:10001 sealed/identity-source-manifest.json sealed/receiver-image-manifest.json /app/provider/
+# Do not alter Core PATH, PYTHONPATH, entrypoint, dependencies or Procfile commands.
+# Its existing API and Celery entrypoints select their source hooks only explicitly.
+USER 0:0
+RUN mkdir -p /app/provider-config /opt/scribe/encrypted-audio \
+    && chown 10001:10001 /app/provider-config /opt/scribe/encrypted-audio \
+    && chmod 0700 /app/provider-config /opt/scribe/encrypted-audio
+# This required input restores the inspected Core base image user exactly.
+# Only Scribe children explicitly run as the existing receiver user 10001:10001.
+USER ${CORE_RUNTIME_USER}

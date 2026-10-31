@@ -22,6 +22,7 @@ export interface EncounterSetupState {
   pending: EncounterDraft | null;
 }
 export interface ProviderEncounterSetup extends Partial<VisitFeatures> {
+  readonly existingPatientOnly?: true;
   patientMatchJournal?(encounter: ProviderEncounter, signal: AbortSignal): Promise<PatientMatchJournal>;
   state(signal: AbortSignal): Promise<EncounterSetupState>;
   search(query: string, signal: AbortSignal): Promise<Omit<EncounterSetupState, "pending">>;
@@ -32,10 +33,10 @@ export interface ProviderEncounterSetup extends Partial<VisitFeatures> {
 }
 export type CreationRecords = Pick<SecureQueuePlugin, "get" | "create" | "compareAndSwap">;
 export interface ProviderAccount { email: string; environment: string }
-export function parseProviderAccount(value: unknown): ProviderAccount {
+export function parseProviderAccount(value: unknown, environment: "Staging" | "Production" = "Staging"): ProviderAccount {
   if (!record(value) || Object.keys(value).sort().join(",") !== "email,environment"
-    || value.environment !== "Staging") throw fail();
-  return { email: text(value.email, 320), environment: value.environment };
+    || value.environment !== environment) throw fail();
+  return { email: text(value.email, 320), environment };
 }
 export function parseSetupState(value: unknown): EncounterSetupState {
   if (!record(value) || Object.keys(value).sort().join(",") !== "account,moreResults,patients,pending"
@@ -106,6 +107,7 @@ export function createEncounterSetup(options: {
   created(encounter: ProviderEncounter & { workspaceId: string }): void;
   current(signal?: AbortSignal): void;
   canHide?(appointmentRef: string): boolean;
+  existingPatientOnly?(): boolean;
 }): ProviderEncounterSetup & { initializeCatalog(value: Record<string, unknown>, signal: AbortSignal): void; dispose(): Promise<void> } {
   let recovery: string | null = null, account: string | null = null;
   let storage: Promise<Awaited<ReturnType<typeof options.records>>> | null = null;
@@ -219,7 +221,7 @@ export function createEncounterSetup(options: {
       const { records } = await journal(signal);
       return openPatientMatchJournal(records, { recoveryScope: recovery, appointmentRef: encounter.appointmentRef, patientRef: encounter.patientRef }, () => options.current(signal));
     },
-    state: async signal => ({ ...(recovery && account ? { account, patients: [], moreResults: false } : await search("", signal)), pending: (await load(signal)).pending }),
+    state: async signal => ({ ...(recovery && account && !options.existingPatientOnly?.() ? { account, patients: [], moreResults: false } : await search("", signal)), pending: (await load(signal)).pending }),
     submit: async (input, signal) => {
       options.current(signal);
       if (busy) throw fail();
@@ -228,6 +230,7 @@ export function createEncounterSetup(options: {
         let saved = await load(signal);
         const draft = input === null ? saved.pending : parseEncounterDraft(input);
         if (!draft || saved.pending !== null && JSON.stringify(saved.pending) !== JSON.stringify(draft)) throw fail();
+        if (options.existingPatientOnly?.() && draft.patient.kind !== "existing") throw fail();
         if (saved.pending === null) saved = await save(saved, draft, signal);
         const patient = draft.patient.kind === "existing"
           ? { kind: "existing", patient_ref: draft.patient.patientRef }
@@ -258,4 +261,14 @@ export function createEncounterSetup(options: {
     },
     dispose: async () => { const closing = storage; if (closing) await (await closing).close(); storage = null; },
   };
+}
+
+
+/** Expose only the server-negotiated existing-patient visit subset. */
+export function existingPatientSetup(setup: ProviderEncounterSetup): ProviderEncounterSetup {
+  return { existingPatientOnly: true, state: signal => setup.state(signal),
+    search: (query, signal) => setup.search(query, signal),
+    submit: (draft, signal) => setup.submit(draft, signal),
+    ...(setup.hidden ? { hidden: signal => setup.hidden!(signal) } : {}),
+    ...(setup.setHidden ? { setHidden: (ref, hidden, signal) => setup.setHidden!(ref, hidden, signal) } : {}) };
 }

@@ -31,6 +31,7 @@ from prepare_sources import (
 RECEIVER_FILES = (
     "azure_ingress.py",
     "core_context_receiver.py",
+    "core_bundle_child.py",
     "image_entrypoint.py",
     "receiver.py",
     "receiver_runtime.py",

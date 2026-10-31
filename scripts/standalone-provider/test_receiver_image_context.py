@@ -10,6 +10,7 @@ from pathlib import Path
 
 import check_receiver_image_context as checker
 import image_entrypoint
+import prepare_core_bundle_context as bundle_preparer
 import prepare_receiver_image_context as preparer
 import pytest
 from prepare_sources import FILES as IDENTITY_FILES
@@ -54,6 +55,7 @@ def source_repository(tmp_path: Path) -> tuple[Path, str]:
         *preparer.ROOT_FILES,
         "services/api",
         "deployment/Dockerfile.receiver",
+        "deployment/Dockerfile.core-bundle",
         "deployment/receiver.disabled.json",
         "scripts/standalone-provider",
         "docs/production/production-native-organization-policy.patch",
@@ -322,6 +324,33 @@ def test_prepared_context_is_exact_disabled_and_tamper_evident(
         "runtime_constructed": False,
         "identity_imported": False,
     }
+    core_revision = "c" * 40
+    bundle = tmp_path / "bundle"
+    manifest = bundle_preparer.prepare_bundle_context(
+        context,
+        bundle,
+        core_image="cosmaneuraprodregistry.azurecr.io/cosmaneura/cosmaneura:"
+        + core_revision
+        + "@sha256:"
+        + "d" * 64,
+        core_revision=core_revision,
+        scribe_revision=revision,
+        core_runtime_user="0:0",
+        source_repository=source,
+    )
+    assert manifest["image_built"] is False and manifest["runtime_activated"] is False
+    assert manifest["credentials_included"] is False and manifest["azure_resources_created"] == 0
+    assert checker.inspect_context(bundle / "sealed", revision) == report
+    with pytest.raises(ValueError, match="core_bundle_image_inputs_invalid"):
+        bundle_preparer.prepare_bundle_context(
+            context,
+            tmp_path / "other-bundle",
+            core_image="mutable:latest",
+            core_revision=core_revision,
+            scribe_revision=revision,
+            core_runtime_user="0:0",
+            source_repository=source,
+        )
     (context / "receiver/serve.py").write_text("# tampered\n")
     with pytest.raises(ValueError, match="context hashes changed"):
         checker.inspect_context(context, revision)

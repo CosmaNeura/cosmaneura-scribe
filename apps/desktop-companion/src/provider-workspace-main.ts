@@ -158,7 +158,7 @@ export class DesktopProviderWorkspaceMain {
             const workspace = connection.value!.workspace, setup = workspace.encounterSetup;
             let result: unknown;
             if (payload.action === "info") {
-              exact(payload, ["action"]); result = { enabled: !!setup, account: workspace.account ?? null };
+              exact(payload, ["action"]); result = { enabled: !!setup, account: workspace.account ?? null, ...(setup?.existingPatientOnly ? { existingPatientOnly: true } : {}) };
             } else {
               if (!setup) throw unavailable();
               if (payload.action === "state") { exact(payload, ["action"]); result = await setup.state(linked); }
