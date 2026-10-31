@@ -56,6 +56,8 @@ def source_repository(tmp_path: Path) -> tuple[Path, str]:
         "services/api",
         "deployment/Dockerfile.receiver",
         "deployment/Dockerfile.core-bundle",
+        "alembic.ini",
+        "alembic",
         "deployment/receiver.disabled.json",
         "scripts/standalone-provider",
         "docs/production/production-native-organization-policy.patch",
@@ -340,6 +342,12 @@ def test_prepared_context_is_exact_disabled_and_tamper_evident(
     )
     assert manifest["image_built"] is False and manifest["runtime_activated"] is False
     assert manifest["credentials_included"] is False and manifest["azure_resources_created"] == 0
+    migration_assets = bundle / "scribe-migrations"
+    assert manifest["scribe_migration_files_sha256"] == {
+        str(path.relative_to(migration_assets)): checker.sha256(path)
+        for path in migration_assets.rglob("*") if path.is_file()
+    }
+    assert (migration_assets / "alembic/versions/0024_creator_transcript_edits.py").is_file()
     assert checker.inspect_context(bundle / "sealed", revision) == report
     with pytest.raises(ValueError, match="core_bundle_image_inputs_invalid"):
         bundle_preparer.prepare_bundle_context(

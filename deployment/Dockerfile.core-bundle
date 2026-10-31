@@ -24,6 +24,7 @@ ARG CORE_RUNTIME_USER
 LABEL com.cosmaneura.core-source-revision="${CORE_SOURCE_REVISION}" \
       com.cosmaneura.scribe-source-revision="${SCRIBE_SOURCE_REVISION}"
 COPY --from=scribe-builder /opt/scribe/runtime /opt/scribe/runtime
+COPY scribe-migrations /opt/scribe/migrations
 COPY --chown=10001:10001 sealed/receiver /app/provider
 COPY --chown=10001:10001 sealed/identity-source /app/provider/identity-source
 COPY --chown=10001:10001 sealed/identity-source-manifest.json sealed/receiver-image-manifest.json /app/provider/

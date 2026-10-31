@@ -16,6 +16,31 @@ CORE_IMAGE = re.compile(
 CORE_USER = re.compile(r"(?:0|[1-9][0-9]{0,8}):(?:0|[1-9][0-9]{0,8})")
 
 
+def copy_migration_assets(repository: Path, output: Path, revision: str) -> dict[str, str]:
+    names = subprocess.run(
+        ["git", "ls-files", "-z", "--", "alembic.ini", "alembic/env.py", "alembic/versions/*.py"],
+        cwd=repository, capture_output=True, check=True,
+    ).stdout.decode().split("\0")
+    files: dict[str, str] = {}
+    for relative in sorted(name for name in names if name):
+        source = repository / relative
+        expected = subprocess.run(
+            ["git", "show", revision + ":" + relative],
+            cwd=repository, capture_output=True, check=True,
+        ).stdout
+        if source.is_symlink() or not source.is_file() or source.read_bytes() != expected:
+            raise ValueError("core_bundle_migration_source_invalid")
+        target = output / relative
+        target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        target.chmod(0o644)
+        files[relative] = sha256(target)
+    required = {"alembic.ini", "alembic/env.py", "alembic/versions/0001_scribe_core.py"}
+    if not required <= files.keys():
+        raise ValueError("core_bundle_migration_source_incomplete")
+    return files
+
+
 def prepare_bundle_context(
     sealed: Path,
     output: Path,
@@ -64,6 +89,7 @@ def prepare_bundle_context(
     try:
         shutil.copytree(sealed, output / "sealed", symlinks=False)
         shutil.copyfile(dockerfile, output / "Dockerfile.core-bundle")
+        migration_files = copy_migration_assets(repository, output / "scribe-migrations", revision)
         inspect_context(output / "sealed", scribe_revision)
         manifest: dict[str, object] = {
             "schema": "core-scribe-three-container-bundle-v1",
@@ -74,6 +100,7 @@ def prepare_bundle_context(
             "scribe_child_user": "10001:10001",
             "receiver_manifest_sha256": sha256(output / "sealed/receiver-image-manifest.json"),
             "dockerfile_sha256": sha256(output / "Dockerfile.core-bundle"),
+            "scribe_migration_files_sha256": migration_files,
             "configuration_embedded": False,
             "credentials_included": False,
             "image_built": False,
