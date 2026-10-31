@@ -5,11 +5,21 @@ Scribe builds. The September 24 transport change gives admission time to finish
 both shared-Core phases. It does not extend capture authority or retry a mutation.
 
 The existing ClerkKit source remains a locked build dependency. No SDK upgrade is
-included. `clerk-source-lock.json` pins all 233 retained dependency files, including
-the license and resources. Use `scripts/assemble-native-source.py` with an explicit
-local `--clerk-source` directory; it rejects changed/missing/extra files and links,
-then copies both repository sources and that dependency into a new output directory.
-The original dependency is never edited. There is no implicit SDK download.
+included. `clerk-source-lock.json` pins all 233 original dependency files, including
+the license and resources. `clerk-source-patch.json` pins the exact input lock,
+three-file production storage patch and resulting file hashes. The maintained
+assembler accepts only the original dependency, then applies that patch with zero
+fuzz in a new owned copy and verifies the complete output inventory. It rejects
+changed/missing/extra files and links. The original dependency is never edited;
+there is no implicit SDK download.
+
+Production alone selects `productionInstanceV1` auth storage. Cache service and
+storage owner/recovery journal use the real FAPI/publishable-key fingerprint.
+Staging retains its exact existing service and owner names. Actual app bundle,
+callback and Keychain access group remain unchanged, and recovery remains enabled
+inside each environment. This does not migrate or clear the existing staging
+session. Normal SDK secure credential storage remains expected; the patch does not
+claim memory-only SDK state or change SDK logging.
 
 Example, from the repository root:
 

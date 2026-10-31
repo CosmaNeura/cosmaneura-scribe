@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Build unchanged locked ClerkKit in an owned package; retain metadata, never raw logs."""
+"""Build locked ClerkKit plus its owned pinned patch; retain metadata, never raw logs."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import signal
@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import uuid
+from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
@@ -24,6 +25,9 @@ TEST_NAMES = {
     "testPersistentSharedSessionModeRejectedWithInjectedStorage",
     "testLiveEmailCodeTwoSyntheticIdentitiesAndRecovery",
     "testLiveTicketTwoSyntheticIdentitiesAndRecovery", "testLivePublicStagingEnvironment",
+    "testProductionCacheOwnerAndJournalAreIsolatedWhileLegacyNamesStayExact",
+    "testProductionRecoveryPreservesPendingStageStateAndBothScopesRecoverNormally",
+    "testProductionStorageOptInRejectsDevelopmentKey",
 }
 
 
@@ -50,6 +54,13 @@ def materialize(vendor, destination):
         target.write_bytes(content)
     shutil.copyfile(HERE / "Package.swift", destination / "Package.swift")
     shutil.copytree(HERE / "Tests", destination / "Tests")
+    # Apply the same exact-input/output qualification used by native assembly.
+    spec = importlib.util.spec_from_file_location(
+        "owned_native_assembly", REPO / "scripts/assemble-native-source.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.apply_clerk_source_patch(destination / "vendor", REPO)
     return len(files)
 
 
@@ -125,6 +136,9 @@ def main():
                               if p.is_file() and "__pycache__" not in str(p)}}
     try:
         receipt["verified_vendor_files"] = materialize(args.vendor.resolve(), run)
+        receipt["qualified_sdk_patch_sha256"] = json.loads(
+            (LOCK.parent / "clerk-source-patch.json").read_text()
+        )["patchSHA256"]
         # Whitelisted build environment keeps credentials out of compiler processes.
         env = {key: os.environ[key] for key in ("PATH", "HOME", "TMPDIR", "DEVELOPER_DIR", "SDKROOT", "LANG") if key in os.environ}
         env.update({"SWIFTPM_MODULECACHE_OVERRIDE": str(run / "module-cache"),

@@ -22,6 +22,8 @@ import Foundation
                                   callbackUrlScheme: configuration.bundleIdentifier),
             watchConnectivityEnabled: false,
             sharedSessionSync: nil,
+            authStorageNamespace: configuration.frontendOrigin == "https://clerk.cosmaneura.com"
+                ? .productionInstanceV1 : nil,
             loggerHandler: nil,
             middleware: .init(request: [NativeOriginMiddleware(configuration: configuration)],
                               response: [NativeTokenResponseMiddleware()])

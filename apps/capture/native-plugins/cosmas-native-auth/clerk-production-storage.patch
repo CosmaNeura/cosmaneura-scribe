@@ -1,0 +1,130 @@
+--- a/Sources/ClerkKit/Configuration/ClerkOptions.swift
++++ b/Sources/ClerkKit/Configuration/ClerkOptions.swift
+@@ -8,6 +8,11 @@
+ extension Clerk {
+   /// A configuration object that can be passed to `Clerk.configure()` to customize various aspects of the Clerk SDK behavior.
+   public struct Options: Sendable {
++    /// Explicit production storage isolation. Nil preserves all legacy namespaces.
++    public enum AuthStorageNamespace: Sendable {
++      case productionInstanceV1
++    }
++
+     /// Configuration object that customizes keychain behavior.
+     public struct KeychainConfig: Sendable {
+       /// Name of the service under which to save items. Defaults to the bundle identifier.
+@@ -112,6 +117,10 @@
+
+     /// Configuration for synchronizing persisted auth state between sibling apps. Defaults to nil.
+     public let sharedSessionSync: SharedSessionSyncConfig?
++
++    /// Scopes cache and storage-owner recovery by the real FAPI/key fingerprint.
++    /// This changes storage names only; callback, bundle and access group remain actual.
++    public let authStorageNamespace: AuthStorageNamespace?
+
+     /// A closure that receives callbacks when Clerk logs errors.
+     ///
+@@ -165,6 +174,7 @@
+       redirectConfig: RedirectConfig = .init(),
+       watchConnectivityEnabled: Bool = false,
+       sharedSessionSync: SharedSessionSyncConfig? = nil,
++      authStorageNamespace: AuthStorageNamespace? = nil,
+       loggerHandler: (@Sendable (LogEntry) -> Void)? = nil,
+       middleware: MiddlewareConfig = .init()
+     ) {
+@@ -175,8 +185,26 @@
+       self.redirectConfig = redirectConfig
+       self.watchConnectivityEnabled = watchConnectivityEnabled
+       self.sharedSessionSync = sharedSessionSync
++      self.authStorageNamespace = authStorageNamespace
+       self.loggerHandler = loggerHandler
+       self.middleware = middleware
+     }
++
++    func resolvingAuthStorage(frontendApiUrl: String, publishableKey: String) -> Self {
++      guard authStorageNamespace == .productionInstanceV1 else { return self }
++      let fingerprint = SharedSessionNamespace(
++        frontendApiUrl: frontendApiUrl, publishableKey: publishableKey
++      ).fingerprint
++      let suffix = ".production-instance.v1.\(fingerprint)"
++      let service = keychainConfig.service.hasSuffix(suffix)
++        ? keychainConfig.service : keychainConfig.service + suffix
++      return Self(
++        logLevel: logLevel, telemetryEnabled: telemetryEnabled,
++        keychainConfig: .init(service: service, accessGroup: keychainConfig.accessGroup),
++        proxyUrl: proxyUrl?.absoluteString, redirectConfig: redirectConfig,
++        watchConnectivityEnabled: watchConnectivityEnabled, sharedSessionSync: sharedSessionSync,
++        authStorageNamespace: authStorageNamespace, loggerHandler: loggerHandler, middleware: middleware
++      )
++    }
+   }
+ }
+--- a/Sources/ClerkKit/Configuration/ConfigurationManager.swift
++++ b/Sources/ClerkKit/Configuration/ConfigurationManager.swift
+@@ -38,12 +38,17 @@
+
+     // Validate publishable key early for fail-fast behavior
+     try validatePublishableKey(normalizedPublishableKey)
++    guard options.authStorageNamespace == nil || normalizedPublishableKey.hasPrefix("pk_live_") else {
++      throw ClerkInitializationError.invalidPublishableKeyFormat(key: normalizedPublishableKey)
++    }
+
+     state.publishableKey = normalizedPublishableKey
+-    state.options = options
+
+-    // Extract frontend API URL from publishable key
++    // Resolve storage once from the actual instance, before any dependency can hydrate it.
+     state.frontendApiUrl = try extractFrontendApiUrl(from: normalizedPublishableKey)
++    state.options = options.resolvingAuthStorage(
++      frontendApiUrl: state.frontendApiUrl, publishableKey: normalizedPublishableKey
++    )
+
+     // Set proxy URL from options
+     state.proxyUrl = options.proxyUrl
+--- a/Sources/ClerkKit/Dependencies/DependencyContainer.swift
++++ b/Sources/ClerkKit/Dependencies/DependencyContainer.swift
+@@ -109,8 +109,14 @@
+     networkingPipeline = .clerkDefault(runtimeScope: runtimeScope)
+       .appendingRequestMiddleware(options.middleware.request)
+       .appendingResponseMiddleware(options.middleware.response)
+-    sharedSessionOwnerIdentifier = ownerIdentifierProvider()?
+-      .trimmingCharacters(in: .whitespacesAndNewlines)
++    sharedSessionOwnerIdentifier = Self.authStorageOwnerIdentifier(
++      ownerIdentifier: ownerIdentifierProvider(), options: configurationManager.options,
++      frontendApiUrl: configurationManager.frontendApiUrl,
++      publishableKey: configurationManager.publishableKey
++    )
++    if options.authStorageNamespace != nil, sharedSessionOwnerIdentifier?.isEmpty != false {
++      throw ClerkClientError(message: "Production storage requires a bundle owner.", localizationBundle: .module)
++    }
+     persistentAdoptionEnabled = persistentAdoptionEnabledOverride
+       ?? (!publishableKey.isEmpty && !EnvironmentDetection.isRunningInTests)
+     sharedSessionOwnerSlotClearRecovery = if persistentAdoptionEnabled {
+@@ -131,7 +137,7 @@
+       }
+     }
+     let keychainStorages = try Self.makeKeychainStorages(
+-      options: options,
++      options: configurationManager.options,
+       frontendApiUrl: configurationManager.frontendApiUrl,
+       publishableKey: configurationManager.publishableKey,
+       ownerIdentifier: sharedSessionOwnerIdentifier,
+@@ -342,6 +348,19 @@
+     return makeKeychainStorage(service: bundleIdentifier, accessGroup: nil)
+   }
+
++  static func authStorageOwnerIdentifier(
++    ownerIdentifier: String?, options: Clerk.Options, frontendApiUrl: String, publishableKey: String
++  ) -> String? {
++    let owner = ownerIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines)
++    guard options.authStorageNamespace == .productionInstanceV1, let owner, !owner.isEmpty else {
++      return owner
++    }
++    let fingerprint = SharedSessionNamespace(
++      frontendApiUrl: frontendApiUrl, publishableKey: publishableKey
++    ).fingerprint
++    return owner + ".production-instance.v1." + fingerprint
++  }
++
+   static func stableIdentityService(
+     configuredService: String,
+     instanceFingerprint: String,
