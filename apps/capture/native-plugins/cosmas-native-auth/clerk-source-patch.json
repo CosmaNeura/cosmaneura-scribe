@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "description": "Explicit production-only storage namespaces; original SDK input remains pinned and untouched.",
+  "inputLockSHA256": "5a32ce8777ce4ceefc78e475074933d6062008a19175a8ce4490453739f652e9",
+  "patch": "clerk-production-storage.patch",
+  "patchSHA256": "c96f5ee91afaa85377e5c11b2f40f1af88b3e5b1d7bb22069e368b26ecb30329",
+  "changedFiles": {
+    "Sources/ClerkKit/Configuration/ClerkOptions.swift": {
+      "inputSHA256": "3f2ffa5764bf8037d0d10c39a70065ff6b6c8b4d5ae43e82d266622056af8072",
+      "outputSHA256": "68638493c972dd1b8d7f90246e333a8edfd6515149a69809e286368a3fc7db8a"
+    },
+    "Sources/ClerkKit/Configuration/ConfigurationManager.swift": {
+      "inputSHA256": "7229c5880727fa3a2f5197cb407aae7ca3fd92a08edf1f7a1101b3ec2839feec",
+      "outputSHA256": "8c46a06169b7cebcf68d97bafa3b8146757af4d1648dabeb6d9f1c014c959b4a"
+    },
+    "Sources/ClerkKit/Dependencies/DependencyContainer.swift": {
+      "inputSHA256": "85c834e45d857cb77bad69d74bdeff647a463997003aef39e4d316b04d18214e",
+      "outputSHA256": "ebe3d190d0973691ae9d24852fd381c7d3d735862cd5d98d15fb42d25786592c"
+    }
+  }
+}

@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 
@@ -25,6 +26,50 @@ def inventory(root: Path) -> dict[str, str]:
                 path.read_bytes()
             ).hexdigest()
     return result
+
+
+def apply_clerk_source_patch(vendor: Path, repo: Path) -> dict[str, str]:
+    """Qualify the unchanged input and apply only the pinned three-file SDK patch."""
+    auth = repo / "apps/capture/native-plugins/cosmas-native-auth"
+    lock = auth / "clerk-source-lock.json"
+    expected = json.loads(lock.read_text())["files"]
+    metadata_path = auth / "clerk-source-patch.json"
+    metadata = json.loads(metadata_path.read_text())
+    changed = metadata["changedFiles"]
+    allowed = {
+        "Sources/ClerkKit/Configuration/ClerkOptions.swift",
+        "Sources/ClerkKit/Configuration/ConfigurationManager.swift",
+        "Sources/ClerkKit/Dependencies/DependencyContainer.swift",
+    }
+    patch = auth / "clerk-production-storage.patch"
+    if (
+        metadata["schema"] != 1
+        or metadata["patch"] != patch.name
+        or lock.is_symlink()
+        or metadata_path.is_symlink()
+        or patch.is_symlink()
+        or set(changed) != allowed
+        or hashlib.sha256(lock.read_bytes()).hexdigest() != metadata["inputLockSHA256"]
+        or hashlib.sha256(patch.read_bytes()).hexdigest() != metadata["patchSHA256"]
+        or inventory(vendor) != expected
+        or any(changed[name]["inputSHA256"] != expected[name] for name in allowed)
+    ):
+        raise ValueError("Clerk patch or retained input does not match its exact pins")
+    headers = [line for line in patch.read_text().splitlines() if line.startswith(("--- ", "+++ "))]
+    expected_headers = [
+        header for name in sorted(allowed) for header in ("--- a/" + name, "+++ b/" + name)
+    ]
+    if sorted(headers) != sorted(expected_headers):
+        raise ValueError("Clerk patch must name only its exact three owned files")
+    result = subprocess.run(
+        ["/usr/bin/patch", "--batch", "--forward", "--fuzz=0", "--no-backup-if-mismatch", "-p1"],
+        cwd=vendor, input=patch.read_bytes(), capture_output=True, timeout=10, check=False,
+    )
+    qualified = dict(expected)
+    qualified.update({name: changed[name]["outputSHA256"] for name in allowed})
+    if result.returncode != 0 or inventory(vendor) != qualified:
+        raise ValueError("Owned Clerk patch application did not produce the exact qualified files")
+    return qualified
 
 
 def assemble(output: Path, clerk_source: Path) -> None:
@@ -56,10 +101,16 @@ def assemble(output: Path, clerk_source: Path) -> None:
         )
     vendor = output / "cosmas-native-auth/vendor"
     shutil.copytree(clerk_source, vendor)
-    if inventory(vendor) != expected:
-        raise ValueError("Copied Clerk dependency changed during assembly")
+    apply_clerk_source_patch(vendor, repo)
     files = inventory(output)
-    receipt = {"schema": 1, "files": files, "signed": False, "installed": False}
+    patch_metadata = json.loads(
+        (plugins / "cosmas-native-auth/clerk-source-patch.json").read_text()
+    )
+    receipt = {
+        "schema": 1, "files": files, "signed": False, "installed": False,
+        "inputClerkLockSHA256": patch_metadata["inputLockSHA256"],
+        "qualifiedClerkPatchSHA256": patch_metadata["patchSHA256"],
+    }
     (output / "source-manifest.json").write_text(json.dumps(receipt, indent=2) + "\n")
     print(json.dumps({"output": str(output), "files": len(files), "signed": False}))
 
