@@ -131,7 +131,11 @@ class ReceiverProfile:
         ):
             raise ValueError("provider_profile_invalid")
 
-        if self.identity_profile not in {"clerk-organization-v1", CORE_STAGING_PERSONAL}:
+        if self.identity_profile not in {
+            "clerk-organization-v1",
+            CORE_STAGING_PERSONAL,
+            "core-production-personal-v1",
+        }:
             raise ValueError("provider_profile_invalid")
         if self.identity_profile == CORE_STAGING_PERSONAL and (
             self.core_origin != "https://staging-app.cosmaneura.com"
@@ -141,6 +145,17 @@ class ReceiverProfile:
                 "https://cosmaneura-staging-scribe-native."
                 "politesmoke-7989878f.northcentralus.azurecontainerapps.io"
             )
+        ):
+            raise ValueError("provider_profile_invalid")
+
+        if self.identity_profile == "core-production-personal-v1" and (
+            self.core_origin != "https://app.cosmaneura.com"
+            or "staging" in self.origin
+            or re.fullmatch(
+                r"https://[a-z0-9][a-z0-9.-]*\.(azurecontainerapps\.io|cosmaneura\.com)",
+                self.origin,
+            )
+            is None
         ):
             raise ValueError("provider_profile_invalid")
 
@@ -186,6 +201,13 @@ class ProviderReceiver:
                 core_provider_configuration_valid(settings)
                 and isinstance(verifier, ClerkTokenVerifier)
                 and verifier.core_provider_session
+                and verifier._settings == settings
+            )
+        elif profile.identity_profile == "core-production-personal-v1":
+            authentication_valid = (
+                isinstance(verifier, ClerkTokenVerifier)
+                and getattr(verifier, "production_core_personal_session", False) is True
+                and not verifier.core_provider_session
                 and verifier._settings == settings
             )
         elif isinstance(verifier, ClerkTokenVerifier) and verifier.core_provider_session:

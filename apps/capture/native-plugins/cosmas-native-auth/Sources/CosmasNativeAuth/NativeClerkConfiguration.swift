@@ -3,6 +3,27 @@ import Foundation
 public enum NativeIdentityProfile: String, Sendable {
     case clerkOrganization = "clerk-organization-v1"
     case coreStagingPersonal = "core-staging-personal-v1"
+    case coreProductionPersonal = "core-production-personal-v1"
+
+    public var isPersonalSession: Bool {
+        self == .coreStagingPersonal || self == .coreProductionPersonal
+    }
+
+    public var productionApplicationProfile: String? {
+        switch self {
+        case .clerkOrganization: return "core-production-organization-v1"
+        case .coreProductionPersonal: return "core-production-personal-v1"
+        case .coreStagingPersonal: return nil
+        }
+    }
+
+    public var productionReceiverProfile: String? {
+        switch self {
+        case .clerkOrganization: return "core-production-organization-https-v1"
+        case .coreProductionPersonal: return "core-production-personal-https-v1"
+        case .coreStagingPersonal: return nil
+        }
+    }
 }
 
 public enum NativeWorkspaceOrigin: String, Sendable {
@@ -61,7 +82,7 @@ public struct NativeClerkConfiguration: Sendable, Equatable {
         guard !production else { throw NativeAuthError.unavailable }
 #endif
         if production {
-            guard identityProfile == .clerkOrganization,
+            guard identityProfile == .clerkOrganization || identityProfile == .coreProductionPersonal,
                   let sessionClaimsReceiptSHA256, let nativePolicyReceiptSHA256,
                   sessionClaimsReceiptSHA256.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
                   nativePolicyReceiptSHA256.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
@@ -79,6 +100,11 @@ public struct NativeClerkConfiguration: Sendable, Equatable {
                   (workspaceOrigin == .appleWebView && bundleIdentifier == "com.cosmaneura.scribe.beta"
                    || workspaceOrigin == .desktopApp && bundleIdentifier == Self.desktopBundleIdentifier),
                   frontendOrigin == "https://resolved-emu-53.clerk.accounts.dev"
+            else { throw NativeAuthError.unavailable }
+        case .coreProductionPersonal:
+            guard production, organizationID == nil,
+                  (workspaceOrigin == .appleWebView && bundleIdentifier == "com.cosmaneura.scribe.beta"
+                   || workspaceOrigin == .desktopApp && bundleIdentifier == Self.desktopBundleIdentifier)
             else { throw NativeAuthError.unavailable }
         }
         let keyPrefix = production ? "pk_live_" : "pk_test_"

@@ -48,8 +48,12 @@ import ScribeStorePipe
                 else { throw ProviderNativeError.unavailable }
             } else {
 #if SCRIBE_PRODUCTION_ORGANIZATION && !SCRIBE_VIRTUAL_LAB_NETWORK
-                guard origin == "https://clerk.cosmaneura.com", organization != nil, audience != nil,
-                      receiver["profile"] as? String == "core-production-organization-https-v1"
+                guard origin == "https://clerk.cosmaneura.com",
+                      let expectedReceiverProfile = profile.productionReceiverProfile,
+                      receiver["profile"] as? String == expectedReceiverProfile,
+                      (profile == .clerkOrganization && organization != nil && audience != nil
+                       || profile == .coreProductionPersonal && settings["organizationId"] == nil
+                         && (settings["audience"] == nil || audience != nil))
                 else { throw ProviderNativeError.unavailable }
 #else
                 throw ProviderNativeError.unavailable

@@ -13,6 +13,15 @@ describe("sealed standalone environment profile", () => {
   it("uses the supplied production workspace and Core only for schema 2", () => {
     expect(standaloneProviderProfile(production)).toMatchObject({ coreOrigin: production.coreOrigin, workspaceId: production.workspaceId });
   });
+  it("accepts the explicit production personal profile with the same sealed bindings", () => {
+    const personal = { ...production, profile: "core-production-personal-v1" };
+    expect(standaloneProviderProfile(personal)).toMatchObject({ coreOrigin: production.coreOrigin, workspaceId: production.workspaceId });
+    for (const value of [{ ...personal, coreOrigin: staging.coreOrigin },
+      { ...personal, deploymentReceiptSha256: undefined }, { ...personal, workspaceId: undefined },
+      { ...personal, profile: "unknown-production-profile" }]) {
+      expect(() => standaloneProviderProfile(value)).toThrow();
+    }
+  });
   it("rejects missing bindings and mixed staging/production packages", () => {
     for (const value of [{ ...staging, coreOrigin: production.coreOrigin }, { ...production, coreOrigin: staging.coreOrigin },
       { ...production, workspaceId: "56f527ab-0caf-459b-bda9-cf7f0ca2f709" }, { ...production, workspaceId: undefined },

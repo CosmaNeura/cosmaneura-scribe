@@ -51,7 +51,7 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
     self.sessionFactory = sessionFactory
     if let auth = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any],
        auth["frontendOrigin"] as? String == "https://clerk.cosmaneura.com",
-       settings["profile"] as? String != "core-production-organization-https-v1" {
+       !["core-production-organization-https-v1", "core-production-personal-https-v1"].contains(settings["profile"] as? String ?? "") {
       throw ProviderNativeError.unavailable
     }
     if settings["profile"] != nil {
@@ -66,13 +66,15 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
         guard value == "https://" + Self.stagingHost else { throw ProviderNativeError.unavailable }
       } else {
 #if SCRIBE_PRODUCTION_ORGANIZATION && !SCRIBE_VIRTUAL_LAB_NETWORK
-        guard profile == "core-production-organization-https-v1",
-          let components = URLComponents(string: value), let host = components.host,
+        guard let components = URLComponents(string: value), let host = components.host,
           value == "https://" + host, !host.contains("staging"),
           host.range(of: "^[a-z0-9][a-z0-9.-]*\\.(azurecontainerapps\\.io|cosmaneura\\.com)$",
                      options: .regularExpression) != nil,
           let auth = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any],
-          auth["identityProfile"] as? String == NativeIdentityProfile.clerkOrganization.rawValue,
+          let identityProfileName = auth["identityProfile"] as? String,
+          let identityProfile = NativeIdentityProfile(rawValue: identityProfileName),
+          let expectedProfile = identityProfile.productionReceiverProfile,
+          profile == expectedProfile,
           auth["frontendOrigin"] as? String == "https://clerk.cosmaneura.com"
         else { throw ProviderNativeError.unavailable }
 #else

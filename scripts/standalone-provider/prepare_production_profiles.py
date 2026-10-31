@@ -14,7 +14,7 @@ import plistlib
 import re
 from pathlib import Path
 
-from receiver_runtime import ReceiverConfiguration
+from receiver_runtime import PRODUCTION_PROFILES, ReceiverConfiguration
 
 
 def project(value: dict, *, enable_clients: bool = False) -> dict:
@@ -27,7 +27,7 @@ def project(value: dict, *, enable_clients: bool = False) -> dict:
         raise ValueError("production_profile_input_invalid")
     # Require all activation bindings without creating an active runtime.
     config = ReceiverConfiguration.model_validate_json(json.dumps({**receiver, "enabled": True}))
-    if config.profile != "core-production-organization-v1" or config.production is None:
+    if config.profile not in PRODUCTION_PROFILES or config.production is None:
         raise ValueError("production_profile_input_invalid")
     if enable_clients and set(config.platforms) != {"ios", "desktop"}:
         raise ValueError("production_profile_input_invalid")
@@ -74,7 +74,11 @@ def project(value: dict, *, enable_clients: bool = False) -> dict:
             raise ValueError("production_profile_input_invalid")
     auth = {
         "enabled": enable_clients,
-        "identityProfile": "clerk-organization-v1",
+        "identityProfile": (
+            "core-production-personal-v1"
+            if config.profile == "core-production-personal-v1"
+            else "clerk-organization-v1"
+        ),
         "publishableKey": key,
         "frontendOrigin": config.production.issuer,
         "organizationId": config.production.organization_id,
@@ -82,12 +86,17 @@ def project(value: dict, *, enable_clients: bool = False) -> dict:
         "sessionClaimsReceiptSha256": config.production.session_claims_receipt_sha256,
         "nativePolicyReceiptSha256": config.production.native_policy_receipt_sha256,
     }
+    auth = {name: item for name, item in auth.items() if item is not None}
     wire = {
-        "profile": "core-production-organization-https-v1",
+        "profile": (
+            "core-production-personal-https-v1"
+            if config.profile == "core-production-personal-v1"
+            else "core-production-organization-https-v1"
+        ),
         "endpoint": config.production.receiver_origin,
     }
     application = {
-        "profile": "core-production-organization-v1",
+        "profile": config.profile,
         "enabled": enable_clients,
         "coreOrigin": config.production.core_origin,
         "uploadOrigins": [upload],
@@ -105,7 +114,7 @@ def project(value: dict, *, enable_clients: bool = False) -> dict:
         "desktop_auth": {"CosmasNativeAuth": auth, "ScribeProviderReceiver": wire},
         "desktop": {
             "schema": 2,
-            "profile": "core-production-organization-v1",
+            "profile": config.profile,
             "enabled": enable_clients,
             "coreOrigin": config.production.core_origin,
             "workspaceId": workspace,
