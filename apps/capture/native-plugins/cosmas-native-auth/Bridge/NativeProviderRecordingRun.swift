@@ -18,6 +18,15 @@ import Foundation
 }
 extension NativeSourceStartOwner: NativeProviderMicrophoneSource {}
 
+/// Unissued metadata only. Ready never requests microphone permission or a
+/// start capability; the same owner is authorized by the deliberate run start.
+@MainActor protocol NativeProviderReadyMicrophoneSource: NativeProviderMicrophoneSource {
+  var preparationExpiresAt: Date? { get }
+  func prepareRecordingReady() async throws
+  func cancelPreparation() async throws
+}
+extension NativeSourceStartOwner: NativeProviderReadyMicrophoneSource {}
+
 @MainActor protocol NativeProviderEncryptedRecorder: AnyObject {
   var isPhysicallyIdle: Bool { get }
   var captureState: NativeRecordingPCMState { get }

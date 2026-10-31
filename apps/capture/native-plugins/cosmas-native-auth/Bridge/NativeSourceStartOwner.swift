@@ -84,6 +84,7 @@ struct NativeSourceDecision: Sendable {
     private let record: NativeSourceProofRecord
     private var proof: String
     private var grant: NativeSourceGrant?
+    private(set) var preparationExpiresAt: Date?
     private var busy = false
     private var closed = false
     private var issued = false
@@ -120,17 +121,30 @@ struct NativeSourceDecision: Sendable {
         let receipt = try await send(action: "prepare", key: prepareKey)
         let checked = try checkReceipt(receipt)
         guard receipt["state"] as? String == "prepared",
+              receipt["issued_at"] is NSNull, receipt["expires_at"] is NSNull,
               let expires = receipt["preparation_expires_at"] as? String,
-              let date = sourceDate(expires), date > Date() else {
+              let date = sourceDate(expires), let deadline = sourceDate(preparation.captureAuthorizedUntil),
+              date > Date(), date <= deadline else {
             throw ProviderNativeError.response
         }
         grant = checked
+        preparationExpiresAt = date
         return checked
+    }
+
+    func prepareRecordingReady() async throws {
+        guard preparation.source == .ios, preparation.firstSequenceNumber == 0,
+              grant == nil, !issued else {
+            throw ProviderNativeError.unavailable
+        }
+        _ = try await prepare()
     }
 
     func authorize() async throws -> NativeSourceDecision {
         try enter(); defer { busy = false }
-        guard let grant else { throw ProviderNativeError.unavailable }
+        guard let grant, let preparationExpiresAt, preparationExpiresAt > Date() else {
+            throw ProviderNativeError.unavailable
+        }
         let result = try await send(action: "authorize", key: authorizeKey)
         return try decision(result, grant: grant)
     }
@@ -285,7 +299,7 @@ struct NativeSourceDecision: Sendable {
     /// this owner. Its original proof remains usable only for confirmed stop.
     func retireForAuthenticationChange() { authenticationRetired = true; retiring = true }
 
-    func close() { closed = true; proof = ""; grant = nil; microphoneRunID = nil }
+    func close() { closed = true; proof = ""; grant = nil; preparationExpiresAt = nil; microphoneRunID = nil }
 
     private func enter(allowRetiring: Bool = false) throws {
         try journal.requireUsable()
