@@ -3,6 +3,12 @@
 mock_provider "azapi" {}
 
 mock_provider "azurerm" {
+  mock_resource "azurerm_resource_group" {
+    defaults = {
+      id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-scribe-production"
+    }
+  }
+
   mock_resource "azurerm_role_definition" {
     defaults = {
       role_definition_resource_id = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/providers/Microsoft.Authorization/roleDefinitions/71a6b02f-294d-5734-8721-007ff54f4f67"
@@ -93,13 +99,26 @@ mock_provider "azurerm" {
 }
 
 variables {
-  subscription_id         = "bab2a709-1fcb-4c87-a9fc-802f7477ec13"
-  tenant_id               = "00000000-0000-4000-8000-000000000001"
-  environment             = "production"
-  resource_group_name     = "cosmaneura-scribe-production"
-  storage_account_name    = "cosmaneurascribeprod"
-  key_vault_name          = "cosmaneura-scribe-prod"
-  container_registry_name = "cosmaneurascribeprod"
+  subscription_id                                = "bab2a709-1fcb-4c87-a9fc-802f7477ec13"
+  tenant_id                                      = "00000000-0000-4000-8000-000000000001"
+  environment                                    = "production"
+  resource_group_name                            = "cosmaneura-scribe-production"
+  create_resource_group                          = true
+  prepare_production_database_migration_identity = true
+  enable_production_arm_audio_key_bootstrap      = true
+  retained_production_migration_registry_scope   = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourcegroups/cosmaneura-scribe-production/providers/microsoft.containerregistry/registries/cosmaneurascribeprod"
+  storage_account_name                           = "cosmaneurascribeprod"
+  key_vault_name                                 = "cosmaneura-scribe-prod"
+  container_registry_name                        = "cosmaneurascribeprod"
+  production_existing_hosting_binding = {
+    resource_group_name                      = "cosmaneura-prod"
+    location                                 = "northcentralus"
+    container_app_environment_id             = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.App/managedEnvironments/cosmaneura-prod-app-environment"
+    container_app_environment_default_domain = "lemonsmoke-1009414c.northcentralus.azurecontainerapps.io"
+    container_apps_outbound_ipv4             = "64.236.176.41"
+    postgres_server_resource_id              = "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-prod/providers/Microsoft.DBforPostgreSQL/flexibleServers/cosmaneura-prod-postgres"
+    postgres_server_fqdn                     = "cosmaneura-prod-postgres.postgres.database.azure.com"
+  }
 }
 
 override_data {
@@ -155,6 +174,13 @@ run "false_defaults_preserve_the_owned_writer_and_add_no_grants" {
       length(azurerm_role_assignment.production_core_bundle_api_audio_upload) == 0 &&
       length(azurerm_role_assignment.production_core_bundle_speech_audio_reader) == 0 &&
       length(azurerm_role_definition.production_core_bundle_audio_upload) == 0 &&
+      length(azurerm_resource_group.scribe) == 1 &&
+      length(azurerm_user_assigned_identity.database_migrations) == 1 &&
+      length(azurerm_role_assignment.database_migrations_acr) == 1 &&
+      azurerm_role_assignment.database_migrations_acr[0].scope == var.retained_production_migration_registry_scope &&
+      var.enable_production_arm_audio_key_bootstrap &&
+      length(azapi_resource.production_audio_key) == 1 &&
+      length(azurerm_key_vault_key.audio) == 0 &&
       length(azurerm_role_assignment.runtime_audio) == 1 &&
       azurerm_role_assignment.runtime_audio[0].scope == azurerm_storage_account.audio.id &&
       azurerm_role_assignment.runtime_audio[0].role_definition_name == "Storage Blob Data Contributor" &&
@@ -211,13 +237,20 @@ run "selected_iam_has_only_the_exact_stage_rights_and_owned_removal" {
       alltrue([for stage, grant in azurerm_role_assignment.production_core_bundle_ai : grant.principal_id == local.production_core_bundle_identities[stage].principal_id]) &&
       !azurerm_key_vault.scribe.public_network_access_enabled &&
       !azurerm_storage_account.audio.public_network_access_enabled &&
-      !var.enable_production_arm_audio_key_bootstrap &&
-      length(azapi_resource.production_audio_key) == 0 &&
+      var.enable_production_arm_audio_key_bootstrap &&
+      length(azapi_resource.production_audio_key) == 1 &&
+      length(azurerm_key_vault_key.audio) == 0 &&
       length(azurerm_container_app.api) == 0 &&
       length(azurerm_container_app.production_native_receiver) == 0 &&
       length(azurerm_container_app_job.production_captured) == 0 &&
       length(azurerm_user_assigned_identity.production_captured) == 0 &&
-      length(azurerm_user_assigned_identity.database_migrations) == 0 &&
+      length(azurerm_resource_group.scribe) == 1 &&
+      length(data.azurerm_resource_group.scribe) == 0 &&
+      length(azurerm_user_assigned_identity.database_migrations) == 1 &&
+      length(azurerm_role_assignment.database_migrations_acr) == 1 &&
+      azurerm_role_assignment.database_migrations_acr[0].scope == var.retained_production_migration_registry_scope &&
+      length(azurerm_container_app_job.database_migrations) == 0 &&
+      length(azurerm_postgresql_flexible_server_active_directory_administrator.migrations) == 0 &&
       length(azurerm_postgresql_flexible_server.scribe) == 0 &&
       length(azurerm_postgresql_flexible_server_database.scribe) == 0 &&
       !var.enable_capture_protocol &&
@@ -235,6 +268,27 @@ run "grant_preparation_cannot_skip_the_owned_writer_removal" {
   expect_failures = [var.prepare_production_core_bundle_grants]
 }
 
+run "grant_preparation_rejects_owned_resource_group_withdrawal" {
+  command = plan
+  variables {
+    prepare_production_core_bundle_grants           = true
+    remove_owned_production_translation_blob_writer = true
+    create_resource_group                           = false
+  }
+  expect_failures = [var.remove_owned_production_translation_blob_writer]
+}
+
+run "grant_preparation_rejects_owned_migration_identity_withdrawal" {
+  command = plan
+  variables {
+    prepare_production_core_bundle_grants           = true
+    remove_owned_production_translation_blob_writer = true
+    prepare_production_database_migration_identity  = false
+    retained_production_migration_registry_scope    = null
+  }
+  expect_failures = [var.remove_owned_production_translation_blob_writer]
+}
+
 run "grant_preparation_rejects_activation" {
   command = plan
   variables {
@@ -244,7 +298,7 @@ run "grant_preparation_rejects_activation" {
     workflow_api_audience                           = "00000000-0000-4000-8000-000000000020"
     trusted_platform_client_id                      = "00000000-0000-4000-8000-000000000021"
   }
-  expect_failures = [var.remove_owned_production_translation_blob_writer]
+  expect_failures = [var.prepare_production_database_migration_identity]
 }
 
 run "owner_reviewed_revocation_keeps_the_owned_writer_removed" {
@@ -384,6 +438,16 @@ run "core_bundle_routing_preserves_iam_cleanup_and_exact_native_policy" {
       length(azurerm_role_assignment.production_core_bundle_api_delegator) == 1 &&
       length(azurerm_role_assignment.production_core_bundle_api_audio_upload) == 1 &&
       length(azurerm_role_assignment.production_core_bundle_speech_audio_reader) == 1 &&
+      length(azurerm_resource_group.scribe) == 1 &&
+      length(data.azurerm_resource_group.scribe) == 0 &&
+      length(azurerm_user_assigned_identity.database_migrations) == 1 &&
+      length(azurerm_role_assignment.database_migrations_acr) == 1 &&
+      azurerm_role_assignment.database_migrations_acr[0].scope == var.retained_production_migration_registry_scope &&
+      var.enable_production_arm_audio_key_bootstrap &&
+      length(azapi_resource.production_audio_key) == 1 &&
+      length(azurerm_key_vault_key.audio) == 0 &&
+      length(azurerm_container_app_job.database_migrations) == 0 &&
+      length(azurerm_postgresql_flexible_server_active_directory_administrator.migrations) == 0 &&
       length(azurerm_container_app.api) == 0 &&
       length(azurerm_container_app.production_native_receiver) == 0 &&
       length(azurerm_container_app_job.production_captured) == 0 &&
@@ -484,7 +548,7 @@ run "core_bundle_routing_rejects_obsolete_activation_mode" {
       container_apps_outbound_ipv4 = "64.236.176.41"
     }
   }
-  expect_failures = [var.remove_owned_production_translation_blob_writer]
+  expect_failures = [var.prepare_production_database_migration_identity]
 }
 
 run "core_bundle_routing_rejects_api_metadata_drift" {
