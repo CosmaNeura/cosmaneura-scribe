@@ -170,3 +170,17 @@ recorded disabled runtime checks, not for Scribe database bootstrap. This source
 correction requires a rebuilt image and the bounded schema rehearsal before any
 separately approved production migration. It changes no Core entrypoint, working
 directory, runtime setting, identity, database, or traffic.
+
+## Scribe native dependency closure
+
+The owned PostgreSQL rehearsal found that Scribe's Greenlet wheel could not load
+`libstdc++.so.6` through Core's copied Nix interpreter and the sealed child
+environment. Package only the two existing Core-image C++/gcc libraries under
+`/opt/scribe/runtime/lib/native`. Scribe's fixed Python launcher selects that
+directory and invokes its copied interpreter; it inherits no caller library path.
+Core's interpreter, environment, working directory and entrypoints stay unchanged.
+The build gate exercises Greenlet and SQLAlchemy's async Greenlet bridge with a
+cleared environment. A new image and the child-only Scribe schema rehearsal must
+pass before bootstrap qualification; retain the passed Core rung and the failed
+Scribe run. No dependency lock, Azure configuration, identity or schema changes
+are included in this source correction.

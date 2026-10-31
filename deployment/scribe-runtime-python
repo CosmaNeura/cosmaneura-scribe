@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+# Use only the native closure packaged for this Scribe interpreter.
+# Core's environment and interpreter are unaffected; do not inherit lib paths.
+export LD_LIBRARY_PATH=/opt/scribe/runtime/lib/native
+exec /opt/scribe/runtime/bin/python-real "$@"

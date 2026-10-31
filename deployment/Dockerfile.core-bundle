@@ -17,6 +17,16 @@ RUN /opt/venv/bin/python -c 'import sys; assert sys.version_info[:2] == (3, 13)'
     && /opt/scribe/bin/uv sync --locked --no-editable --no-dev --python-preference only-system --python /opt/venv/bin/python \
     && cp --remove-destination /opt/venv/bin/python /opt/scribe/runtime/bin/python \
     && /opt/scribe/runtime/bin/python -c 'import sys; assert sys.prefix == "/opt/scribe/runtime"'
+# The copied Nix interpreter does not transitively expose its native-library
+# RUNPATH to Scribe wheels. Retain only these existing Core-image DSOs locally.
+RUN mkdir -p /opt/scribe/runtime/lib/native \
+    && cp -L /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 /opt/scribe/runtime/lib/native/ \
+    && mv /opt/scribe/runtime/bin/python /opt/scribe/runtime/bin/python-real \
+    && chmod 0755 /opt/scribe/runtime/lib/native \
+    && chmod 0644 /opt/scribe/runtime/lib/native/*
+COPY scribe-runtime-python /opt/scribe/runtime/bin/python
+RUN chmod 0755 /opt/scribe/runtime/bin/python \
+    && /usr/bin/env -i PATH=/usr/bin:/bin /opt/scribe/runtime/bin/python -c 'import asyncio, sys, greenlet; from sqlalchemy.util.concurrency import greenlet_spawn; assert sys.prefix == "/opt/scribe/runtime"; assert greenlet.greenlet(lambda: 1).switch() == 1; assert asyncio.run(greenlet_spawn(lambda: 2)) == 2'
 FROM ${CORE_IMAGE} AS runtime
 ARG CORE_SOURCE_REVISION
 ARG SCRIBE_SOURCE_REVISION
