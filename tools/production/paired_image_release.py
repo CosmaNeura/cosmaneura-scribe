@@ -50,6 +50,7 @@ SCRIBE_INPUTS = (
 HEX = re.compile(r"[0-9a-f]{64}")
 REVISION = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+REGISTRY_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 QUALIFICATION = {
     "core_processes_passed",
     "child_env_i_uid10001_passed",
@@ -347,7 +348,38 @@ class Operator:
         ]
 
     def remote(self, image: str) -> str | None:
-        output = self.run(
+        repository, separator, tag = image.partition(":")
+        if repository != REPOSITORY or not separator or not REGISTRY_TAG.fullmatch(tag):
+            raise ValueError("exact_repository_tag_required")
+        # Installed CLI follows every registry Link page when --top is absent,
+        # including its classic-registry fallback. Successful complete listing,
+        # never missing-tag stderr or an exit code, establishes absence.
+        tags = self.json(
+            [
+                "az",
+                "acr",
+                "repository",
+                "show-tags",
+                "--name",
+                REGISTRY,
+                "--repository",
+                REPOSITORY,
+                "--subscription",
+                SUBSCRIPTION,
+                "--only-show-errors",
+                "--output",
+                "json",
+            ]
+        )
+        if (
+            not isinstance(tags, list)
+            or any(not isinstance(item, str) or not REGISTRY_TAG.fullmatch(item) for item in tags)
+            or len(set(tags)) != len(tags)
+        ):
+            raise ValueError("complete_registry_tag_list_required")
+        if tag not in tags:
+            return None
+        result = self.json(
             [
                 "az",
                 "acr",
@@ -362,10 +394,15 @@ class Operator:
                 "--only-show-errors",
                 "--output",
                 "json",
-            ],
-            optional_missing=True,
+            ]
         )
-        return None if output is None else decode(output)["digest"]
+        if (
+            not isinstance(result, dict)
+            or not isinstance(result.get("digest"), str)
+            or not DIGEST.fullmatch(result["digest"])
+        ):
+            raise ValueError("exact_remote_manifest_metadata_required")
+        return result["digest"]
 
     def resource(self, name: str) -> dict[str, Any]:
         return self.json(
