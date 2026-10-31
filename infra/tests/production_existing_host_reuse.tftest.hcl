@@ -365,3 +365,148 @@ run "reuse_refuses_a_missing_exact_host_binding" {
     var.production_existing_hosting_binding,
   ]
 }
+
+run "personal_default_session_without_audience" {
+  command = plan
+  variables {
+    production_native_receiver_binding = {
+      profile                       = "core-production-personal-v1"
+      environment_id                = "30000000-0000-4000-8000-000000000001"
+      beta_box_id                   = "30000000-0000-4000-8000-000000000002"
+      core_registry_database_host   = "cosmaneura-prod-postgres.postgres.database.azure.com"
+      core_registry_database_name   = "production"
+      core_registry_database_role   = "scribe_registry_reader"
+      core_scope                    = "api://30000000-0000-4000-8000-000000000003/.default"
+      audience                      = null
+      organization_id               = null
+      ingress_isolation_receipt     = "synthetic-production-ingress-v1"
+      deployment_receipt_sha256     = "1111111111111111111111111111111111111111111111111111111111111111"
+      session_claims_receipt_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+      native_policy_receipt_sha256  = "3333333333333333333333333333333333333333333333333333333333333333"
+      protected_data_receipt_sha256 = "4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  }
+
+  assert {
+    condition = (
+      local.production_native_receiver_configuration.profile == "core-production-personal-v1" &&
+      local.production_native_receiver_configuration.authority_backend == "core-provider-context-v1" &&
+      local.production_native_receiver_configuration.database_host == null &&
+      local.production_native_receiver_configuration.database_name == null &&
+      local.production_native_receiver_configuration.database_reader_role == null &&
+      local.production_native_receiver_configuration.production.organization_id == null &&
+      local.production_native_receiver_configuration.production.audience == null &&
+      local.production_native_receiver_configuration.production.native_policy_receipt_sha256 == var.production_native_receiver_binding.native_policy_receipt_sha256 &&
+      !local.production_native_receiver_configuration.enabled &&
+      !var.enable_production_native_encounter_creation
+    )
+    error_message = "personal profile must preserve the observed audience and receipts, stay dark, and require Core authority without registry access"
+  }
+}
+
+run "personal_default_session_with_observed_audience" {
+  command = plan
+  variables {
+    production_native_receiver_binding = {
+      profile                       = "core-production-personal-v1"
+      environment_id                = "30000000-0000-4000-8000-000000000001"
+      beta_box_id                   = "30000000-0000-4000-8000-000000000002"
+      core_registry_database_host   = "cosmaneura-prod-postgres.postgres.database.azure.com"
+      core_registry_database_name   = "production"
+      core_registry_database_role   = "scribe_registry_reader"
+      core_scope                    = "api://30000000-0000-4000-8000-000000000003/.default"
+      audience                      = "observed-session-audience"
+      organization_id               = null
+      ingress_isolation_receipt     = "synthetic-production-ingress-v1"
+      deployment_receipt_sha256     = "1111111111111111111111111111111111111111111111111111111111111111"
+      session_claims_receipt_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+      native_policy_receipt_sha256  = "3333333333333333333333333333333333333333333333333333333333333333"
+      protected_data_receipt_sha256 = "4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  }
+
+  assert {
+    condition = (
+      local.production_native_receiver_configuration.profile == "core-production-personal-v1" &&
+      local.production_native_receiver_configuration.authority_backend == "core-provider-context-v1" &&
+      local.production_native_receiver_configuration.database_host == null &&
+      local.production_native_receiver_configuration.database_name == null &&
+      local.production_native_receiver_configuration.database_reader_role == null &&
+      local.production_native_receiver_configuration.production.organization_id == null &&
+      local.production_native_receiver_configuration.production.audience == "observed-session-audience" &&
+      local.production_native_receiver_configuration.production.native_policy_receipt_sha256 == var.production_native_receiver_binding.native_policy_receipt_sha256 &&
+      !local.production_native_receiver_configuration.enabled &&
+      !var.enable_production_native_encounter_creation
+    )
+    error_message = "personal profile must preserve the observed audience and receipts, stay dark, and require Core authority without registry access"
+  }
+}
+
+run "personal_profile_rejects_fixed_organization" {
+  command = plan
+  variables {
+    production_native_receiver_binding = {
+      profile                       = "core-production-personal-v1"
+      environment_id                = "30000000-0000-4000-8000-000000000001"
+      beta_box_id                   = "30000000-0000-4000-8000-000000000002"
+      core_registry_database_host   = "cosmaneura-prod-postgres.postgres.database.azure.com"
+      core_registry_database_name   = "production"
+      core_registry_database_role   = "scribe_registry_reader"
+      core_scope                    = "api://30000000-0000-4000-8000-000000000003/.default"
+      audience                      = "observed-session-audience"
+      organization_id               = "org_synthetic_production"
+      ingress_isolation_receipt     = "synthetic-production-ingress-v1"
+      deployment_receipt_sha256     = "1111111111111111111111111111111111111111111111111111111111111111"
+      session_claims_receipt_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+      native_policy_receipt_sha256  = "3333333333333333333333333333333333333333333333333333333333333333"
+      protected_data_receipt_sha256 = "4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  }
+  expect_failures = [var.production_native_receiver_binding]
+}
+
+run "organization_profile_still_requires_organization" {
+  command = plan
+  variables {
+    production_native_receiver_binding = {
+      profile                       = "core-production-organization-v1"
+      environment_id                = "30000000-0000-4000-8000-000000000001"
+      beta_box_id                   = "30000000-0000-4000-8000-000000000002"
+      core_registry_database_host   = "cosmaneura-prod-postgres.postgres.database.azure.com"
+      core_registry_database_name   = "production"
+      core_registry_database_role   = "scribe_registry_reader"
+      core_scope                    = "api://30000000-0000-4000-8000-000000000003/.default"
+      audience                      = "observed-session-audience"
+      organization_id               = null
+      ingress_isolation_receipt     = "synthetic-production-ingress-v1"
+      deployment_receipt_sha256     = "1111111111111111111111111111111111111111111111111111111111111111"
+      session_claims_receipt_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+      native_policy_receipt_sha256  = "3333333333333333333333333333333333333333333333333333333333333333"
+      protected_data_receipt_sha256 = "4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  }
+  expect_failures = [var.production_native_receiver_binding]
+}
+
+run "unknown_production_profile_is_rejected" {
+  command = plan
+  variables {
+    production_native_receiver_binding = {
+      profile                       = "unapproved-production-profile"
+      environment_id                = "30000000-0000-4000-8000-000000000001"
+      beta_box_id                   = "30000000-0000-4000-8000-000000000002"
+      core_registry_database_host   = "cosmaneura-prod-postgres.postgres.database.azure.com"
+      core_registry_database_name   = "production"
+      core_registry_database_role   = "scribe_registry_reader"
+      core_scope                    = "api://30000000-0000-4000-8000-000000000003/.default"
+      audience                      = "observed-session-audience"
+      organization_id               = "org_synthetic_production"
+      ingress_isolation_receipt     = "synthetic-production-ingress-v1"
+      deployment_receipt_sha256     = "1111111111111111111111111111111111111111111111111111111111111111"
+      session_claims_receipt_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+      native_policy_receipt_sha256  = "3333333333333333333333333333333333333333333333333333333333333333"
+      protected_data_receipt_sha256 = "4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  }
+  expect_failures = [var.production_native_receiver_binding]
+}

@@ -1,11 +1,31 @@
 --- a/cosmas_os/api/auth.py
 +++ b/cosmas_os/api/auth.py
-@@ -101,12 +101,41 @@
+@@ -41,6 +41,18 @@
+     )
+
+
++def production_core_personal_configuration_valid(settings: Settings) -> bool:
++    """Separate production native profile; no change to generic OS settings."""
++    return bool(
++        settings.clerk_issuer == "https://clerk.cosmaneura.com"
++        and settings.clerk_organization_id is None
++        and (settings.clerk_audience is None
++             or re.fullmatch(r"[!-~]{1,255}", settings.clerk_audience))
++        and all(error == "Authenticated workspace requires a Clerk organization and audience"
++                for error in settings.workspace_authentication_errors())
++    )
++
++
+ class AuthenticationFailed(Exception):
+     """The request did not carry a valid, verifiable identity."""
+
+@@ -101,12 +113,54 @@
          allow_native_session_without_origin: bool = False,
          allow_staging_desktop_session_without_origin: bool = False,
          core_provider_session: bool = False,
 +        production_native_origin: str | None = None,
 +        production_native_policy_receipt_sha256: str | None = None,
++        production_core_personal_session: bool = False,
      ) -> None:
          self._owns_refresh = jwks_client is not None or not start_background_refresh
          self._refresh_thread: Thread | None = None
@@ -17,7 +37,21 @@
 +        # This does not identify an executable. The reviewed audience, native
 +        # receiver/workload channel and current Core authorization remain required.
 +        production_native = production_native_origin is not None
++        if type(production_core_personal_session) is not bool or (
++            production_core_personal_session and not production_native
++        ):
++            raise RuntimeError("Production native personal policy is incomplete")
++        self.production_core_personal_session = production_core_personal_session
 +        if production_native:
++            identity_valid = (
++                production_core_personal_configuration_valid(runtime_settings)
++                if production_core_personal_session
++                else bool(
++                    re.fullmatch(r"[!-~]{1,255}", runtime_settings.clerk_audience or "")
++                    and re.fullmatch(r"org_[A-Za-z0-9_]{1,251}", runtime_settings.clerk_organization_id or "")
++                    and not runtime_settings.workspace_authentication_errors()
++                )
++            )
 +            if (
 +                core_provider_session or allow_native_session_without_origin
 +                or allow_staging_desktop_session_without_origin
@@ -31,9 +65,7 @@
 +                or runtime_settings.workspace_native_synthetic_enabled
 +                or runtime_settings.clerk_issuer != "https://clerk.cosmaneura.com"
 +                or runtime_settings.clerk_jwks_url != "https://clerk.cosmaneura.com/.well-known/jwks.json"
-+                or not re.fullmatch(r"[!-~]{1,255}", runtime_settings.clerk_audience or "")
-+                or not re.fullmatch(r"org_[A-Za-z0-9_]{1,251}", runtime_settings.clerk_organization_id or "")
-+                or runtime_settings.workspace_authentication_errors()
++                or not identity_valid
 +                or not re.fullmatch(r"[0-9a-f]{64}", production_native_policy_receipt_sha256 or "")
 +            ):
 +                raise RuntimeError("Production native organization policy is incomplete")
@@ -42,7 +74,7 @@
          if allow_native_session_without_origin and set(runtime_settings.authorized_parties) != {
              "capacitor://localhost"
          }:
-@@ -121,6 +150,7 @@
+@@ -121,11 +175,13 @@
              raise RuntimeError("Desktop native session requires the isolated staging personal profile")
          self._allow_native_session_without_origin = (
              allow_native_session_without_origin or allow_staging_desktop_session_without_origin
@@ -50,7 +82,27 @@
          )
          if (
              not runtime_settings.clerk_jwks_url
-@@ -302,6 +332,9 @@
+             or not runtime_settings.clerk_issuer
+-            or (not core_provider_session and not runtime_settings.clerk_audience)
++            or (not core_provider_session and not production_core_personal_session
++                and not runtime_settings.clerk_audience)
+         ):
+             raise RuntimeError("Clerk verifier configuration is incomplete")
+         self._settings = runtime_settings
+@@ -283,7 +339,9 @@
+                 + ([] if self._allow_native_session_without_origin else ["azp"]),
+                 # Core's Clerk AuthenticateRequestOptions uses no audience. Its
+                 # separate Entra workload credential is not a Clerk session.
+-                "verify_aud": not self.core_provider_session,
++                "verify_aud": not self.core_provider_session and not (
++                    self.production_core_personal_session and self._settings.clerk_audience is None
++                ),
+             }
+             claims = jwt.decode(
+                 token,
+@@ -300,8 +358,11 @@
+             raise AuthenticationFailed("invalid bearer token") from exc
+
          subject = claims.get("sub")
 +        session_id = claims.get("sid")
          authorized_party = claims.get("azp")
@@ -61,3 +113,21 @@
              raise AuthenticationFailed("invalid bearer token")
          absent_native_origin = self._allow_native_session_without_origin and "azp" not in claims
          if not absent_native_origin and (
+@@ -310,7 +371,7 @@
+         ):
+             raise AuthenticationFailed("invalid bearer token")
+
+-        if self.core_provider_session:
++        if self.core_provider_session or self.production_core_personal_session:
+             if (
+                 not re.fullmatch(r"user_[A-Za-z0-9_]{1,250}", subject)
+                 or not isinstance(claims.get("sid"), str)
+@@ -318,6 +379,8 @@
+                 or any(type(claims.get(key)) is not int for key in ("exp", "iat", "nbf"))
+                 or claims.get("org_id") is not None
+                 or claims.get("o") is not None
++                or (self.production_core_personal_session
++                    and self._settings.clerk_audience is None and "aud" in claims)
+             ):
+                 raise AuthenticationFailed("invalid personal session")
+             return claims

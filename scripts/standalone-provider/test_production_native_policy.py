@@ -197,9 +197,7 @@ def test_production_native_missing_azp_retains_all_signed_identity_bindings(
         {"exp": datetime.now(UTC) - timedelta(minutes=1)},
     ],
 )
-def test_production_native_rejects_wrong_null_web_and_replayed_claims(
-    patched_identity, change
-):
+def test_production_native_rejects_wrong_null_web_and_replayed_claims(patched_identity, change):
     auth, Settings = patched_identity
     instance = verifier(auth, Settings, "capacitor://localhost")
     with pytest.raises((auth.AuthenticationFailed, auth.AccessDenied)):
@@ -208,9 +206,7 @@ def test_production_native_rejects_wrong_null_web_and_replayed_claims(
 
 
 @pytest.mark.parametrize("receipt", [None, "", "4" * 63, "G" * 64])
-def test_missing_or_malformed_policy_receipt_cannot_select_exception(
-    patched_identity, receipt
-):
+def test_missing_or_malformed_policy_receipt_cannot_select_exception(patched_identity, receipt):
     auth, Settings = patched_identity
     with pytest.raises(RuntimeError, match="Production native organization policy is incomplete"):
         auth.ClerkTokenVerifier(
@@ -277,3 +273,73 @@ def test_existing_staging_native_exception_is_preserved(patched_identity):
     )
     assert instance.verify(token)["sid"] == "sess_fixture"
     instance.close()
+
+
+def personal_settings(Settings, origin, audience=None):
+    projected = settings(Settings, origin)
+    projected.clerk_organization_id = None
+    projected.clerk_audience = audience
+    return projected
+
+
+@pytest.mark.parametrize("origin", ["capacitor://localhost", "app://cosmas"])
+@pytest.mark.parametrize("audience", [None, "observed-default-session-audience"])
+def test_explicit_production_personal_verifier_binds_real_default_session_shape(
+    patched_identity, origin, audience
+):
+    auth, Settings = patched_identity
+    instance = auth.ClerkTokenVerifier(
+        personal_settings(Settings, origin, audience),
+        jwks_client=OfflineKeys(),
+        start_background_refresh=False,
+        production_native_origin=origin,
+        production_native_policy_receipt_sha256=POLICY_RECEIPT,
+        production_core_personal_session=True,
+    )
+    token_claims = claims(org_id=_MISSING, aud=_MISSING if audience is None else audience)
+    assert instance.verify(signed(token_claims))["sid"] == "sess_fixture"
+    assert instance.verify(signed(token_claims | {"azp": origin}))["sub"] == "user_fixture"
+    for change in (
+        {"azp": "https://app.cosmaneura.com"},
+        {"azp": None},
+        {"iss": "https://untrusted.example"},
+        {"org_id": "org_other"},
+        {"o": {"id": "org_other"}},
+        {"aud": "unobserved"},
+        {"sub": ""},
+        {"sid": ""},
+        {"exp": datetime.now(UTC) - timedelta(minutes=1)},
+    ):
+        with pytest.raises((auth.AuthenticationFailed, auth.AccessDenied)):
+            instance.verify(signed(token_claims | change))
+    instance.close()
+
+
+def test_personal_profile_cannot_silently_replace_org_or_generic_verifier(patched_identity):
+    auth, Settings = patched_identity
+    projected = personal_settings(Settings, "capacitor://localhost")
+    with pytest.raises(RuntimeError, match="Production native organization policy is incomplete"):
+        auth.ClerkTokenVerifier(
+            projected,
+            jwks_client=OfflineKeys(),
+            start_background_refresh=False,
+            production_native_origin="capacitor://localhost",
+            production_native_policy_receipt_sha256=POLICY_RECEIPT,
+        )
+    with pytest.raises(RuntimeError, match="Production native personal policy is incomplete"):
+        auth.ClerkTokenVerifier(
+            projected,
+            jwks_client=OfflineKeys(),
+            start_background_refresh=False,
+            production_core_personal_session=True,
+        )
+    projected.workspace_native_synthetic_enabled = True
+    with pytest.raises(RuntimeError, match="Production native organization policy is incomplete"):
+        auth.ClerkTokenVerifier(
+            projected,
+            jwks_client=OfflineKeys(),
+            start_background_refresh=False,
+            production_native_origin="capacitor://localhost",
+            production_native_policy_receipt_sha256=POLICY_RECEIPT,
+            production_core_personal_session=True,
+        )

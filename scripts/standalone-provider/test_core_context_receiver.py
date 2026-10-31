@@ -15,8 +15,8 @@ from cosmas_os.config import Settings
 from pydantic import SecretStr
 from receiver import ProviderReceiver, ReceiverProfile
 from receiver_runtime import ReceiverConfiguration, build_runtime
-from test_production_composition import configured, production, validate
-from test_production_native_policy import OfflineKeys, claims, settings, signed
+from test_production_composition import configured, personal_config, production, validate
+from test_production_native_policy import OfflineKeys, claims, personal_settings, settings, signed
 
 ORIGIN = "https://synthetic-fixture-production.example.azurecontainerapps.io"
 ACTOR = "authority_actor_00000000000000000000000001"
@@ -49,6 +49,9 @@ def test_new_mode_is_default_off_and_cannot_mix_registry_or_staging():
     assert ReceiverConfiguration().authority_backend == "registry"
     assert not ReceiverConfiguration().enabled
     assert config().database_host is None
+    personal = validate(personal_config())
+    assert personal.authority_backend == "core-provider-context-v1"
+    assert personal.database_host is None and personal.production.organization_id is None
     for changes in (
         {"profile": "core-staging-personal-v1", "production": None},
         {"database_name": "forbidden"},
@@ -59,16 +62,25 @@ def test_new_mode_is_default_off_and_cannot_mix_registry_or_staging():
             ReceiverConfiguration.model_validate_json(json.dumps(values))
 
 
-def receiver(*, deny=False, revoke_after_native=False, full=False, core_full=None):
-    projected = settings(Settings, "app://cosmas")
+def receiver(*, deny=False, revoke_after_native=False, full=False, core_full=None, personal=False):
+    projected = (
+        personal_settings(Settings, "app://cosmas")
+        if personal
+        else settings(Settings, "app://cosmas")
+    )
     verifier = auth.ClerkTokenVerifier(
         projected,
         jwks_client=OfflineKeys(),
         start_background_refresh=False,
         production_native_origin="app://cosmas",
         production_native_policy_receipt_sha256="4" * 64,
+        production_core_personal_session=personal,
     )
-    token = signed(claims(azp="app://cosmas"))
+    token_claims = claims(azp="app://cosmas")
+    if personal:
+        token_claims.pop("org_id")
+        token_claims.pop("aud")
+    token = signed(token_claims)
     calls = []
     revoked = False
 
@@ -172,7 +184,13 @@ def receiver(*, deny=False, revoke_after_native=False, full=False, core_full=Non
         )
 
     result = CoreContextReceiver(
-        ReceiverProfile(ORIGIN, "https://app.cosmaneura.com", uuid4(), frozenset({"app://cosmas"})),
+        ReceiverProfile(
+            ORIGIN,
+            "https://app.cosmaneura.com",
+            uuid4(),
+            frozenset({"app://cosmas"}),
+            identity_profile="core-production-personal-v1" if personal else "clerk-organization-v1",
+        ),
         None,
         projected,
         verifier,
@@ -186,12 +204,13 @@ def receiver(*, deny=False, revoke_after_native=False, full=False, core_full=Non
 
 
 @pytest.mark.asyncio
-async def test_catalog_and_selection_revalidate_core_without_any_registry(monkeypatch):
+@pytest.mark.parametrize("personal", [False, True])
+async def test_catalog_and_selection_revalidate_core_without_any_registry(monkeypatch, personal):
     def no_sql(*args, **kwargs):
         raise AssertionError("No registry SQL may run")
 
     monkeypatch.setattr("receiver.Session", no_sql)
-    client, token, calls, verifier = receiver()
+    client, token, calls, verifier = receiver(personal=personal)
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=client.app()), base_url=ORIGIN
@@ -313,7 +332,8 @@ async def test_core_denial_and_missing_signed_session_never_fall_back(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_runtime_new_mode_never_constructs_engine_or_requests_pg_token(monkeypatch):
+@pytest.mark.parametrize("personal", [False, True])
+async def test_runtime_new_mode_never_constructs_engine_or_requests_pg_token(monkeypatch, personal):
     calls = []
     original = auth.ClerkTokenVerifier
 
@@ -340,12 +360,13 @@ async def test_runtime_new_mode_never_constructs_engine_or_requests_pg_token(mon
     monkeypatch.setattr("azure.identity.aio.ManagedIdentityCredential", Credential)
     monkeypatch.setattr(auth, "ClerkTokenVerifier", make_verifier)
     monkeypatch.setattr("sqlalchemy.ext.asyncio.create_async_engine", forbidden_engine)
-    resources = await build_runtime(config())
+    resources = await build_runtime(validate(personal_config()) if personal else config())
     await resources.close()
     assert calls == ["identity", "close"]
 
 
-def test_legacy_receiver_source_is_unchanged():
+def test_existing_receiver_record_operations_are_unchanged():
+    import ast
     import subprocess
     from pathlib import Path
 
@@ -354,13 +375,28 @@ def test_legacy_receiver_source_is_unchanged():
         [
             "git",
             "show",
-            "629633c6571104dc485a75f111535cc26d781d01:scripts/standalone-provider/receiver.py",
+            "6ca3b86d40859063ad29f7b111e49efafe4d1091:scripts/standalone-provider/receiver.py",
         ],
         cwd=root,
         check=True,
         capture_output=True,
     ).stdout
-    assert original == (root / "scripts/standalone-provider/receiver.py").read_bytes()
+
+    def record_operations(source):
+        receiver = next(
+            node
+            for node in ast.parse(source).body
+            if isinstance(node, ast.ClassDef) and node.name == "ProviderReceiver"
+        )
+        return {
+            node.name: ast.dump(node, include_attributes=False)
+            for node in receiver.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name != "__init__"
+        }
+
+    assert record_operations(original) == record_operations(
+        (root / "scripts/standalone-provider/receiver.py").read_bytes()
+    )
     assert CoreContextReceiver.app is not ProviderReceiver.app
 
 

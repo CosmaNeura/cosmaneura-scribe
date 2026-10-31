@@ -209,7 +209,7 @@ def assemble(args: argparse.Namespace) -> None:
         "native_helpers": list(helpers),
         "ios_provider_entry_included": True,
         "enabled": bool(projected and projected["desktop"]["enabled"]),
-        "profile": "core-production-organization-v1" if projected else "core-staging-personal-v1",
+        "profile": projected["desktop"]["profile"] if projected else "core-staging-personal-v1",
         "production_qualified": False,
         "production_native_build_receipt_sha256": digest(args.production_native_build_receipt)
         if projected

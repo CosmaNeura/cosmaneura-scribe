@@ -155,8 +155,9 @@ variable "production_native_receiver_binding" {
     core_registry_database_name   = string
     core_registry_database_role   = string
     core_scope                    = string
-    audience                      = string
-    organization_id               = string
+    profile                       = optional(string, "core-production-organization-v1")
+    audience                      = optional(string)
+    organization_id               = optional(string)
     ingress_isolation_receipt     = string
     deployment_receipt_sha256     = string
     session_claims_receipt_sha256 = string
@@ -178,8 +179,22 @@ variable "production_native_receiver_binding" {
         can(regex("^[A-Za-z0-9_-]{1,63}$", try(var.production_native_receiver_binding.core_registry_database_name, ""))) &&
         can(regex("^[A-Za-z0-9_-]{1,63}$", try(var.production_native_receiver_binding.core_registry_database_role, ""))) &&
         can(regex("^api://[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/\\.default$", try(var.production_native_receiver_binding.core_scope, ""))) &&
-        can(regex("^[!-~]{1,255}$", try(var.production_native_receiver_binding.audience, ""))) &&
-        can(regex("^org_[A-Za-z0-9_]{1,251}$", try(var.production_native_receiver_binding.organization_id, ""))) &&
+        (
+          (
+            try(var.production_native_receiver_binding.profile, "") == "core-production-organization-v1" &&
+            can(regex("^[!-~]{1,255}$", try(var.production_native_receiver_binding.audience, ""))) &&
+            can(regex("^org_[A-Za-z0-9_]{1,251}$", try(var.production_native_receiver_binding.organization_id, "")))
+          ) ||
+          (
+            try(var.production_native_receiver_binding.profile, "") == "core-production-personal-v1" &&
+            var.deploy_production_existing_host_reuse &&
+            try(var.production_native_receiver_binding.organization_id == null, false) &&
+            (
+              try(var.production_native_receiver_binding.audience == null, false) ||
+              can(regex("^[!-~]{1,255}$", try(var.production_native_receiver_binding.audience, "")))
+            )
+          )
+        ) &&
         can(regex("^[A-Za-z0-9._:/-]{8,160}$", try(var.production_native_receiver_binding.ingress_isolation_receipt, ""))) &&
         can(regex("^[0-9a-f]{64}$", try(var.production_native_receiver_binding.deployment_receipt_sha256, ""))) &&
         can(regex("^[0-9a-f]{64}$", try(var.production_native_receiver_binding.session_claims_receipt_sha256, ""))) &&
@@ -187,7 +202,7 @@ variable "production_native_receiver_binding" {
         can(regex("^[0-9a-f]{64}$", try(var.production_native_receiver_binding.protected_data_receipt_sha256, "")))
       )
     )
-    error_message = "production_native_receiver_binding must contain exact nonzero UUIDs, Core registry/database/scope values, production audience/organization, and four lowercase SHA-256 evidence bindings"
+    error_message = "production_native_receiver_binding must contain exact nonzero UUIDs, Core registry/database/scope values, an explicit production profile (strict organization/audience or Core-backed personal session), and four lowercase SHA-256 evidence bindings"
   }
 }
 
@@ -283,12 +298,13 @@ locals {
     environment_id                        = var.production_native_receiver_binding.environment_id
     beta_box_id                           = var.production_native_receiver_binding.beta_box_id
     managed_identity_client_id            = var.production_native_receiver_identity_client_id
-    database_host                         = var.production_native_receiver_binding.core_registry_database_host
-    database_name                         = var.production_native_receiver_binding.core_registry_database_name
-    database_reader_role                  = var.production_native_receiver_binding.core_registry_database_role
+    authority_backend                     = var.production_native_receiver_binding.profile == "core-production-personal-v1" ? "core-provider-context-v1" : "registry"
+    database_host                         = var.production_native_receiver_binding.profile == "core-production-personal-v1" ? null : var.production_native_receiver_binding.core_registry_database_host
+    database_name                         = var.production_native_receiver_binding.profile == "core-production-personal-v1" ? null : var.production_native_receiver_binding.core_registry_database_name
+    database_reader_role                  = var.production_native_receiver_binding.profile == "core-production-personal-v1" ? null : var.production_native_receiver_binding.core_registry_database_role
     core_scope                            = var.production_native_receiver_binding.core_scope
     ingress_isolation_receipt             = var.production_native_receiver_binding.ingress_isolation_receipt
-    profile                               = "core-production-organization-v1"
+    profile                               = var.production_native_receiver_binding.profile
     production = {
       core_origin                   = "https://app.cosmaneura.com"
       issuer                        = "https://clerk.cosmaneura.com"

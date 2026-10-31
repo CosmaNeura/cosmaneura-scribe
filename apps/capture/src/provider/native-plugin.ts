@@ -51,7 +51,7 @@ export interface ProviderNativePlugin {
 export interface StandaloneProviderNative {
   getProviderConfiguration(): Promise<{ enabled: boolean; coreOrigin: string; uploadOrigins: string[];
     /** Returned only by the receipt-gated, production-compiled native bridge. */
-    profile?: "core-production-organization-v1" }>;
+    profile?: "core-production-organization-v1" | "core-production-personal-v1" }>;
   openProviderCore(request: { appointmentRef: string | null }): Promise<void>;
 }
 

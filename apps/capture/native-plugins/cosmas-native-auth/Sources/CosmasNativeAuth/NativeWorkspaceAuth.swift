@@ -126,7 +126,7 @@ public enum NativeProviderDisplayName {
         guard tokenPolicy != nil else {
             self.driver = nil; self.accessBlock = nil; self.phase = .unavailable; return
         }
-        guard (organizationID == nil) == (tokenPolicy?.identityProfile == .coreStagingPersonal) else {
+        guard (organizationID == nil) == (tokenPolicy?.identityProfile.isPersonalSession == true) else {
             self.driver = nil; self.accessBlock = nil; self.phase = .unavailable; return
         }
         do {
