@@ -8,13 +8,20 @@ from uuid import uuid4, uuid5
 from cosmaneura_scribe.provider_context_transport import ProviderContextTransport
 from cosmaneura_scribe.provider_core_transport import (
     AuthorizedCoreProvider,
+    CoreProviderMount,
     CoreProviderSelection,
     ProviderCoreUnavailable,
 )
+from cosmaneura_scribe.provider_native_core_transport import (
+    NATIVE_READ_OPERATIONS,
+    ProviderNativeCoreTransport,
+)
 from cosmaneura_scribe.provider_native_encounter_transport import ProviderNativeEncounterTransport
+from cosmaneura_scribe.provider_native_workflow_transport import ProviderNativeWorkflowTransport
 from fastapi import Request
 from fastapi.routing import APIRoute
 from receiver import (
+    _LIMITS,
     _PREFIX,
     AuthenticationFailed,
     ClerkTokenVerifier,
@@ -201,7 +208,7 @@ class CoreContextReceiver(ProviderReceiver):
                         "revision": str(revision),
                         "encounters": rows,
                         "opening_review_v1": True,
-                        "note_opening_v1": True,
+                        "note_opening_v1": not self.encounter_creation_enabled,
                         "encounter_creation_v1": self.encounter_creation_enabled,
                         **(
                             {"existing_patient_visits_v1": True}
@@ -217,6 +224,108 @@ class CoreContextReceiver(ProviderReceiver):
                 return _reply(error.status, {"code": error.code})
             except Exception:
                 return _reply(403, {"code": "provider_request_denied"})
+
+        if self.encounter_creation_enabled:
+
+            async def workflow(request: Request):
+                action = request.url.path.removeprefix(_PREFIX)
+                try:
+                    revision = _uuid(request.headers.get("x-scribe-native-revision"))
+                    body = await _read(request, _LIMITS[action])
+                    authorization = request.headers.get("authorization", "")
+                    key = request.headers.get("idempotency-key", "")
+
+                    operation = body.get("operation")
+                    if (
+                        action == "capture-operations"
+                        and isinstance(operation, dict)
+                        and operation.get("kind") in NATIVE_READ_OPERATIONS
+                    ):
+                        return _reply(
+                            200,
+                            await self.native_core_read(authorization, revision, action, body, key),
+                        )
+                    initial = None
+
+                    async def fresh():
+                        if not self.enabled or not self.encounter_creation_enabled:
+                            raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+                        account = await self.encounter_account(authorization, bind=None)
+                        if initial is not None and account != initial:
+                            raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+                        return account
+
+                    initial = await fresh()
+                    mount = None
+                    if action in {"source-start", "source-start-ready"}:
+                        context, _ = await self._selected_current(
+                            authorization, revision, _uuid(body.get("workspace_id"))
+                        )
+                        mount = CoreProviderMount(context.selection, body.get("binding_ref"))
+                    transport = ProviderNativeWorkflowTransport(
+                        self.profile.core_origin,
+                        fresh,
+                        self.workload_token,
+                        transport=self.core_http,
+                        connections=self.core_connections,
+                    )
+                    try:
+                        requested = None
+                        if action == "capture-admissions":
+                            for field in ("native_recording_preparation", "preparation_metadata"):
+                                if field in body:
+                                    _require(requested is None and body.pop(field) is True)
+                                    requested = field
+                        result = await transport.workflow(action, body, key, mount=mount)
+                    finally:
+                        await transport.close()
+                    if requested:
+                        native = ProviderNativeCoreTransport(
+                            self.profile.core_origin,
+                            fresh,
+                            self.workload_token,
+                            transport=self.core_http,
+                            connections=self.core_connections,
+                        )
+                        try:
+                            _, metadata = await native.request(
+                                "capture-operations",
+                                {
+                                    "workspace_id": body["workspace_id"],
+                                    "binding_ref": body["binding_ref"],
+                                    "request_nonce": str(uuid4()),
+                                    "operation": {"kind": requested},
+                                },
+                                str(uuid4()),
+                            )
+                            receipt = metadata["receipt"]
+                            session = (
+                                receipt["context"]
+                                if requested == "native_recording_preparation"
+                                else receipt["review"]
+                            )["session_id"]
+                            _require(session == result["session_id"])
+                            result[requested] = receipt
+                        finally:
+                            await native.close()
+                    await fresh()
+                    return _reply(200, result)
+                except ProviderCoreUnavailable as error:
+                    return _reply(error.status, {"detail": error.code})
+                except Exception:
+                    return _reply(403, {"detail": "provider_request_denied"})
+
+            for action in (
+                "capture-operations",
+                "capture-admissions",
+                "capture-notes",
+                "source-start",
+                "source-start-ready",
+            ):
+                app.router.routes.insert(
+                    0,
+                    APIRoute(_PREFIX + action, workflow, methods=["POST"], include_in_schema=False),
+                )
 
         # Keep the legacy shared boundary middleware; only this explicit mode's
         # catalog route precedes its generic provider-action route.
