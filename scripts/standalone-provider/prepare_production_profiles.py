@@ -1,4 +1,4 @@
-"""Project explicit owner inputs into disabled build/runtime profiles.
+"""Project explicit owner inputs into receipt-bound build/runtime profiles.
 
 No environment fallback, signing, credential creation, deployment or I/O beyond
 one supplied ordinary JSON file and an exclusive output directory. A receipt
@@ -17,7 +17,9 @@ from pathlib import Path
 from receiver_runtime import ReceiverConfiguration
 
 
-def project(value: dict) -> dict:
+def project(value: dict, *, enable_clients: bool = False) -> dict:
+    if type(enable_clients) is not bool:
+        raise ValueError("production_profile_input_invalid")
     if set(value) != {"schema", "receiver", "client", "desktop_helpers"} or value["schema"] != 1:
         raise ValueError("production_profile_input_invalid")
     receiver = value["receiver"]
@@ -26,6 +28,8 @@ def project(value: dict) -> dict:
     # Require all activation bindings without creating an active runtime.
     config = ReceiverConfiguration.model_validate_json(json.dumps({**receiver, "enabled": True}))
     if config.profile != "core-production-organization-v1" or config.production is None:
+        raise ValueError("production_profile_input_invalid")
+    if enable_clients and set(config.platforms) != {"ios", "desktop"}:
         raise ValueError("production_profile_input_invalid")
     client = value["client"]
     if not isinstance(client, dict) or set(client) != {
@@ -69,7 +73,7 @@ def project(value: dict) -> dict:
         ):
             raise ValueError("production_profile_input_invalid")
     auth = {
-        "enabled": False,
+        "enabled": enable_clients,
         "identityProfile": "clerk-organization-v1",
         "publishableKey": key,
         "frontendOrigin": config.production.issuer,
@@ -84,7 +88,7 @@ def project(value: dict) -> dict:
     }
     application = {
         "profile": "core-production-organization-v1",
-        "enabled": False,
+        "enabled": enable_clients,
         "coreOrigin": config.production.core_origin,
         "uploadOrigins": [upload],
     }
@@ -102,7 +106,7 @@ def project(value: dict) -> dict:
         "desktop": {
             "schema": 2,
             "profile": "core-production-organization-v1",
-            "enabled": False,
+            "enabled": enable_clients,
             "coreOrigin": config.production.core_origin,
             "workspaceId": workspace,
             "deploymentReceiptSha256": config.production.deployment_receipt_sha256,
@@ -112,7 +116,7 @@ def project(value: dict) -> dict:
     }
 
 
-def prepare(source: Path, output: Path) -> None:
+def prepare(source: Path, output: Path, *, enable_clients: bool = False) -> None:
     def unique(pairs):
         result = {}
         for key, value in pairs:
@@ -123,7 +127,9 @@ def prepare(source: Path, output: Path) -> None:
 
     if source.is_symlink() or not source.is_file() or source.stat().st_size > 16384:
         raise ValueError("production_profile_input_invalid")
-    profiles = project(json.loads(source.read_bytes(), object_pairs_hook=unique))
+    profiles = project(
+        json.loads(source.read_bytes(), object_pairs_hook=unique), enable_clients=enable_clients
+    )
     output.mkdir(mode=0o700)
     for name in ("receiver", "desktop"):
         (output / (name + "-profile.json")).write_text(json.dumps(profiles[name], indent=2) + "\n")
@@ -134,6 +140,7 @@ def prepare(source: Path, output: Path) -> None:
         json.dumps(
             {
                 "enabled": False,
+                "clients_enabled": enable_clients,
                 "signed": False,
                 "installed": False,
                 "deployed": False,
@@ -148,5 +155,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument(
+        "--enable-clients",
+        action="store_true",
+        help=(
+            "Enable only the explicitly bound native client profiles; "
+            "receiver and cloud remain unchanged"
+        ),
+    )
     args = parser.parse_args()
-    prepare(args.source, args.output)
+    prepare(args.source, args.output, enable_clients=args.enable_clients)

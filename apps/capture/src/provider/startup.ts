@@ -31,7 +31,9 @@ export function mountProviderStartup(root: HTMLElement, host: StartupHost): () =
         show("Setup required", "Scribe is not enabled for this build.");
         return;
       }
-      if (configuration.coreOrigin !== "https://staging-app.cosmaneura.com"
+      const production = configuration.profile === "core-production-organization-v1";
+      if ((production ? configuration.coreOrigin !== "https://app.cosmaneura.com"
+        : configuration.profile !== undefined || configuration.coreOrigin !== "https://staging-app.cosmaneura.com")
         || configuration.uploadOrigins.length !== 1
         || !/^https:\/\/[a-z0-9]{3,24}\.blob\.core\.windows\.net$/u.test(configuration.uploadOrigins[0]!)) {
         throw new Error("provider_configuration_unavailable");

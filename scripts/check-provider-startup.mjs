@@ -14,6 +14,7 @@ const html = await readFile(resolve(rendererPath, "index.html"), "utf8");
 const source = await readFile(new URL("../apps/capture/src/provider/startup.ts", import.meta.url), "utf8");
 const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
 const configuration = { enabled: true, coreOrigin: "https://staging-app.cosmaneura.com", uploadOrigins: ["https://fixture.blob.core.windows.net"] };
+const productionConfiguration = { ...configuration, coreOrigin: "https://app.cosmaneura.com", profile: "core-production-organization-v1" };
 const deferred = () => {
   let resolve, reject;
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
@@ -59,12 +60,22 @@ for (const failed of ["config", "application"]) {
   await close(); f.dom.window.close(); checks++;
 }
 for (const value of [{ ...configuration, enabled: false }, { ...configuration, coreOrigin: "https://wrong.invalid" },
+  { ...configuration, coreOrigin: "https://app.cosmaneura.com" },
+  { ...configuration, profile: "core-production-organization-v1" },
+  { ...configuration, profile: "unrecognized-profile" },
   { ...configuration, uploadOrigins: [] }, { ...configuration, uploadOrigins: ["https://wrong.invalid"] }]) {
   const f = await fixture(), close = f.start();
   f.config.resolve(value); f.application.resolve({ mount: f.mount }); await turn();
   assert.equal(f.counts().mounts, 0);
   assert.ok(f.root.textContent.includes(value.enabled ? "Scribe could not open" : "Setup required"));
   await close(); f.dom.window.close(); checks++;
+}
+{
+  const f = await fixture(), close = f.start();
+  f.config.resolve(productionConfiguration);
+  f.application.resolve({ mount: f.mount }); await turn();
+  assert.equal(f.counts().mounts, 1);
+  await close(); assert.equal(f.counts().closes, 1); f.dom.window.close(); checks++;
 }
 {
   const f = await fixture(), close = f.start(); await close();
@@ -79,12 +90,14 @@ for (const value of [{ ...configuration, enabled: false }, { ...configuration, c
 }
 // Load the actual emitted entry and lazy application graph. Native session state
 // is signed out; any permission, token, storage, Core or recording call fails.
-{
+for (const packagedConfiguration of [configuration, productionConfiguration]) {
   const errors = [], virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", error => errors.push(error));
   const dom = new JSDOM(html, { url: "capacitor://localhost/index.html", runScripts: "outside-only", pretendToBeVisual: true, virtualConsole });
   const w = dom.window, root = w.document.getElementById("app"), pending = deferred(), calls = [];
   Object.defineProperty(w, "crypto", { value: webcrypto });
+  // JSDOM supplies no layout observer; layout is outside this startup gate.
+  w.ResizeObserver = class { observe() {} disconnect() {} };
   Object.assign(w, { Headers, Response, TextEncoder, TextDecoder, structuredClone, fetch: async url => {
     // Vite's modulepreload polyfill reads packaged assets. Serve only those
     // local bytes; an HTTP request or non-asset path fails this check.
@@ -95,13 +108,14 @@ for (const value of [{ ...configuration, enabled: false }, { ...configuration, c
   } });
   w.CapacitorCustomPlatform = { name: "ios" };
   w.Capacitor = { PluginHeaders: [
-    { name: "CosmasWorkspaceAuth", methods: ["getProviderConfiguration", "getState", "removeListener"].map(name => ({ name, rtype: "promise" }))
+    { name: "CosmasWorkspaceAuth", methods: ["getProviderConfiguration", "getState", "takeRecordingOpenRequest", "removeListener"].map(name => ({ name, rtype: "promise" }))
       .concat([{ name: "addListener", rtype: "callback" }]) }, { name: "IOSPCM", methods: [] }, { name: "SecureQueue", methods: [] }],
   nativeCallback(plugin, method) { assert.equal(plugin, "CosmasWorkspaceAuth"); assert.equal(method, "addListener"); return "synthetic-listener"; },
   async nativePromise(plugin, method) {
     assert.equal(plugin, "CosmasWorkspaceAuth"); calls.push(method);
     if (method === "getProviderConfiguration") return pending.promise;
     if (method === "getState") return { phase: "signedOut", revision: webcrypto.randomUUID() };
+    if (method === "takeRecordingOpenRequest") return { version: 1, pending: false };
     if (method === "removeListener") return;
     return forbidden();
   } };
@@ -129,9 +143,9 @@ for (const value of [{ ...configuration, enabled: false }, { ...configuration, c
   const entry = dom.window.document.querySelector('script[type="module"]').getAttribute("src");
   const module = await load(resolve(base, entry)); await module.link(link); await module.evaluate();
   await turn(); assert.ok(root.textContent.includes("Opening Scribe")); assert.deepEqual(calls, ["getProviderConfiguration"]);
-  pending.resolve(configuration);
-  for (let i = 0; i < 100 && !root.textContent.includes("Welcome to Scribe"); i++) await turn();
-  assert.ok(root.textContent.includes("Welcome to Scribe"));
+  pending.resolve(packagedConfiguration);
+  for (let i = 0; i < 100 && !root.querySelector('[data-session-action="sign-in"]'); i++) await turn();
+  assert.ok(root.querySelector('[data-session-action="sign-in"]'));
   assert.equal(root.querySelector('[data-session-action="sign-in"]').textContent, "Sign in");
   w.dispatchEvent(new w.Event("pagehide")); await turn();
   assert.ok(calls.includes("removeListener")); assert.deepEqual(errors, []);
