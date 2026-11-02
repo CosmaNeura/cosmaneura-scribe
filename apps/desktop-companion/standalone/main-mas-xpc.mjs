@@ -1,7 +1,10 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, screen, session } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, screen, session } from "electron";
 import { registerPackagedAppScheme, startElectronProvider } from "../src/electron-provider-host.js";
 import { MacAppStoreSingletonTemp, prepareMacAppStoreUserData, requireMacAppStoreXpcRuntime } from "../src/mac-app-store-xpc.js";
 import { recordRejectedStoreAcquisition, StoreBootstrapDiagnostics } from "../src/store-bootstrap-diagnostics.js";
+import { installPublicMacPresentation } from "../src/public-app-release.js";
+
+installPublicMacPresentation(app, Menu, "Apple distribution");
 
 const bootstrap = new StoreBootstrapDiagnostics();
 

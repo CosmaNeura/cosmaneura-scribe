@@ -87,7 +87,8 @@ async function composedStoreEntry(f: Awaited<ReturnType<typeof fixture>>, option
     if (ready || options.failRegistration) throw new Error("Invented forbidden native scheme registration");
   });
   const showErrorBox = vi.fn(), setPath = vi.fn();
-  const electron = { ...f.runtime, app: Object.assign(f.runtime.app, { setPath }),
+  const electron = { ...f.runtime, app: Object.assign(f.runtime.app, { setPath, setAboutPanelOptions: vi.fn() }),
+    Menu: { buildFromTemplate: vi.fn(template => template), setApplicationMenu: vi.fn() },
     dialog: { ...f.runtime.dialog, showErrorBox } };
   const processPort = Object.create(process);
   Object.defineProperties(processPort, { mas: { value: options.mas ?? true },

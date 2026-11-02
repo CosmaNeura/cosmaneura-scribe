@@ -52,6 +52,15 @@ def assemble(args: argparse.Namespace) -> None:
     for name, expected in host_receipt["artifacts_sha256"].items():
         if digest(ordinary(host / name)) != expected:
             raise ValueError(f"Desktop host build artifact differs: {name}")
+    release = json.loads(ordinary(host / "release-metadata.json").read_bytes())
+    if (
+        release.get("displayName") != "Cosmaneura Scribe for Mac"
+        or release.get("distribution") != "Direct beta"
+        or release.get("marketingVersion") != json.loads(ordinary(host / "package.json").read_bytes())["version"]
+        or not isinstance(release.get("build"), str)
+        or not release["build"].isdigit()
+    ):
+        raise ValueError("The reviewed public release metadata is required")
     builds = [
         ("auth", "ScribeDesktopProvider", args.auth_build),
         ("audio", "ScribeDesktopAudioHelper", args.audio_build),
@@ -63,7 +72,7 @@ def assemble(args: argparse.Namespace) -> None:
     if not clerk.is_dir() or clerk.is_symlink():
         raise ValueError("The actual built Clerk resource bundle is required")
     output.mkdir(mode=0o700)  # Refuse any existing app, payload or symbolic link.
-    app = output / "Cosmaneura Scribe Beta.app"
+    app = output / "Cosmaneura Scribe for Mac.app"
     shutil.copytree(runtime, app, symlinks=True)
     contents = app / "Contents"
     # Only this newly owned outer bundle changes. Keep every actual helper byte
@@ -127,8 +136,10 @@ def assemble(args: argparse.Namespace) -> None:
         {
             "CFBundleIdentifier": "com.cosmaneura.scribe.beta.desktop",
             "CFBundleName": "Cosmaneura Scribe Beta",
-            "CFBundleDisplayName": "Cosmaneura Scribe Beta",
+            "CFBundleDisplayName": release["displayName"],
             "CFBundleIconFile": "Scribe.icns",
+            "CFBundleShortVersionString": release["marketingVersion"],
+            "CFBundleVersion": release["build"],
         }
     )
     (contents / "Info.plist").write_bytes(plistlib.dumps(runtime_info, sort_keys=True))

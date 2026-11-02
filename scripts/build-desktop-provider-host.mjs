@@ -13,17 +13,17 @@ if (![4, 5].includes(process.argv.length) || (distributionInput !== undefined &&
 const repo = dirname(dirname(fileURLToPath(import.meta.url))), input = await realpath(providerInput), output = resolve(outputInput);
 await mkdir(output); // Refuse an existing package; never overwrite a prior app.
 const renderer = join(output, "renderer"), standalone = join(repo, "apps/desktop-companion/standalone");
+const releasePath = join(repo, "apps/desktop-companion/desktop-release.json"), release = JSON.parse(await readFile(releasePath, "utf8"));
+if (Object.keys(release).sort().join(",") !== "build,displayName,marketingVersion,schema" || release.schema !== 1
+  || release.displayName !== "Cosmaneura Scribe for Mac" || typeof release.marketingVersion !== "string"
+  || !/^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$/u.test(release.marketingVersion)
+  || typeof release.build !== "string" || !/^[1-9][0-9]{0,9}$/u.test(release.build)) throw new Error("Invalid public release metadata");
 await mkdir(renderer);
 const hash = value => createHash("sha256").update(value).digest("hex"), files = {};
 for (const name of ["provider.html", "desktop-start.js", "provider-capture.js", "provider-capture.css"]) {
   const source = join(name.startsWith("provider-capture") ? input : standalone, name), info = await lstat(source);
   if (!info.isFile() || info.isSymbolicLink() || info.size > 4 * 1024 * 1024) throw new Error("Invalid renderer build input");
-  let bytes = await readFile(source);
-  if (storeXpc && name === "provider.html") {
-    const title = Buffer.from("<title>Cosmaneura Scribe Beta</title>"), offset = bytes.indexOf(title);
-    if (offset < 0 || bytes.indexOf(title, offset + title.length) !== -1) throw new Error("Invalid Store renderer title input");
-    bytes = Buffer.concat([bytes.subarray(0, offset), Buffer.from("<title>Cosmaneura Scribe Store</title>"), bytes.subarray(offset + title.length)]);
-  }
+  const bytes = await readFile(source);
   await writeFile(join(renderer, name), bytes); files[name] = hash(bytes);
 }
 const icon = await readFile(join(standalone, "Scribe.icns"));
@@ -39,11 +39,13 @@ const factory = await build({ absWorkingDir: repo, entryPoints: [join(standalone
 const imports = Object.values(preload.metafile.outputs).flatMap(value => value.imports);
 if (imports.length !== 1 || imports[0].path !== "electron" || !imports[0].external) throw new Error("Preload has an unexpected runtime dependency");
 await writeFile(join(output, "package.json"), JSON.stringify({ name: storeXpc ? "cosmaneura-scribe-store" : "cosmaneura-scribe-beta", productName: storeXpc ? "Cosmaneura Scribe Store" : "Cosmaneura Scribe Beta",
-  version: "0.1.0", private: true, main: "main.cjs", type: "commonjs" }, null, 2) + "\n");
+  version: release.marketingVersion, private: true, main: "main.cjs", type: "commonjs" }, null, 2) + "\n");
+await writeFile(join(output, "release-metadata.json"), JSON.stringify({ ...release, distribution: store ? "Apple distribution" : "Direct beta" }, null, 2) + "\n");
 const sourceFiles = [...new Set([...Object.keys(main.metafile.inputs), ...Object.keys(preload.metafile.inputs), ...Object.keys(factory.metafile.inputs)])].sort();
 const sourceSha256 = Object.fromEntries(await Promise.all(sourceFiles.map(async name => [name, hash(await readFile(join(repo, name)))])));
+sourceSha256["apps/desktop-companion/desktop-release.json"] = hash(await readFile(releasePath));
 const artifacts = {};
-for (const name of ["main.cjs", "preload.cjs", "provider-host.mjs", "package.json", "Scribe.icns", "renderer/renderer-manifest.json", ...Object.keys(files).map(name => "renderer/" + name)]) {
+for (const name of ["main.cjs", "preload.cjs", "provider-host.mjs", "package.json", "release-metadata.json", "Scribe.icns", "renderer/renderer-manifest.json", ...Object.keys(files).map(name => "renderer/" + name)]) {
   artifacts[name] = hash(await readFile(join(output, name)));
 }
 await writeFile(join(output, "host-build.json"), JSON.stringify({ schema: 1, proposed_electron_version: "44.4.3", source_sha256: sourceSha256,

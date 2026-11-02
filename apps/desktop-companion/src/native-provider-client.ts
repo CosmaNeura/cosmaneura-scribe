@@ -16,6 +16,11 @@ interface Pending {
   cleanup(): void;
 }
 
+/** Local queue capacity, not a native response or an authentication failure. */
+class NativeProviderQueuePressure extends Error {
+  constructor() { super("provider_native_unavailable"); }
+}
+
 /** Fixed, verified native helper. No token or endpoint enters the renderer API. */
 export class NativeProviderClient implements NativeProviderSession {
   private readonly child: Child;
@@ -73,7 +78,11 @@ export class NativeProviderClient implements NativeProviderSession {
       owner.poll = setInterval(() => {
         if (owner.checking || owner.signal.aborted) return;
         owner.checking = true;
-        void owner.getState().catch(() => owner.fail()).finally(() => { owner.checking = false; });
+        void owner.getState().catch(error => {
+          // Existing calls keep their deadlines. Retry this observation next
+          // tick; a local capacity refusal says nothing about native auth.
+          if (!(error instanceof NativeProviderQueuePressure)) owner.fail();
+        }).finally(() => { owner.checking = false; });
       }, 1_000);
       return owner;
     } catch { await owner.dispose(); throw unavailable(); }
@@ -92,7 +101,8 @@ export class NativeProviderClient implements NativeProviderSession {
     | "sourceAuthorize" | "sourceRelease" | "sourceStopped" | "sourcePreparationRelease" | "prepareProviderSignIn" | "abandonProviderSignIn", payload: Record<string, unknown>, signal?: AbortSignal,
     timeout = 35_000): Promise<unknown> {
     requireMain();
-    if (this.signal.aborted || signal?.aborted || this.pending.size >= 8) return Promise.reject(unavailable());
+    if (this.signal.aborted || signal?.aborted) return Promise.reject(unavailable());
+    if (this.pending.size >= 8) return Promise.reject(new NativeProviderQueuePressure());
     const id = crypto.randomUUID(), bytes = Buffer.from(JSON.stringify({ id, method, payload }) + "\n");
     if (bytes.length > MAX_REQUEST_FRAME) { bytes.fill(0); return Promise.reject(unavailable()); }
     return new Promise((resolve, reject) => {

@@ -1,5 +1,8 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, screen, session } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, screen, session } from "electron";
 import { startElectronProvider } from "../src/electron-provider-host.js";
+import { installPublicMacPresentation } from "../src/public-app-release.js";
+
+installPublicMacPresentation(app, Menu, "Direct beta");
 
 // This source is bundled for the reviewed runtime. It is not a Node CLI and
 // never selects a backend module, environment or executable from argv/env.
