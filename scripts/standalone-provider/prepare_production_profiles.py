@@ -61,9 +61,10 @@ def project(value: dict, *, enable_clients: bool = False) -> dict:
     if not isinstance(helpers, dict) or set(helpers) != {"auth", "audio", "presentation"}:
         raise ValueError("production_profile_input_invalid")
     for helper in helpers.values():
+        store = isinstance(helper, dict) and helper.get("hashAlgorithm") == "macho-store-v1"
         if (
             not isinstance(helper, dict)
-            or set(helper) != {"path", "sha256"}
+            or set(helper) != ({"path", "sha256", "hashAlgorithm"} if store else {"path", "sha256"})
             or not isinstance(helper["path"], str)
             or "\\" in helper["path"]
             or helper["path"].startswith("/")
@@ -72,6 +73,21 @@ def project(value: dict, *, enable_clients: bool = False) -> dict:
             or not re.fullmatch(r"[0-9a-f]{64}", helper["sha256"])
         ):
             raise ValueError("production_profile_input_invalid")
+    store_helpers = [helper for helper in helpers.values() if "hashAlgorithm" in helper]
+    if store_helpers:
+        first = store_helpers[0]
+        if len(store_helpers) != 3 or any(
+            helper["path"] != "Contents/MacOS/ScribeStorePipeBridge"
+            or helper["sha256"] != first["sha256"]
+            for helper in store_helpers
+        ):
+            raise ValueError("production_profile_input_invalid")
+    elif any(
+        helper["path"] == "Contents/MacOS/ScribeStorePipeBridge" for helper in helpers.values()
+    ):
+        # The Store bridge is re-signed by Apple; its old raw-file declaration
+        # must not silently select another admission algorithm.
+        raise ValueError("production_profile_input_invalid")
     auth = {
         "enabled": enable_clients,
         "identityProfile": (

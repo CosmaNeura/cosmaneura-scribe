@@ -6,16 +6,35 @@ import { join } from "node:path";
 import { resolveStandaloneNativeHelpers, STORE_BRIDGE_BUNDLE_PATH } from "./standalone-native-helpers.js";
 import { verifyNativeHelper } from "./native-process-driver.js";
 import { openStandaloneProvider } from "./standalone-provider.js";
+import { STORE_BRIDGE_HASH_ALGORITHM, storeBridgeMachoSha256 } from "./store-bridge-macho-hash.js";
 
 const native = vi.hoisted(() => ({ open: vi.fn() }));
 vi.mock("./native-provider-client.js", () => ({ NativeProviderClient: { open: native.open } }));
 
 const unavailable = "The standalone provider is unavailable.";
-const bytes = Buffer.from("synthetic unsigned bridge fixture; never executed\n");
-const hash = createHash("sha256").update(bytes).digest("hex");
+// Bounded Mach-O layout only; all native acquisition is mocked and these bytes
+// are never executed. The separate retained-artifact witness uses actual code.
+function fixtureBytes(): Buffer {
+  const value = Buffer.alloc(512);
+  value.writeUInt32LE(0xfeedfacf, 0); value.writeUInt32LE(0x0100000c, 4);
+  value.writeUInt32LE(2, 12); value.writeUInt32LE(3, 16); value.writeUInt32LE(240, 20);
+  value.writeUInt32LE(0x19, 32); value.writeUInt32LE(152, 36); value.write("__TEXT", 40);
+  value.writeBigUInt64LE(320n, 64); value.writeBigUInt64LE(320n, 80); value.writeUInt32LE(1, 96);
+  value.write("__text", 104); value.write("__TEXT", 120);
+  value.writeBigUInt64LE(32n, 144); value.writeUInt32LE(288, 152);
+  value.writeUInt32LE(0x19, 184); value.writeUInt32LE(72, 188); value.write("__LINKEDIT", 192);
+  value.writeBigUInt64LE(256n, 216); value.writeBigUInt64LE(320n, 224); value.writeBigUInt64LE(192n, 232);
+  value.writeUInt32LE(0x1d, 256); value.writeUInt32LE(16, 260);
+  value.writeUInt32LE(384, 264); value.writeUInt32LE(128, 268);
+  value.write("not an executable fixture", 288);
+  value.writeUInt32BE(0xfade0cc0, 384); value.writeUInt32BE(28, 388); value.writeUInt32BE(1, 392);
+  value.writeUInt32BE(20, 400); value.writeUInt32BE(0xfade0c02, 404); value.writeUInt32BE(8, 408);
+  return value;
+}
+const bytes = fixtureBytes(), hash = storeBridgeMachoSha256(bytes);
 const roles = ["auth", "audio", "presentation"] as const;
 type Role = typeof roles[number];
-interface HelperDeclaration { path: string; sha256: string }
+interface HelperDeclaration { path: string; sha256: string; hashAlgorithm?: typeof STORE_BRIDGE_HASH_ALGORITHM }
 type Declarations = Record<Role, HelperDeclaration>;
 const processDescriptors = ["mas", "execPath"].map(key => [key, Object.getOwnPropertyDescriptor(process, key)] as const);
 const versionDescriptors = ["electron", "node"].map(key => [key, Object.getOwnPropertyDescriptor(process.versions, key)] as const);
@@ -28,7 +47,8 @@ function setVersion(key: string, value: string): void {
   Object.defineProperty(process.versions, key, { value, configurable: true });
 }
 function storeDeclarations(): Declarations {
-  return Object.fromEntries(roles.map(role => [role, { path: STORE_BRIDGE_BUNDLE_PATH, sha256: hash }])) as Declarations;
+  return Object.fromEntries(roles.map(role => [role, { path: STORE_BRIDGE_BUNDLE_PATH, sha256: hash,
+    hashAlgorithm: STORE_BRIDGE_HASH_ALGORITHM }])) as Declarations;
 }
 async function profile(declarations = storeDeclarations()): Promise<void> {
   await writeFile(join(root, "provider-profile.json"), JSON.stringify({ schema: 1, enabled: false,
@@ -74,13 +94,14 @@ describe("fixed Store helper selection", () => {
     await writeFile(join(root, "native", "ScribeStorePipeBridge"), "different old resource fixture\n");
     await profile();
     const session = { signal: new AbortController().signal, isReady: () => false, dispose: vi.fn(async () => undefined) };
-    // Only acquisition is substituted: the unchanged production filesystem/hash
+    // Only acquisition is substituted: the production filesystem/content-hash
     // verifier runs, but no helper, XPC service, backend or auth is started.
     native.open.mockImplementation(async (options: { helperPath: string; helperSha256: string }) => {
       await verifyNativeHelper(options); return session;
     });
     const packaged = runtime(), owner = await openStandaloneProvider(packaged);
-    expect(native.open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ helperPath: bridge, helperSha256: hash }));
+    expect(native.open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ helperPath: bridge, helperSha256: hash,
+      helperHashAlgorithm: STORE_BRIDGE_HASH_ALGORITHM }));
     const resolved = await resolveStandaloneNativeHelpers(root, storeDeclarations());
     expect(resolved.map(value => value.helperPath)).toEqual([bridge, bridge, bridge]);
     expect(resolved.map(value => value.helperSha256)).toEqual([hash, hash, hash]);
@@ -103,6 +124,13 @@ describe("fixed Store helper selection", () => {
     const declarations = storeDeclarations(); declarations[role].sha256 = "a".repeat(64);
     await profile(declarations);
     await expect(openStandaloneProvider(runtime())).rejects.toThrow(unavailable);
+    expect(native.open).not.toHaveBeenCalled();
+  });
+
+  it.each(roles)("requires explicit signing-invariant admission for %s", async role => {
+    const declarations = storeDeclarations(); delete declarations[role].hashAlgorithm;
+    await profile(declarations);
+    await expect(openStandaloneProvider(runtime())).rejects.toThrow();
     expect(native.open).not.toHaveBeenCalled();
   });
 
@@ -140,13 +168,27 @@ describe("fixed Store helper selection", () => {
   });
 
   it("retains executable and write-mode rejection in the real helper verifier", async () => {
-    const options = { helperPath: bridge, helperSha256: hash };
+    const options = { helperPath: bridge, helperSha256: hash, helperHashAlgorithm: STORE_BRIDGE_HASH_ALGORITHM };
     await chmod(bridge, 0o644); await expect(verifyNativeHelper(options)).rejects.toThrow();
     await chmod(bridge, 0o777); await expect(verifyNativeHelper(options)).rejects.toThrow();
   });
 });
 
 describe("retained direct helper containment", () => {
+  it("retains whole-file SHA admission and mutation rejection for direct helpers", async () => {
+    setProcess("mas", false);
+    const options = { helperPath: bridge, helperSha256: createHash("sha256").update(bytes).digest("hex") };
+    await expect(verifyNativeHelper(options)).resolves.toBeUndefined();
+    const changed = Buffer.from(bytes); changed[500] = changed[500]! ^ 1; await writeFile(bridge, changed);
+    await expect(verifyNativeHelper(options)).rejects.toThrow();
+  });
+
+  it("cannot select Store content admission from the direct runtime", async () => {
+    setProcess("mas", false);
+    await expect(verifyNativeHelper({ helperPath: bridge, helperSha256: hash,
+      helperHashAlgorithm: STORE_BRIDGE_HASH_ALGORITHM })).rejects.toThrow();
+  });
+
   it("keeps three distinct relative declarations and hashes in the direct factory", async () => {
     setProcess("mas", false);
     const declarations = storeDeclarations(); await mkdir(join(root, "native"));
@@ -163,6 +205,7 @@ describe("retained direct helper containment", () => {
       helperPath: join(root, declarations.auth.path), helperSha256: declarations.auth.sha256 }));
     const resolved = await resolveStandaloneNativeHelpers(root, declarations);
     expect(resolved.map(value => value.helperSha256)).toEqual(roles.map(role => declarations[role].sha256));
+    expect(resolved.every(value => value.helperHashAlgorithm === undefined)).toBe(true);
     await owner.dispose();
   });
 
@@ -170,7 +213,7 @@ describe("retained direct helper containment", () => {
     "../../MacOS/ScribeStorePipeBridge", "native/"])("rejects direct path %s before acquisition", async path => {
     setProcess("mas", false);
     const declarations = storeDeclarations();
-    for (const role of roles) declarations[role].path = path;
+    for (const role of roles) declarations[role] = { path, sha256: hash };
     await expect(resolveStandaloneNativeHelpers(root, declarations)).rejects.toThrow(unavailable);
     expect(native.open).not.toHaveBeenCalled();
   });
@@ -179,7 +222,7 @@ describe("retained direct helper containment", () => {
     setProcess("mas", false); await mkdir(join(root, "native"));
     await symlink(bridge, join(root, "native", "auth"));
     const declarations = storeDeclarations();
-    for (const role of roles) declarations[role].path = "native/auth";
+    for (const role of roles) declarations[role] = { path: "native/auth", sha256: hash };
     await expect(resolveStandaloneNativeHelpers(root, declarations)).rejects.toThrow(unavailable);
     expect(native.open).not.toHaveBeenCalled();
   });

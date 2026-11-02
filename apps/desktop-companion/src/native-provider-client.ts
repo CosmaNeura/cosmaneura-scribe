@@ -70,7 +70,7 @@ export class NativeProviderClient implements NativeProviderSession {
     });
   }
 
-  static async open(options: { helperPath: string; helperSha256: string; diagnostics?: RuntimeDiagnostic }): Promise<NativeProviderClient> {
+  static async open(options: { helperPath: string; helperSha256: string; helperHashAlgorithm?: "macho-store-v1"; diagnostics?: RuntimeDiagnostic }): Promise<NativeProviderClient> {
     requireMain(); await verifyNativeHelper(options);
     const owner = new NativeProviderClient(options.helperPath, options.diagnostics ?? NO_DIAGNOSTICS);
     try {
