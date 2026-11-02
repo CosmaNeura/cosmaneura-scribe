@@ -8,6 +8,7 @@ import { loadPackagedProvider, PROVIDER_ENTRY, type PackagedProvider } from "./p
 import { runtimeDiagnostics, type RuntimeDiagnostic } from "./runtime-diagnostics.js";
 import { installApplicationClose, type ApplicationCloseMainPort } from "./application-close-ipc.js";
 import { MacAppStoreSingletonTemp } from "./mac-app-store-xpc.js";
+import { PUBLIC_MAC_NAME } from "./public-app-release.js";
 
 interface Event { preventDefault(): void }
 type Renderer = ConstructorParameters<typeof DesktopProviderWorkspaceIpc>[1] & ElectronWebContentsSecurityPort & {
@@ -167,7 +168,7 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
     await opening;
     if (closing || ended) throw unavailable();
     const secure = createSecureBrowserWindowOptions(join(root, "preload.cjs"));
-    appWindow = new runtime.BrowserWindow({ ...secure, title: applicationName, width: 780, height: 760, minWidth: 520, minHeight: 520,
+    appWindow = new runtime.BrowserWindow({ ...secure, title: PUBLIC_MAC_NAME, width: 780, height: 760, minWidth: 520, minHeight: 520,
       webPreferences: { ...secure.webPreferences, session } });
     installElectronRendererSecurity(appWindow.webContents, PROVIDER_ENTRY);
     removeApplicationClose = installApplicationClose(runtime.ipcMain, appWindow.webContents, requestClose);
