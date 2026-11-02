@@ -1,0 +1,13 @@
+.scribe-account-self-delete { box-sizing:border-box; position:fixed; inset:0; width:100%; height:100dvh; max-width:none; max-height:none; margin:0; border:0; padding:calc(24px + env(safe-area-inset-top)) max(24px,calc((100vw - 620px)/2)) calc(24px + env(safe-area-inset-bottom)); color:var(--scribe-ink); background:#fff; font:18px/1.5 system-ui,sans-serif; overflow:auto; overscroll-behavior:contain; }
+.scribe-account-self-delete::backdrop { background:rgb(18 55 45 / 60%); }
+.scribe-account-self-delete h1 { font-size:1.8rem; line-height:1.2; color:var(--scribe-heading); }
+.scribe-account-self-delete input { box-sizing:border-box; display:block; width:100%; min-height:48px; margin-top:8px; padding:10px; border:2px solid var(--scribe-border); border-radius:8px; color:var(--scribe-ink); background:white; font:inherit; }
+.scribe-self-delete-actions { display:flex; flex-wrap:wrap; gap:12px; padding-bottom:24px; }
+.scribe-account-self-delete button { min-height:48px; padding:12px 18px; border:1px solid var(--scribe-border); border-radius:8px; color:var(--scribe-ink); background:white; font:inherit; cursor:pointer; }
+.scribe-account-self-delete button[data-submit] { color:white; background:var(--scribe-red); border-color:var(--scribe-red); }
+.scribe-account-self-delete button:disabled { opacity:.5; cursor:default; }
+.scribe-account-self-delete :focus-visible { outline:3px solid var(--scribe-green); outline-offset:3px; }
+.scribe-account-self-delete [data-status] { min-height:1.5em; color:var(--scribe-muted); }
+.scribe-account-self-delete [data-status][data-kind=error] { color:var(--scribe-red); }
+.scribe-account-self-delete [hidden] { display:none; }
+.provider-session-header .provider-account-panel button[data-session-action=delete-account] { color:var(--scribe-red); background:#fff5f5; border-color:#f0c4c6; }

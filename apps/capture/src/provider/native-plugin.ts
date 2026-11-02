@@ -16,6 +16,17 @@ export interface NativeProviderSession {
   getState(): Promise<ProviderSessionState>;
   signIn(): Promise<ProviderSessionState>;
   signOut(): Promise<ProviderSessionState>;
+  /**
+   * Cosmas self-delete (T-REL-8a / PR #940): DELETE <coreOrigin>/v1/me/account
+   * with Authorization Bearer <Clerk JWT> and body { confirm: "DELETE" }.
+   * Native owns the token; JavaScript never receives it.
+   */
+  deleteAccount?(request: { confirm: "DELETE" }): Promise<{
+    readonly unauthorized?: true;
+    readonly status?: "deleted" | "already_deleted";
+    readonly practiceLeftOwnerless?: boolean;
+    readonly clerkIdentityRemoved?: boolean;
+  }>;
   addListener(event: "authStateChanged", listener: (state: ProviderSessionState) => void): Promise<PluginListenerHandle>;
 }
 export interface NativeProviderState {

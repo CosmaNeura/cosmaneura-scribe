@@ -36,8 +36,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         CAPPluginMethod(name: "stopProviderPassage", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getProviderConfiguration", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openProviderCore", returnType: CAPPluginReturnPromise),
-
-
+        CAPPluginMethod(name: "deleteAccount", returnType: CAPPluginReturnPromise),
     ]
 
     private var auth: NativeWorkspaceAuth?
@@ -524,6 +523,64 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             #else
             Self.rejectProvider(call)
             #endif
+        }
+    }
+
+    /// Cosmas self-delete (T-REL-8a / PR #940 head de09c12):
+    /// DELETE <coreOrigin>/v1/me/account with Bearer Clerk JWT and {"confirm":"DELETE"}.
+    /// Token never leaves native code.
+    @objc nonisolated public func deleteAccount(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            guard Set(call.options.keys) == ["confirm"],
+                  call.getString("confirm") == "DELETE" else { return Self.reject(call) }
+            self.initializeAuth()
+            guard let auth = self.auth, auth.state().phase == .ready else { return Self.reject(call) }
+            let revision = auth.state().revision
+            guard let configuration = Self.providerApplicationConfiguration(),
+                  let origin = configuration["coreOrigin"] as? String,
+                  let url = URL(string: origin + "/v1/me/account"),
+                  origin == "https://staging-app.cosmaneura.com"
+                    || origin == "https://app.cosmaneura.com"
+                    || origin.hasPrefix("http://127.0.0.1:")
+                    || origin.hasPrefix("http://localhost:")
+            else { return Self.reject(call) }
+            do {
+                let token = try await auth.token(expectedRevision: revision)
+                guard auth.state().phase == .ready, auth.state().revision == revision else { return Self.reject(call) }
+                var request = URLRequest(url: url)
+                request.httpMethod = "DELETE"
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+                request.httpBody = Data(#"{"confirm":"DELETE"}"#.utf8)
+                request.timeoutInterval = 30
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    call.reject("Account deletion unavailable", "account_self_delete_failed")
+                    return
+                }
+                if http.statusCode == 401 {
+                    call.resolve(["unauthorized": true])
+                    return
+                }
+                guard http.statusCode == 200,
+                      let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      Set(object.keys) == ["status", "practice_left_ownerless", "clerk_identity_removed"],
+                      let status = object["status"] as? String,
+                      status == "deleted" || status == "already_deleted",
+                      let practiceLeftOwnerless = object["practice_left_ownerless"] as? Bool,
+                      let clerkIdentityRemoved = object["clerk_identity_removed"] as? Bool
+                else {
+                    call.reject("Account deletion unavailable", "account_self_delete_failed")
+                    return
+                }
+                call.resolve([
+                    "status": status,
+                    "practiceLeftOwnerless": practiceLeftOwnerless,
+                    "clerkIdentityRemoved": clerkIdentityRemoved,
+                ])
+            } catch {
+                call.reject("Account deletion unavailable", "account_self_delete_failed")
+            }
         }
     }
 
