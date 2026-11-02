@@ -420,6 +420,41 @@ async def test_bootstrap_maps_all_dedicated_entra_principals_and_rejects_unsafe_
     assert provider.closed is True
 
 
+class _AzurePrincipalCatalogConnection(_Connection):
+    """Model Azure's documented rolename column, rather than accepting any SQL."""
+
+    async def scalar(self, statement: object, parameters: dict[str, object]) -> object | None:
+        sql = str(statement)
+        if "pgaadauth_list_principals(false)" in sql:
+            if "WHERE principal.rolename = :role_name" not in sql:
+                raise RuntimeError("Azure principal catalog has rolename, not rolname")
+        return await super().scalar(statement, parameters)
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_uses_documented_azure_principal_role_name_column(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _AzurePrincipalCatalogConnection(scalar_results=[None, False, False] * 4)
+    provider = _Provider(connection)
+    monkeypatch.setattr(database_bootstrap, "build_postgres_provider", lambda _: provider)
+
+    await database_bootstrap._ensure_database_principals(_settings())
+
+    creates = [
+        parameters
+        for statement, parameters in connection.executed
+        if "pgaadauth_create_principal_with_oid" in statement
+    ]
+    assert [item["role_name"] for item in creates if item is not None] == [
+        "scribe-runtime",
+        "scribe-transcription",
+        "scribe-delivery-reconciler",
+        "scribe-translation",
+    ]
+    assert provider.closed is True
+
+
 @pytest.mark.asyncio
 async def test_bootstrap_removes_only_new_role_creator_grants(
     monkeypatch: pytest.MonkeyPatch,

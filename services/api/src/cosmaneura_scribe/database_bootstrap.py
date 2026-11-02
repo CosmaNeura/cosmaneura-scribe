@@ -56,7 +56,7 @@ async def _ensure_database_principals(settings: Settings) -> None:
                             to_jsonb(principal) ->> 'objectid'
                         )
                         FROM pg_catalog.pgaadauth_list_principals(false) AS principal
-                        WHERE principal.rolname = :role_name
+                        WHERE principal.rolename = :role_name
                         """
                     ),
                     {"role_name": principal.role_name},
