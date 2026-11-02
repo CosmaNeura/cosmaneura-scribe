@@ -20,6 +20,13 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
   return mountProviderApplication(root, {
     session: native,
     cancellation: nativeScribeCancellation(native),
+    openDashboard: async signal => {
+      const before = await native.getState();
+      if (signal.aborted || before.phase !== "ready") throw new Error("provider_session_unavailable");
+      await native.openProviderCore({ appointmentRef: null });
+      const after = await native.getState();
+      if (signal.aborted || after.phase !== "ready" || after.revision !== before.revision) throw new Error("provider_session_unavailable");
+    },
     supportsRecorderStopReauthentication: true,
     recordingOpen: listener => subscribeIOSRecordingOpen(native, listener),
     connect: async signal => {

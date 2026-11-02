@@ -53,6 +53,13 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
   return { dispose, host: {
     session: native,
     cancellation: desktopScribeCancellation(native, runtime.userDataDirectory, runtime.protection, profile.workspaceId, abort.signal),
+    openDashboard: async signal => {
+      const before = await native.getState();
+      if (profile.enabled !== true || abort.signal.aborted || signal.aborted || before.phase !== "ready") throw unavailable();
+      await runtime.openExternal(profile.coreOrigin + "/notes");
+      const after = await native.getState();
+      if (abort.signal.aborted || signal.aborted || after.phase !== "ready" || after.revision !== before.revision) throw unavailable();
+    },
     connect: signal => {
       diagnostics("connect_begin");
       const run = (async () => {

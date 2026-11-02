@@ -7,7 +7,14 @@ no Scribe schema and performs no destruction or shared-login deletion.
 The Account menu opens a cancellation review, stops the owned recording before
 submission, and requires `CANCEL`. The native signed-in account owns encrypted
 CAS retry metadata. An uncertain response retains its original preview and key.
-The server's authenticated own-status read recovers after a reinstall. A changed
+The server's authenticated own-status read recovers after a reinstall. Every
+workspace open first checks own cancellation status with a five-second deadline;
+a receipt or an uncertain retained request keeps recording controls closed.
+Status failure offers Retry access check and never implies permission to record.
+This is an access-check deadline, not recording-startup qualification. The
+account-level fixed native dashboard opener remains available for read/export
+while the receipt's export period is active, independent of a mounted visit.
+A changed
 account or session revision cannot submit or publish an old request.
 
 The production Core-context receiver verifies the Clerk session and calls only
@@ -17,7 +24,8 @@ The legacy registry receiver denies it. Responses must confirm the Core fence;
 the UI never describes intake alone as read-only enforcement.
 
 Roll out receiver-first: review and merge the Core request/fence and its additive
-ledger migration; qualify its source and apply only under separate owner
+ledger migration and permanent ledger-ready status availability; qualify its
+source and apply only under separate owner
 authorization. Include this receiver source in the next reviewed Core/Scribe
 image. Then rebuild both clients from this merged source and verify request,
 status, recording refusal and retained own-record reads under synthetic accounts.

@@ -15,6 +15,8 @@ export interface CancellationReceipt extends Omit<CancellationPreview, "action" 
   access_fence_confirmed: true; erasure_confirmed: false; phase: "read-only-export" | "read-only-expired";
 }
 export interface ScribeCancellation {
+  /** Own receipt only; never creates a preview or retries a request. */
+  status(signal: AbortSignal): Promise<CancellationReceipt | null>;
   load(signal: AbortSignal): Promise<CancellationPreview | CancellationReceipt>;
   submit(preview: CancellationPreview, signal: AbortSignal): Promise<CancellationReceipt>;
 }
@@ -82,7 +84,7 @@ export function createScribeCancellation(options: {
         if (!record(error) || error.code !== "SECURE_QUEUE_NOT_FOUND") throw error;
       }
       return await operation(state, account, opened.records, saved, revision, check);
-    } finally { await opened?.close(); running = false; }
+    } finally { try { await opened?.close(); } finally { running = false; } }
   };
   const save = async (records: CreationRecords, saved: Saved, revision: string | null): Promise<void> => {
     const key = "scribe-cancellation-v1:" + saved.account;
@@ -97,6 +99,18 @@ export function createScribeCancellation(options: {
     return parseCancellation(await response.json(), nonce);
   };
   return {
+    status: signal => run(signal, async (state, _account, records, saved, revision, check) => {
+      const status = await request({ action: "status", ...(saved.receipt ? { operation_id: saved.receipt.operation_id } : {}) }, crypto.randomUUID(), state, signal);
+      await check();
+      if (status) {
+        if (status.action === "preview") throw fail();
+        await save(records, { ...saved, pending: null, receipt: status }, revision); await check(); return status;
+      }
+      // An accepted receipt or confirmed-but-uncertain intent never becomes
+      // permission to record because status is missing. No resubmission here.
+      if (saved.receipt || saved.pending) throw fail();
+      return null;
+    }),
     load: signal => run(signal, async (state, _account, records, saved, revision, check) => {
       const status = await request({ action: "status", ...(saved.receipt ? { operation_id: saved.receipt.operation_id } : {}) }, crypto.randomUUID(), state, signal);
       await check();

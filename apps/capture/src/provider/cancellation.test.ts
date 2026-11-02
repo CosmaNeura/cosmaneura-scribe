@@ -74,6 +74,32 @@ describe("Scribe-only cancellation", () => {
       send: async body => { if (body.action === "request") submitted = true; return new Response("{}", { status: 404 }); } });
     await expect(client.submit(preview, new AbortController().signal)).rejects.toThrow(); expect(submitted).toBe(false);
   });
+  it("status alone recovers own receipt after restart without preview or request", async () => {
+    const seen: string[] = []; const durable = records();
+    const client = createScribeCancellation({ state: async () => ({ phase: "ready", revision, accountIdentitySHA256: account }),
+      records: async () => ({ records: durable, close: async () => undefined }),
+      send: async body => { seen.push(String(body.action)); return Response.json(receipt("status", String(body.request_nonce))); } });
+    expect((await client.status(new AbortController().signal))?.action).toBe("status"); expect(seen).toEqual(["status"]);
+  });
+  it("status cannot clear an uncertain confirmed request or submit it implicitly", async () => {
+    const durable = records(), seen: string[] = [];
+    const options: Parameters<typeof createScribeCancellation>[0] = {
+      state: async () => ({ phase: "ready", revision, accountIdentitySHA256: account }),
+      records: async () => ({ records: durable, close: async () => undefined }),
+      send: async body => { seen.push(String(body.action)); if (body.action === "request") throw new Error("lost reply"); return new Response("{}", { status: 404 }); },
+    };
+    await expect(createScribeCancellation(options).submit(preview, new AbortController().signal)).rejects.toThrow();
+    seen.length = 0;
+    await expect(createScribeCancellation(options).status(new AbortController().signal)).rejects.toThrow(); expect(seen).toEqual(["status"]);
+  });
+  it("permits access-check retry after a custody cleanup failure while preserving the failure", async () => {
+    let failClose = true;
+    const client = createScribeCancellation({ state: async () => ({ phase: "ready", revision, accountIdentitySHA256: account }),
+      records: async () => ({ records: records(), close: async () => { if (failClose) { failClose = false; throw new Error("cleanup failed"); } } }),
+      send: async () => new Response("{}", { status: 404 }) });
+    await expect(client.status(new AbortController().signal)).rejects.toThrow("cleanup failed");
+    await expect(client.status(new AbortController().signal)).resolves.toBeNull();
+  });
   it("fences a switched account before request submission", async () => {
     let reads = 0, submitted = false;
     const client = createScribeCancellation({ state: async () => ({ phase: "ready", revision,

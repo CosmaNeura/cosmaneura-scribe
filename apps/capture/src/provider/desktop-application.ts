@@ -98,7 +98,13 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
     return before === observations ? emitState(value) : state!;
   };
   const host: ProviderApplicationHost = {
+    openDashboard: async signal => { await request("open_dashboard", {}, null, null, signal); },
     cancellation: {
+      status: async signal => {
+        const value = await request("cancellation", { action: "status" }, null, null, signal);
+        if (value === null) return null;
+        const result = parseCancellation(value); if (result.action === "preview") throw unavailable(); return result;
+      },
       load: async signal => parseCancellation(await request("cancellation", { action: "load" }, null, null, signal)),
       submit: async (preview, signal) => {
         const result = parseCancellation(await request("cancellation", { action: "submit", preview }, null, null, signal));
