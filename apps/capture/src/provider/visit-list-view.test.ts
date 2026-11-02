@@ -21,7 +21,12 @@ describe("day-centered patient list", () => {
     expect(ready.match(/<button/g)).toHaveLength(1);
     expect(ready).toContain('data-workspace-action="open-draft"');
     expect(ready).toContain("&lt;script&gt;");
-    expect(visitRow(encounter, "processing")).not.toContain("<button");
+    const processing = visitRow(encounter, "processing");
+    expect(processing.match(/<button/g)).toHaveLength(1);
+    expect(processing).toContain('data-workspace-action="open"');
+    expect(processing).toContain("Open visit");
+    expect(processing).toContain("Preparing your visit…");
+    expect(visitRow(encounter, "recording_saved")).toContain("View transcript");
     expect(visitRow(encounter, "paused")).toContain("Resume");
   });
   it("displays the explicitly matched chart name without changing capture patient identity", () => {

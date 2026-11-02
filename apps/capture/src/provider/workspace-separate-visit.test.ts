@@ -9,7 +9,7 @@ import { mountPatientMatch } from "./patient-match-view";
 import type { PatientIdentity } from "./visit-features";
 
 vi.mock("../capture-app", () => ({}));
-vi.mock("../../../review-ui/src/creator-review-panel", () => ({ mountCreatorReview: vi.fn() }));
+vi.mock("../../../review-ui/src/creator-review-panel", () => ({ mountCreatorReview: vi.fn(() => vi.fn()) }));
 vi.mock("./patient-match-view", () => ({ mountPatientMatch: vi.fn(() => vi.fn()) }));
 // This fixture exercises the real workspace, not the unrelated microphone chooser DOM.
 vi.mock("./preparation-controls", () => ({ bindPreparationControls: () => ({
@@ -26,7 +26,7 @@ const pending: EncounterDraft = { creationKey: id(9), patient: { kind: "existing
 const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); vi.unstubAllGlobals(); });
 
-function fixture(options: { status?: "created" | "capturing"; patientRef?: string | null; setup?: boolean;
+function fixture(options: { status?: "created" | "capturing" | "processing" | "uploaded"; saved?: boolean; patientRef?: string | null; setup?: boolean;
   state?: () => Promise<EncounterSetupState>; inaccessibleJournal?: boolean; identity?: PatientIdentity;
   operationFailure?: "unavailable" | "conflict" | "generic";
   prefetchedFailure?: "unavailable" | "conflict" } = {}) {
@@ -45,9 +45,9 @@ function fixture(options: { status?: "created" | "capturing"; patientRef?: strin
     throw Error("No capture or note request expected");
   });
   const recorder = vi.fn(async () => { throw Error("No recorder expected"); });
-  const journal = { load: vi.fn(async () => {
+  const journal = { load: vi.fn(async (): Promise<JournalSnapshot> => {
     if (options.inaccessibleJournal) throw new CaptureDeviceCustodyError();
-    return empty();
+    return options.saved ? { revision: "1", progress: { admission: null, sessionId: id(2), uploaded: true, pendingSave: null } } : empty();
   }), save: vi.fn() };
   const newJournal = { load: vi.fn(async () => empty()), save: vi.fn() };
   const view = parseCreatorReview({ schema_version: "1.0", session_id: id(2), status: options.status ?? "created",
@@ -77,7 +77,8 @@ function fixture(options: { status?: "created" | "capturing"; patientRef?: strin
   const content = root.querySelector("[data-workspace-content]")!;
   const click = async (action: string, retained?: Surface): Promise<void> => {
     await vi.waitFor(() => expect(root.attributes.has("aria-busy")).toBe(false));
-    const button = retained ?? content.querySelector(`[data-workspace-action="${action}"]`) ?? new Surface();
+    const button = retained ?? content.querySelector(`[data-workspace-action="${action}"]`)
+      ?? root.querySelector(`[data-workspace-action="${action}"]`) ?? new Surface();
     button.dataset.workspaceAction = action; button.dataset.appointment = oldRef;
     const event = new Event("click"); Object.defineProperty(event, "target", { value: button }); root.dispatchEvent(event);
     await vi.waitFor(() => expect(root.attributes.has("aria-busy")).toBe(false));
@@ -218,4 +219,34 @@ it("does not replace an older pending creation with a different matched canonica
   expect(f.setup.submit).not.toHaveBeenCalled();
   expect(f.content.innerHTML).toContain("previous creation request is saved securely");
   expect(pending.patient).toEqual({ kind: "existing", patientRef });
+});
+
+it.each(["processing", "uploaded"] as const)("offers an explicit separate visit from normal %s review, preserving the old recording", async status => {
+  const f = fixture({ status, saved: true }); await f.click("open");
+  const newVisit = f.root.querySelector('[data-workspace-action="new-visit"]')!;
+  expect(newVisit.hidden).toBe(false); expect(newVisit.disabled).toBe(false);
+  expect(f.recorder).not.toHaveBeenCalled(); expect(f.journal.save).not.toHaveBeenCalled();
+  await f.click("new-visit", newVisit);
+  expect(f.content.innerHTML).toContain("without changing the earlier recording, transcript or note");
+  expect(f.content.innerHTML).toContain("Back to visit");
+  expect(f.setup.submit).not.toHaveBeenCalled();
+  await f.click("new-visit-same-patient");
+  expect(f.setup.submit).toHaveBeenCalledOnce();
+  expect(f.setup.submit.mock.calls[0]![0]?.patient).toEqual({ kind: "existing", patientRef });
+  expect(f.host.openEncounter).toHaveBeenLastCalledWith(newRef, expect.any(AbortSignal));
+  expect(f.content.innerHTML).toContain('name="consent"');
+  expect(f.recorder).not.toHaveBeenCalled(); expect(f.journal.save).not.toHaveBeenCalled();
+  expect(f.newJournal.save).not.toHaveBeenCalled();
+});
+
+it("keeps provisional confirmation in the normal separate-visit path", async () => {
+  const f = fixture({ status: "processing", saved: true, identity: provisional });
+  await f.click("open"); await f.click("new-visit");
+  expect(f.content.innerHTML).toContain('data-workspace-action="confirm-patient-for-new-visit"');
+  expect(f.content.innerHTML).not.toContain('data-workspace-action="new-visit-same-patient"');
+  await f.click("confirm-patient-for-new-visit");
+  vi.mocked(mountPatientMatch).mock.calls.at(-1)![1].updated({ ...provisional, state: "confirmed", version: 1 });
+  await vi.waitFor(() => expect(f.content.innerHTML).toContain('data-workspace-action="new-visit-same-patient"'));
+  expect(f.content.innerHTML).toContain("without changing the earlier recording, transcript or note");
+  expect(f.setup.submit).not.toHaveBeenCalled(); expect(f.recorder).not.toHaveBeenCalled();
 });

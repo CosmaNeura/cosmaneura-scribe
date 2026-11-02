@@ -75,6 +75,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let leaveAfterRecordingPreparation = false;
   let openingRef: string | null = null;
   let separateVisitPatientRef: string | null = null;
+  let separateVisitChoice = false;
   let cancelOpening: (() => void) | null = null;
   type NavigationDestination = "encounters" | "review" | (() => void | Promise<void>);
   let pendingNavigation: NavigationDestination | null = null;
@@ -107,7 +108,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let preferredModality: "in_person" | "virtual" | "phone" = "in_person";
   let savedPreferences: Awaited<ReturnType<typeof providerPreferences>> | null = null;
   root.classList.add("provider-workspace");
-  root.innerHTML = `<p class="provider-account" data-provider-account hidden></p><header class="provider-header" hidden><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter></p><p class="provider-patient-detail" data-provider-patient-detail></p></div><nav class="provider-visit-navigation" aria-label="Visit navigation"><button data-workspace-action="encounters" aria-label="Back to encounters">Back</button><button data-workspace-action="refresh-visit" aria-label="Refresh current visit">Refresh</button></nav></header>
+  root.innerHTML = `<p class="provider-account" data-provider-account hidden></p><header class="provider-header" hidden><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter></p><p class="provider-patient-detail" data-provider-patient-detail></p></div><nav class="provider-visit-navigation" aria-label="Visit navigation"><button data-workspace-action="encounters" aria-label="Back to encounters">Back</button><button data-workspace-action="refresh-visit" aria-label="Refresh current visit">Refresh</button><button data-workspace-action="new-visit" aria-label="Start a separate visit for this patient" hidden>New visit</button></nav></header>
     <p data-workspace-notice role="status"></p><p data-workspace-progress hidden></p><div data-workspace-navigation aria-live="polite"></div><div data-workspace-content></div>`;
   const content = root.querySelector<HTMLElement>("[data-workspace-content]")!;
   const notice = root.querySelector<HTMLElement>("[data-workspace-notice]")!;
@@ -122,6 +123,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (!button) return;
     button.disabled = busy || recorderBlocksRefresh || !context;
     button.title = recorderBlocksRefresh ? "Finish recording before refreshing this visit" : "Refresh this visit without starting a recording";
+    const newVisit = root.querySelector<HTMLButtonElement>('[data-workspace-action="new-visit"]');
+    if (newVisit) { newVisit.hidden = !canStartSeparateVisit(); newVisit.disabled = busy || recorderBlocksRefresh; }
   };
   const headerObserver = new ResizeObserver(() => root.style.setProperty("--provider-header-height", `${header.getBoundingClientRect().height}px`));
   headerObserver.observe(header);
@@ -131,6 +134,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     pendingNavigation = null; closePatientMatch?.(); closePatientMatch = null; navigation.querySelector<HTMLDialogElement>("dialog")?.close(); navigation.replaceChildren();
   };
   const show = (markup: string): void => { stopSaveCheck?.(); stopSaveCheck = null; clearNavigation(); consentAction = null; disposeContent?.(); disposeContent = null; content.innerHTML = markup; };
+  const canStartSeparateVisit = (): boolean => !!(context && host.encounterSetup
+    && context.encounter.patientRef && reference(context.encounter.patientRef, "patient")
+    && journal.progress?.sessionId && journal.progress.uploaded && !recorderBlocksRefresh);
   const separatePatient = (): string | null => {
     if (!separateVisitPatientRef || context?.encounter.patientRef !== separateVisitPatientRef) return null;
     const identity = identityOverride ?? context.encounter.identity;
@@ -140,11 +146,14 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const setup = host.encounterSetup;
     const eligible = separateVisitPatientRef !== null && context?.encounter.patientRef === separateVisitPatientRef && setup;
     const canConfirm = eligible && !separatePatient() && setup.patientMatchJournal && setup.patientCandidates && setup.matchPatient;
-    show(`<h1>${serverDisposition ? "Start a separate visit" : "Recording access needed on this device"}</h1><p>${serverDisposition
+    show(`<h1>${separateVisitChoice || serverDisposition ? "Start a separate visit" : "Recording access needed on this device"}</h1><p>${separateVisitChoice
+      ? "Start another visit for this patient without changing the earlier recording, transcript or note."
+      : serverDisposition
       ? "This existing visit cannot be continued for recording on this device. Its saved work remains unchanged."
       : "If this recording was prepared on another device, continue on that device. Moving an unfinished recording between devices is not supported. If this is the original device, contact support before retrying. Do not remove Scribe or reset its data."}</p>
       ${eligible ? '<p>You can start a separate visit here for the same patient. The earlier visit and its saved work will stay unchanged. A new recording starts only after you confirm consent.</p>' : ''}
       ${eligible && separatePatient() ? '<button data-workspace-action="new-visit-same-patient">Start a new visit for this patient</button>' : canConfirm ? '<p>Confirm this patient’s identity before starting another visit.</p><button data-workspace-action="confirm-patient-for-new-visit">Confirm patient details</button>' : ''}
+      ${separateVisitChoice ? '<button data-workspace-action="review">Back to visit</button>' : ""}
       <button data-workspace-action="encounters">Your encounters</button>`);
   };
   const persist = (next: ProviderProgress | ((previous: ProviderProgress) => ProviderProgress)): Promise<void> => {
@@ -173,7 +182,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
 
   const clearEncounter = async (): Promise<void> => {
     generation += 1;
-    separateVisitPatientRef = null;
+    separateVisitPatientRef = null; separateVisitChoice = false;
     queuedRecordReadyTiming?.cancel(); queuedRecordReadyTiming = undefined;
     preparationSignIn?.close(); preparationSignIn = null;
     const controls = preparationControls;
@@ -1554,6 +1563,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     }
     if (button.dataset.workspaceAction === "cancel-recording-action") { cancelRecordingAction(); return; }
     if (button.dataset.workspaceAction === "refresh-visit" && (button.disabled || recorderBlocksRefresh || !context)) return;
+    if (button.dataset.workspaceAction === "new-visit" && (button.disabled || button.hidden
+      || button !== root.querySelector('[data-workspace-action="new-visit"]') || !canStartSeparateVisit())) return;
     if (["encounters", "refresh-visit", "review", "core", "create", "new-encounter", "open", "open-draft"].includes(button.dataset.workspaceAction ?? "")) {
       if (cancelRecordingAction() && busy && button.dataset.workspaceAction === "encounters") {
         leaveAfterRecordingPreparation = true;
@@ -1591,6 +1602,17 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         }
         case "create": await host.createEncounter(host.signal); await list(); break;
         case "new-encounter": await setup(); break;
+        case "new-visit": {
+          if (button.hidden || button !== root.querySelector('[data-workspace-action="new-visit"]') || !canStartSeparateVisit()) return;
+          const activeContext = context, activeClient = client;
+          await guardNavigation(() => {
+            requireValue(context === activeContext && client === activeClient && canStartSeparateVisit());
+            separateVisitPatientRef = activeContext!.encounter.patientRef!;
+            separateVisitChoice = true;
+            showSeparateVisitRecovery();
+          });
+          break;
+        }
         case "new-visit-same-patient": {
           if (button.disabled || button !== content.querySelector('[data-workspace-action="new-visit-same-patient"]')) return;
           const patientRef = separatePatient();
