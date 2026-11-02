@@ -90,6 +90,7 @@ _LIMITS = {
     "mount": 256,
     "recorder": 1024,
     "note-opening": 1024,
+    "cancellation": 2048,
     "source-start": 4096,
     "source-start-ready": 8192,
     "capture-admissions": 2048,
@@ -322,6 +323,11 @@ class ProviderReceiver:
                     raise AuthenticationFailed()
                 revision = _uuid(request.headers.get("x-scribe-native-revision"))
                 body = await _read(request, _LIMITS[action], private_note=action == "encounters")
+                if action == "cancellation":
+                    result = await self.cancellation(
+                        authorization, body, request.headers.get("idempotency-key", "")
+                    )
+                    return _reply(200, result)
                 if action == "encounters":
                     _require(self.encounter_creation_enabled)
                     key = request.headers.get("idempotency-key", "")
@@ -696,6 +702,11 @@ class ProviderReceiver:
                 return _reply(422, {"detail": "provider_request_invalid"})
 
         return app
+
+    async def cancellation(self, authorization, body, key):
+        # Only the explicit Core-context composition supplies this account path.
+        # A legacy registry/account lookup cannot substitute for Core authority.
+        raise AccessDenied()
 
     def encounter_account(self, authorization, *, bind):
         with Session(bind) as session:

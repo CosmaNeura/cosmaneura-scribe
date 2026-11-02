@@ -5,6 +5,7 @@ import { connectNativeProviderIOSBackend, type NativeProviderOptions } from "./n
 import { nativeProviderPlugin as native } from "./native-plugin";
 import { subscribeIOSRecordingOpen } from "./recording-open";
 import type { ConsentPreparationRelease } from "./consent-preparation";
+import { nativeScribeCancellation } from "./native-cancellation";
 
 /** Standalone iOS startup after the host's upload/Core configuration is supplied.
  * Reuses the registered native sign-in/out UI and existing complete provider
@@ -18,6 +19,7 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
   }
   return mountProviderApplication(root, {
     session: native,
+    cancellation: nativeScribeCancellation(native),
     supportsRecorderStopReauthentication: true,
     recordingOpen: listener => subscribeIOSRecordingOpen(native, listener),
     connect: async signal => {

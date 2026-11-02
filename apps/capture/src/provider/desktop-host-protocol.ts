@@ -4,7 +4,7 @@ import { MAX_PROVIDER_RESPONSE_BYTES } from "../../../review-ui/src/capture-resp
 import type { ProviderSessionState } from "./native-plugin";
 
 export const DESKTOP_PROVIDER_CHANNELS = Object.freeze({ request: "scribe:provider:workspace:v1", event: "scribe:provider:workspace-event:v1" });
-export type DesktopProviderMethod = "session_read" | "sign_in" | "sign_out" | "connect" | "disconnect" | "cancel"
+export type DesktopProviderMethod = "session_read" | "sign_in" | "sign_out" | "connect" | "disconnect" | "cancel" | "cancellation"
   | "signin_preparation" | "record_ready_timing" | "list" | "create" | "encounter_setup" | "add_birth_date" | "visit_features" | "preflight" | "open" | "core" | "journal_load" | "journal_save" | "edit_load" | "edit_save" | "edit_clear" | "review_load" | "review_save" | "review_clear" | "recorder" | "open_core" | "play_passage";
 export interface DesktopProviderRequest {
   readonly requestId: string;
@@ -22,7 +22,7 @@ export interface DesktopProviderPort {
   request(value: DesktopProviderRequest): Promise<unknown>;
   subscribe(listener: (event: unknown) => void): () => void;
 }
-const methods: readonly string[] = ["session_read", "sign_in", "sign_out", "connect", "disconnect", "cancel", "signin_preparation", "list", "create", "encounter_setup", "add_birth_date", "visit_features", "preflight", "open", "core",
+const methods: readonly string[] = ["session_read", "sign_in", "sign_out", "connect", "disconnect", "cancel", "cancellation", "signin_preparation", "list", "create", "encounter_setup", "add_birth_date", "visit_features", "preflight", "open", "core",
   "journal_load", "journal_save", "edit_load", "edit_save", "edit_clear", "review_load", "review_save", "review_clear", "recorder", "open_core", "play_passage", "record_ready_timing"];
 
 export function parseDesktopProviderRequest(value: unknown): DesktopProviderRequest {

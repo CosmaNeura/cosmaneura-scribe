@@ -4,10 +4,14 @@ import { mountProviderWorkspace, type ProviderWorkspaceHost } from "./workspace"
 import type { NativeProviderSession, ProviderSessionPhase, ProviderSessionState } from "./native-plugin";
 import scribeIcon from "../../public/icon.svg?raw";
 import "./application.css";
+import { openCancellationDialog } from "./cancellation-dialog";
+import type { ScribeCancellation } from "./cancellation";
 
 export type { ProviderSessionState } from "./native-plugin";
 export interface ProviderApplicationHost {
   readonly session: NativeProviderSession;
+  /** Account-level authenticated request/status; independent of visit mounts. */
+  readonly cancellation?: ScribeCancellation;
   /** Trusted host supports volatile, same-account native cessation recovery. */
   readonly supportsRecorderStopReauthentication?: true;
   /** Main may own a preparation before the renderer obtains its recorder. */
@@ -39,6 +43,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   let disposed = false, busy = false, stopUnconfirmed = false, accessClosed = false, logoutPending = false;
   let operations = 0, signingOut = false;
   let recorderStopUnconfirmed = false;
+  let cancelDialog: (() => void) | undefined;
   let notice = "", polling: Promise<void> | undefined, disposal: Promise<void> | undefined;
   root.classList.add("provider-application");
   root.innerHTML = `<header class="provider-session-header"><div class="provider-brand"><span class="provider-brand-icon" aria-hidden="true">${scribeIcon}</span><strong>Scribe</strong></div><div data-session-actions></div></header>
@@ -77,7 +82,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     };
     [title.textContent, message.textContent] = shown[phase];
     if (notice) message.textContent = notice;
-    actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><div class="provider-account-panel" role="group" aria-label="Account options">${button("sign-out", "Sign out")}<p data-provider-name></p><a href="mailto:dev@cosmaneura.com">Get help</a></div></details>`
+    actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><div class="provider-account-panel" role="group" aria-label="Account options">${button("sign-out", "Sign out")}<p data-provider-name></p>${host.cancellation ? button("cancel-scribe", "Cancel Scribe access") : ""}<a href="mailto:dev@cosmaneura.com">Get help</a></div></details>`
       : phase === "signingIn" ? button("sign-out", "Sign out") : "";
     const providerName = actions.querySelector<HTMLElement>("[data-provider-name]"); if (providerName) providerName.textContent = state?.providerDisplayName ?? "Your account";
     recovery.innerHTML = "";
@@ -140,6 +145,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     // Native polling still observes revocation, but an identical observation
     // must not replace focused controls or retry a previously failed close.
     if (!changed) return;
+    cancelDialog?.(); cancelDialog = undefined;
     state = { phase: value.phase, revision: value.revision,
       ...(typeof value.providerDisplayName === "string" && value.providerDisplayName.length <= 200 ? { providerDisplayName: value.providerDisplayName } : {}) };
     if (value.phase === "signedOut") logoutPending = false;
@@ -239,6 +245,12 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         if (before === observations) accept(value);
         await read();
         if (state?.phase === "ready") await open();
+      } else if (action === "cancel-scribe") {
+        if (state?.phase !== "ready" || !host.cancellation) return;
+        cancelDialog?.();
+        cancelDialog = openCancellationDialog(root, host.cancellation, close, () => {
+          accessClosed = true; notice = "Scribe cancellation is recorded. New processing is disabled. Existing records remain available during your read-only/export window."; render();
+        });
       } else if (action === "open") await open();
       else if (action === "check") await read();
     } catch {
@@ -308,7 +320,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   })();
   return (): Promise<void> => {
     if (disposal) return disposal;
-    disposed = true; invalidate(); clearInterval(timer); headerObserver.disconnect();
+    disposed = true; cancelDialog?.(); invalidate(); clearInterval(timer); headerObserver.disconnect();
     root.removeEventListener("click", clicked);
     root.removeEventListener("toggle", accountToggled, true);
     document.removeEventListener("scroll", accountScrolled, true);

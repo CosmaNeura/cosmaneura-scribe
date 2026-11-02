@@ -13,6 +13,7 @@ import { assertProgress, type JournalSnapshot } from "./workspace-journal";
 import { parsePendingReviewDecision } from "../../../review-ui/src/creator-review-journal";
 import { connectDesktopRecorderView, type DesktopRecorderPort } from "./desktop-recorder-view";
 import { reference, type CoreCaptureScope } from "./core-client";
+import { parseCancellation } from "./cancellation";
 import { parseOpeningRecovery, parseOpeningReview } from "./opening-review";
 import type { ConsentPreparationRelease } from "./consent-preparation";
 import { parseDesktopProviderEvent, sessionState, exact, object, uuid, jsonCopy, unavailable,
@@ -97,6 +98,13 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
     return before === observations ? emitState(value) : state!;
   };
   const host: ProviderApplicationHost = {
+    cancellation: {
+      load: async signal => parseCancellation(await request("cancellation", { action: "load" }, null, null, signal)),
+      submit: async (preview, signal) => {
+        const result = parseCancellation(await request("cancellation", { action: "submit", preview }, null, null, signal));
+        if (result.action === "preview") throw unavailable(); return result;
+      },
+    },
     supportsRecorderStopReauthentication: true,
     supportsWorkspaceCloseReauthentication: true,
     session: {
