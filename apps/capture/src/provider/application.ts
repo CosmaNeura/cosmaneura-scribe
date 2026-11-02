@@ -248,8 +248,12 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
       } else if (action === "cancel-scribe") {
         if (state?.phase !== "ready" || !host.cancellation) return;
         cancelDialog?.();
-        cancelDialog = openCancellationDialog(root, host.cancellation, close, () => {
-          accessClosed = true; notice = "Scribe cancellation is recorded. New processing is disabled. Existing records remain available during your read-only/export window."; render();
+        cancelDialog = openCancellationDialog(root, host.cancellation, close, receipt => {
+          accessClosed = true;
+          notice = receipt.phase === "read-only-export"
+            ? "Scribe cancellation is recorded. New processing is disabled. Existing records remain available during your read-only/export window."
+            : "Your export window has ended. New processing remains disabled. Record destruction has not been completed.";
+          render();
         });
       } else if (action === "open") await open();
       else if (action === "check") await read();
