@@ -17,7 +17,6 @@
 .provider-application:has(.provider-desktop-compact) .provider-session-header { padding:8px 12px; gap:8px; }
 .provider-application:has(.provider-desktop-compact) .provider-brand { font-size:18px; }
 .provider-application:has(.provider-desktop-compact) .provider-brand-icon { width:28px; height:28px; }
-.provider-application:has(.provider-desktop-compact) [data-session-actions],.provider-application:has([data-testid=pause-recording]:not([hidden])) [data-session-actions] { display:none; }
 @media(max-width:600px) { .provider-session-header { padding:12px 16px; } .provider-session-status { margin:20px 16px; padding:24px 20px; } }
 
 .provider-account-menu { position:relative; font-size:1rem; }
