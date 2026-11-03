@@ -45,6 +45,27 @@ final class NativeDesktopStoreContainerTests: XCTestCase {
         }
     }
 
+    func testAppleTestFlightReportingMarkerPreservesEachExactRole() throws {
+        for bundle in NativeDesktopStoreContainer.helpers {
+            var value = claims(bundle); value["beta-reports-active"] = true
+            try NativeDesktopStoreContainer.validateMembership(value, bundle: bundle, approvedGroup: group)
+            value["com.apple.developer.team-identifier"] = "OTHERTEAM"
+            XCTAssertThrowsError(try NativeDesktopStoreContainer.validateMembership(value, bundle: bundle, approvedGroup: group))
+        }
+    }
+
+    func testReportingMarkerCannotHideUnknownGrantsOrUseCoercedBooleans() {
+        for bundle in NativeDesktopStoreContainer.helpers {
+            for reporting: Any in [false, NSNumber(value: 1), "true", [true]] {
+                var value = claims(bundle); value["beta-reports-active"] = reporting
+                XCTAssertThrowsError(try NativeDesktopStoreContainer.validateMembership(value, bundle: bundle, approvedGroup: group))
+            }
+            var value = claims(bundle); value["beta-reports-active"] = true
+            value["com.apple.security.temporary-exception.files.home-relative-path.read-write"] = ["/"]
+            XCTAssertThrowsError(try NativeDesktopStoreContainer.validateMembership(value, bundle: bundle, approvedGroup: group))
+        }
+    }
+
     func testSandboxBooleanCannotBeOmittedFalseOrNumeric() {
         let bundle = NativeDesktopStoreContainer.auth
         for sandbox: Any? in [nil, false, NSNumber(value: 1), "true"] {

@@ -84,9 +84,17 @@ public enum NativeDesktopStoreContainer {
         let roleKeys: Set<String> = bundle == auth ? ["keychain-access-groups", "com.apple.security.network.client"]
             : bundle == parent + ".audio" ? ["com.apple.security.device.audio-input",
                 "com.apple.security.device.microphone"] : []
+        // Apple adds this non-privileged reporting marker when re-signing for
+        // TestFlight. It changes neither the role grants nor the App Group.
+        var reportingKeys: Set<String> = []
+        if let reporting = claims["beta-reports-active"] {
+            guard CFGetTypeID(reporting as CFTypeRef) == CFBooleanGetTypeID(),
+                  reporting as? Bool == true else { throw StoreContainerError.unavailable }
+            reportingKeys.insert("beta-reports-active")
+        }
         guard !approvedGroup.isEmpty, !approvedGroup.contains("/"),
               helpers.contains(bundle),
-              Set(claims.keys) == identityKeys.union(roleKeys),
+              Set(claims.keys) == identityKeys.union(roleKeys).union(reportingKeys),
               sandbox.map({ CFGetTypeID($0 as CFTypeRef) == CFBooleanGetTypeID() }) == true,
               sandbox as? Bool == true,
               claims["com.apple.security.application-groups"] as? [String] == [approvedGroup],
