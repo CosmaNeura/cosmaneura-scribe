@@ -46,7 +46,7 @@ def body(action="capture-operations", key=None):
     return value
 
 
-def fixture(fault=None):
+def fixture(fault=None, *, cache_control="no-store"):
     account = ProviderEncounterAccount(
         "synthetic", uuid4(), "actor", "tenant", SecretStr("synthetic-human-token")
     )
@@ -98,7 +98,7 @@ def fixture(fault=None):
             tenant_ref="tenant",
             result=result,
         )
-        headers = {"Cache-Control": "no-store", "X-Cosmaneura-Native-Capture-Version": "1"}
+        headers = {"Cache-Control": cache_control, "X-Cosmaneura-Native-Capture-Version": "1"}
         if fault in {"deny", "conflict"}:
             return httpx.Response(403 if fault == "deny" else 409)
         if fault == "lost":
@@ -109,6 +109,12 @@ def fixture(fault=None):
             headers["Set-Cookie"] = "synthetic=1"
         if fault == "cache":
             headers["Cache-Control"] = "public"
+        if fault == "version":
+            headers["X-Cosmaneura-Native-Capture-Version"] = "2"
+        if fault == "media":
+            headers["Content-Type"] = "text/html"
+        if fault == "shape":
+            del result["contract_version"]
         if fault == "actor":
             value["actor_ref"] = "foreign"
         if fault == "nonce":
@@ -144,6 +150,64 @@ async def test_closed_native_workflow_preserves_original_retained_key_and_wire(a
         assert len(calls) == 2 and calls[1].headers["idempotency-key"] == key
         if action == "capture-notes":
             assert json.loads(calls[1].content)["note_request"]["edit"] == value["edit"]
+    finally:
+        await transport.close()
+
+
+@pytest.mark.parametrize(
+    "cache_control",
+    [
+        "no-store, no-cache, must-revalidate, max-age=0, private",
+        "private, No-StOrE,\tmax-age=0",
+        'private="Set-Cookie", no-store',
+        'extension="value,with,commas", no-store',
+    ],
+)
+async def test_admission_accepts_core_cache_policy_with_no_store_directive(cache_control):
+    transport, calls, fences = fixture(cache_control=cache_control)
+    value = body("capture-admissions")
+    try:
+        result = await transport.workflow("capture-admissions", value, str(uuid4()))
+        assert result["status"] == "admitted"
+        assert result["configured_capture"] == value["configured_capture"]
+        assert len(calls) == 1 and len(fences) == 4
+    finally:
+        await transport.close()
+
+
+@pytest.mark.parametrize(
+    "cache_control",
+    [
+        "public",
+        "no-store-like",
+        "x-no-store",
+        "no-store=true",
+        '"no-store"',
+        'extension="value,no-store,other", public',
+        'extension="value,\\"no-store\\",other", public',
+        'no-store, extension="unterminated',
+    ],
+)
+async def test_admission_rejects_missing_or_quoted_no_store_without_retry(cache_control):
+    transport, calls, _ = fixture(cache_control=cache_control)
+    try:
+        with pytest.raises(ProviderCoreUnavailable) as error:
+            await transport.workflow("capture-admissions", body("capture-admissions"), str(uuid4()))
+        assert error.value.status == 503
+        assert len(calls) == 1
+    finally:
+        await transport.close()
+
+
+@pytest.mark.parametrize("fault", ["cookie", "version", "media", "shape"])
+async def test_core_cache_policy_keeps_other_response_guards(fault):
+    transport, calls, _ = fixture(
+        fault, cache_control="no-store, no-cache, must-revalidate, max-age=0, private"
+    )
+    try:
+        with pytest.raises(ProviderCoreUnavailable):
+            await transport.workflow("capture-admissions", body("capture-admissions"), str(uuid4()))
+        assert len(calls) == 1
     finally:
         await transport.close()
 
