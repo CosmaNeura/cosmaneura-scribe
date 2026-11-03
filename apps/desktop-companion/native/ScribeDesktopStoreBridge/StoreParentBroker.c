@@ -26,8 +26,10 @@ static bool code_boolean_is_true(SecStaticCodeRef code, CFStringRef key) {
     CFDictionaryRef information = NULL;
     bool valid = code && SecCodeCopySigningInformation(code, kSecCSSigningInformation, &information) == errSecSuccess
         && information && CFGetTypeID(information) == CFDictionaryGetTypeID();
+    CFTypeRef team = valid ? CFDictionaryGetValue(information, kSecCodeInfoTeamIdentifier) : NULL;
     CFTypeRef claims = valid ? CFDictionaryGetValue(information, kSecCodeInfoEntitlementsDict) : NULL;
-    valid = claims && CFGetTypeID(claims) == CFDictionaryGetTypeID()
+    valid = team && CFGetTypeID(team) == CFStringGetTypeID() && CFEqual(team, CFSTR("JVV65668U6"))
+        && claims && CFGetTypeID(claims) == CFDictionaryGetTypeID()
         && store_boolean_is_true(CFDictionaryGetValue((CFDictionaryRef)claims, key));
     if (information) CFRelease(information);
     return valid;
@@ -101,8 +103,12 @@ struct scribe_store_parent_broker *scribe_store_parent_prepare(pid_t parent, con
     const void *keys[] = {kSecGuestAttributePid}, *values[] = {pid};
     CFDictionaryRef attributes = pid ? CFDictionaryCreate(NULL, keys, values, 1,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks) : NULL;
-    char text[768];
-    int length = snprintf(text, sizeof(text), "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop.store\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] exists and entitlement[\"com.apple.security.application-groups\"] = \"%s\"", group);
+    /* TestFlight re-signs with Apple's TESTFLIGHT certificate, while retaining
+     * this app's signed team/application identity. The existing development and
+     * distribution certificate branch remains exact; a beta certificate alone
+     * can never substitute for the signed Store identity or group. */
+    char text[1536];
+    int length = snprintf(text, sizeof(text), "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop.store\" and (certificate leaf[subject.OU] = \"JVV65668U6\" or (certificate leaf[subject.OU] = \"TESTFLIGHT\" and certificate leaf[subject.CN] = \"TestFlight Beta Distribution\")) and entitlement[\"com.apple.developer.team-identifier\"] = \"JVV65668U6\" and entitlement[\"com.apple.application-identifier\"] = \"JVV65668U6.com.cosmaneura.scribe.beta.desktop.store\" and entitlement[\"com.apple.security.app-sandbox\"] exists and entitlement[\"com.apple.security.application-groups\"] = \"%s\"", group);
     CFStringRef expression = length > 0 && (size_t)length < sizeof(text) ? CFStringCreateWithCString(NULL, text, kCFStringEncodingUTF8) : NULL;
     valid = attributes && expression && SecRequirementCreateWithString(expression, 0, &broker->requirement) == errSecSuccess
         && SecCodeCopyGuestWithAttributes(NULL, attributes, 0, &broker->code) == errSecSuccess
