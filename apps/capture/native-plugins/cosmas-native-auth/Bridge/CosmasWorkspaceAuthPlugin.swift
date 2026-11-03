@@ -683,7 +683,11 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
     @MainActor private static func payload(_ state: NativeAuthState) -> [String: Any] {
         let settings = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any]
         let profile = (settings?["identityProfile"] as? String).flatMap(NativeIdentityProfile.init(rawValue:))
-        return NativeAuthPayload.state(state, identityProfile: profile)
+        var value = NativeAuthPayload.state(state, identityProfile: profile)
+        if let digest = NativeAuthPayload.accountIdentitySHA256(state) {
+            value["accountIdentitySHA256"] = digest
+        }
+        return value
     }
 
     private static func reject(_ call: CAPPluginCall) {

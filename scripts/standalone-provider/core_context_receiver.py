@@ -5,6 +5,7 @@ import re
 from typing import cast
 from uuid import uuid4, uuid5
 
+from cosmaneura_scribe.provider_cancellation_transport import ProviderCancellationTransport
 from cosmaneura_scribe.provider_context_transport import ProviderContextTransport
 from cosmaneura_scribe.provider_core_transport import (
     AuthorizedCoreProvider,
@@ -113,6 +114,16 @@ class CoreContextReceiver(ProviderReceiver):
 
     async def encounter_account(self, authorization, *, bind):
         return (await self._context(authorization, "connection"))[0]
+
+    async def cancellation(self, authorization, body, key):
+        # Cancellation is account-level. Neither a current encounter nor a
+        # processing-enabled Core connection is needed to recover own status.
+        transport = ProviderCancellationTransport(self.profile.core_origin, self._verify,
+            self.workload_token, transport=self.core_http, connections=self.core_connections)
+        try:
+            return await transport.request(authorization, body, key)
+        finally:
+            await transport.close()
 
     @staticmethod
     def legacy_workspace_exists(workspace_id, bind):

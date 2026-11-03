@@ -16,9 +16,13 @@ import type { PatientSelection } from "../../capture/src/provider/visit-features
 import { assertPendingPatientMatch, type PatientMatchJournal } from "../../capture/src/provider/patient-match-journal";
 import { NO_DIAGNOSTICS, type RuntimeDiagnostic, type RuntimeTimingEvent } from "./runtime-diagnostics.js";
 import { nativeRecordingConfirmed, validRecordReadyDuration } from "../../capture/src/provider/record-ready-timing";
+import { parseCancellation, type ScribeCancellation } from "../../capture/src/provider/cancellation";
 
 export interface DesktopProviderMainHost {
   readonly session: NativeProviderSession;
+  readonly cancellation?: ScribeCancellation;
+  /** Trusted fixed account dashboard, independent of a visit connection. */
+  readonly openDashboard?: (signal: AbortSignal) => Promise<void>;
   /** Main-only complete provider workspace; never forward this object to preload. */
   connect(signal: AbortSignal): Promise<{ readonly workspace: ProviderWorkspaceHost<DesktopProviderRecorder>; dispose(): Promise<void> }>;
 }
@@ -112,6 +116,22 @@ export class DesktopProviderWorkspaceMain {
   }
   private async dispatch(request: DesktopProviderRequest, signal: AbortSignal): Promise<unknown> {
     const payload = request.payload;
+    if (request.method === "open_dashboard") {
+      if (request.connectionId !== null || request.encounterId !== null || !this.host.openDashboard) throw unavailable();
+      exact(payload, []);
+      const state = await this.readSession(); if (state?.phase !== "ready" || signal.aborted) throw unavailable();
+      await this.host.openDashboard(signal); return null;
+    }
+    if (request.method === "cancellation") {
+      if (request.connectionId !== null || request.encounterId !== null || !this.host.cancellation) throw unavailable();
+      const state = await this.readSession(); if (state?.phase !== "ready") throw unavailable();
+      if (payload.action === "status") { exact(payload, ["action"]); return this.host.cancellation.status(signal); }
+      if (payload.action === "load") { exact(payload, ["action"]); return this.host.cancellation.load(signal); }
+      exact(payload, ["action", "preview"]); if (payload.action !== "submit") throw unavailable();
+      const preview = parseCancellation(payload.preview); if (preview.action !== "preview") throw unavailable();
+      await this.closeConnection(); // A renderer cannot bypass stop-before-request.
+      return this.host.cancellation.submit(preview, signal);
+    }
     if (["session_read", "sign_in", "sign_out", "connect"].includes(request.method)) {
       if (request.connectionId !== null || request.encounterId !== null) throw unavailable();
       exact(payload, []);

@@ -19,7 +19,7 @@ import type { ProviderEncounter } from "./workspace";
 import { SecureQueue } from "@cosmaneura-scribe/capacitor-secure-queue";
 import { parseProviderAccount, existingPatientSetup, fullNativeVisitSetup, providerVisitCapabilities, type ProviderAccount, createEncounterSetup } from "./encounter-setup";
 
-const limits: Record<Action, number> = { catalog: 2, encounters: 16384, mount: 256, recorder: 1024, "recorder-context": 1024, "note-opening": 1024,
+const limits: Record<Action, number> = { catalog: 2, encounters: 16384, mount: 256, recorder: 1024, "recorder-context": 1024, "note-opening": 1024, cancellation: 2048,
   "capture-admissions": 2048, "capture-operations": 4_194_304, "capture-notes": 262_144 + 8192 };
 type NativeReply = Awaited<ReturnType<ProviderNativePlugin["providerRequest"]>>;
 export type { ProviderNativePlugin } from "./native-plugin";

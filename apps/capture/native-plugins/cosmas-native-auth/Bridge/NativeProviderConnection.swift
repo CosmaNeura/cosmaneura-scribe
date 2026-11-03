@@ -13,7 +13,7 @@ enum ProviderNativeError: String, Error, Sendable {
 }
 
 enum ProviderNativeAction: String, Sendable {
-    case catalog, encounters, mount, recorder
+    case catalog, encounters, mount, recorder, cancellation
     case recorderContext = "recorder-context"
     case noteOpening = "note-opening"
     case sourceStart = "source-start"
@@ -28,7 +28,7 @@ enum ProviderNativeAction: String, Sendable {
         case .recorder, .recorderContext, .noteOpening: 1024
         case .sourceStart: 4096
         case .sourceStartReady: 8192
-        case .admission: 2048
+        case .admission, .cancellation: 2048
         case .operation: 4_194_304
         case .note: 262_144 + 8192
         }
@@ -36,6 +36,7 @@ enum ProviderNativeAction: String, Sendable {
     var responseLimit: Int {
         switch self {
         case .catalog, .encounters: 1_048_576
+        case .cancellation: 4096
         case .mount, .recorder, .recorderContext, .sourceStart: 8192
         case .sourceStartReady: 16_384
         case .operation, .noteOpening: 32 * 1024 * 1024 + 8192
@@ -45,7 +46,7 @@ enum ProviderNativeAction: String, Sendable {
 
     func acceptsResponseStatus(_ status: Int) -> Bool {
         [200, 401, 403, 409, 422, 503].contains(status)
-            || (self == .sourceStartReady && status == 404)
+            || ([.sourceStartReady, .cancellation].contains(self) && status == 404)
     }
 }
 

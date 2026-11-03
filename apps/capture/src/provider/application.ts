@@ -4,10 +4,16 @@ import { mountProviderWorkspace, type ProviderWorkspaceHost } from "./workspace"
 import type { NativeProviderSession, ProviderSessionPhase, ProviderSessionState } from "./native-plugin";
 import scribeIcon from "../../public/icon.svg?raw";
 import "./application.css";
+import { openCancellationDialog } from "./cancellation-dialog";
+import type { CancellationReceipt, ScribeCancellation } from "./cancellation";
 
 export type { ProviderSessionState } from "./native-plugin";
 export interface ProviderApplicationHost {
   readonly session: NativeProviderSession;
+  /** Account-level authenticated request/status; independent of visit mounts. */
+  readonly cancellation?: ScribeCancellation;
+  /** Fixed native account-level destination; no URL is supplied by the UI. */
+  readonly openDashboard?: (signal: AbortSignal) => Promise<void>;
   /** Trusted host supports volatile, same-account native cessation recovery. */
   readonly supportsRecorderStopReauthentication?: true;
   /** Main may own a preparation before the renderer obtains its recorder. */
@@ -39,6 +45,9 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   let disposed = false, busy = false, stopUnconfirmed = false, accessClosed = false, logoutPending = false;
   let operations = 0, signingOut = false;
   let recorderStopUnconfirmed = false;
+  let cancelDialog: (() => void) | undefined;
+  let cancellationReceipt: CancellationReceipt | null = null, cancellationCheckedRevision: string | null = null;
+  let cancellationCheck: AbortController | undefined;
   let notice = "", polling: Promise<void> | undefined, disposal: Promise<void> | undefined;
   root.classList.add("provider-application");
   root.innerHTML = `<header class="provider-session-header"><div class="provider-brand"><span class="provider-brand-icon" aria-hidden="true">${scribeIcon}</span><strong>Scribe</strong></div><div data-session-actions></div></header>
@@ -77,7 +86,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     };
     [title.textContent, message.textContent] = shown[phase];
     if (notice) message.textContent = notice;
-    actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><div class="provider-account-panel" role="group" aria-label="Account options">${button("sign-out", "Sign out")}<p data-provider-name></p><a href="mailto:dev@cosmaneura.com">Get help</a></div></details>`
+    actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><div class="provider-account-panel" role="group" aria-label="Account options">${button("sign-out", "Sign out")}<p data-provider-name></p>${host.cancellation ? button("cancel-scribe", cancellationReceipt ? "Cancellation status" : "Cancel Scribe access") : ""}<a href="mailto:dev@cosmaneura.com">Get help</a></div></details>`
       : phase === "signingIn" ? button("sign-out", "Sign out") : "";
     const providerName = actions.querySelector<HTMLElement>("[data-provider-name]"); if (providerName) providerName.textContent = state?.providerDisplayName ?? "Your account";
     recovery.innerHTML = "";
@@ -92,6 +101,13 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         message.textContent += " Sign in with the same account to finish closing your workspace.";
         recovery.innerHTML += button("sign-in-stop", recorderStopUnconfirmed ? "Sign in to finish stopping" : "Sign in to finish closing");
       }
+    } else if (phase === "ready" && cancellationReceipt) {
+      title.textContent = "Scribe access is read-only";
+      message.textContent = cancellationReceipt.phase === "read-only-export"
+        ? `New recording and processing are disabled. Your read-only/export window ends ${new Date(cancellationReceipt.export_until).toLocaleDateString()}. Your Cosmaneura sign-in stays active.`
+        : "Your export window has ended. New processing remains disabled. Record destruction and its certificate have not been completed.";
+      recovery.innerHTML = (cancellationReceipt.phase === "read-only-export" && host.openDashboard ? button("dashboard", "Open dashboard to read or export") : "")
+        + button("check-cancellation", "Refresh access status");
     } else if (logoutPending) {
       title.textContent = "Sign-out needs attention";
       message.textContent = "Your workspace is closed. Retry sign-out to finish.";
@@ -101,7 +117,11 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     else if (phase === "unavailable") recovery.innerHTML = button("check", "Check session") + button("sign-out", "Sign out");
     else if (phase === "disabled") recovery.innerHTML = button("check", "Check session");
     else if (phase === "ready" && (!scope || scope.abort.signal.aborted)) {
-      recovery.innerHTML = button("open", "Open workspace");
+      if (host.cancellation && cancellationCheckedRevision !== state?.revision) {
+        title.textContent = "Check Scribe access";
+        if (!notice) message.textContent = "Checking whether recording or read-only access is available for your account.";
+        recovery.innerHTML = button("open", "Check access");
+      } else recovery.innerHTML = button("open", "Open workspace");
     }
     root.setAttribute("aria-busy", String(busy));
   };
@@ -140,6 +160,9 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     // Native polling still observes revocation, but an identical observation
     // must not replace focused controls or retry a previously failed close.
     if (!changed) return;
+    cancelDialog?.(); cancelDialog = undefined;
+    cancellationCheck?.abort(); cancellationCheck = undefined;
+    cancellationCheckedRevision = null; cancellationReceipt = null;
     state = { phase: value.phase, revision: value.revision,
       ...(typeof value.providerDisplayName === "string" && value.providerDisplayName.length <= 200 ? { providerDisplayName: value.providerDisplayName } : {}) };
     if (value.phase === "signedOut") logoutPending = false;
@@ -169,10 +192,40 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
       } finally { polling = undefined; }
     })();
   };
+  const checkCancellation = async (): Promise<boolean> => {
+    if (!host.cancellation) return true;
+    const expected = state;
+    if (expected?.phase !== "ready") return false;
+    cancellationCheck?.abort();
+    const abort = new AbortController(); cancellationCheck = abort;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const receipt = await Promise.race([host.cancellation.status(abort.signal), new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => { abort.abort(); reject(new Error("scribe_cancellation_status_timeout")); }, 5000);
+      })]);
+      if (disposed || abort.signal.aborted || state?.phase !== "ready" || state.revision !== expected.revision) return false;
+      if (cancellationReceipt && receipt === null) throw new Error("scribe_cancellation_receipt_unconfirmed");
+      cancellationReceipt = receipt; cancellationCheckedRevision = expected.revision;
+      if (receipt) { accessClosed = true; recordingOpenPending = false; await close(); render(); return false; }
+      return true;
+    } catch {
+      if (!disposed && state?.phase === "ready" && state.revision === expected.revision) {
+        accessClosed = true; cancellationCheckedRevision = null;
+        notice = "Scribe access could not be checked. Recording stays closed. Retry the access check or sign out."; render();
+      }
+      return false;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      abort.abort(); if (cancellationCheck === abort) cancellationCheck = undefined;
+    }
+  };
   const open = async (): Promise<void> => {
     await close();
     await read();
     if (disposed || !listener || logoutPending || state?.phase !== "ready") return;
+    notice = "Checking Scribe access…"; render();
+    if (!await checkCancellation()) return;
+    if (disposed || logoutPending || state?.phase !== "ready") return;
     const owned: Scope = { abort: new AbortController(), revision: state.revision, connecting: Promise.resolve() };
     scope = owned; accessClosed = false;
     notice = "Connecting your workspace…"; render();
@@ -239,7 +292,22 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         if (before === observations) accept(value);
         await read();
         if (state?.phase === "ready") await open();
-      } else if (action === "open") await open();
+      } else if (action === "cancel-scribe") {
+        if (state?.phase !== "ready" || !host.cancellation) return;
+        cancelDialog?.();
+        cancelDialog = openCancellationDialog(root, host.cancellation, close, receipt => {
+          accessClosed = true; cancellationReceipt = receipt; cancellationCheckedRevision = state?.revision ?? null;
+          recordingOpenPending = false;
+          notice = receipt.phase === "read-only-export"
+            ? "Scribe cancellation is recorded. New processing is disabled. Existing records remain available during your read-only/export window."
+            : "Your export window has ended. New processing remains disabled. Record destruction has not been completed.";
+          render();
+        }, host.openDashboard);
+      } else if (action === "dashboard") {
+        if (state?.phase !== "ready" || cancellationReceipt?.phase !== "read-only-export" || !host.openDashboard) return;
+        await host.openDashboard(new AbortController().signal);
+      } else if (action === "check-cancellation") { await checkCancellation(); }
+      else if (action === "open") await open();
       else if (action === "check") await read();
     } catch {
       if (!stopUnconfirmed) notice = "This action could not be confirmed. Check your session and try again.";
@@ -308,7 +376,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   })();
   return (): Promise<void> => {
     if (disposal) return disposal;
-    disposed = true; invalidate(); clearInterval(timer); headerObserver.disconnect();
+    disposed = true; cancellationCheck?.abort(); cancelDialog?.(); invalidate(); clearInterval(timer); headerObserver.disconnect();
     root.removeEventListener("click", clicked);
     root.removeEventListener("toggle", accountToggled, true);
     document.removeEventListener("scroll", accountScrolled, true);
