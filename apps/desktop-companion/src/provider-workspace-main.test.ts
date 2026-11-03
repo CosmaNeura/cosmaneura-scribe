@@ -516,7 +516,7 @@ it("routes encounter setup through the current desktop owner and rejects caller 
   const f = await fixture();
   try {
     await f.connect();
-    expect((await f.invoke("encounter_setup", { action: "info" })).result).toEqual({ enabled: true, account: { email: "provider@synthetic.invalid", environment: "Staging" } });
+    expect((await f.invoke("encounter_setup", { action: "info" })).result).toEqual({ enabled: true, account: { email: "provider@synthetic.invalid", environment: "Staging" }, environment: "Staging" });
     expect((await f.invoke("encounter_setup", { action: "state" })).ok).toBe(true);
     expect((await f.invoke("encounter_setup", { action: "search", query: "Synthetic" })).ok).toBe(true);
     expect((await f.invoke("encounter_setup", { action: "submit", draft: null })).ok).toBe(true);

@@ -225,12 +225,18 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
           if (!Array.isArray(values) || values.length > 1000) throw unavailable();
           const rawInfo = await send("encounter_setup", { action: "info" }, null, operationSignal);
           const scoped = typeof rawInfo === "object" && rawInfo !== null && "existingPatientOnly" in rawInfo;
-          const info = exact(rawInfo, ["enabled", "account", ...(scoped ? ["existingPatientOnly"] : [])]);
+          const explicitEnvironment = typeof rawInfo === "object" && rawInfo !== null && "environment" in rawInfo;
+          const info = exact(rawInfo, ["enabled", "account", ...(scoped ? ["existingPatientOnly"] : []),
+            ...(explicitEnvironment ? ["environment"] : [])]);
           if (scoped && info.existingPatientOnly !== true) throw unavailable();
           current(operationSignal);
           if (typeof info.enabled !== "boolean") throw unavailable();
+          const environment = explicitEnvironment ? info.environment : scoped ? "Production" : "Staging";
+          if (environment !== "Staging" && environment !== "Production"
+            || scoped && environment !== "Production" || explicitEnvironment && info.account === null) throw unavailable();
+          const nextAccount = info.account === null ? undefined : parseProviderAccount(info.account, environment);
           creationEnabled = info.enabled; existingPatientOnly = scoped;
-          account = info.account === null ? undefined : parseProviderAccount(info.account, scoped ? "Production" : "Staging");
+          account = nextAccount;
           return values.map(encounter);
         },
         createEncounter: async operationSignal => { await send("create", {}, null, operationSignal); current(operationSignal); },
