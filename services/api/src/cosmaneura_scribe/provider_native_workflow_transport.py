@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import re
 from datetime import UTC, datetime, timedelta
@@ -38,6 +39,7 @@ from .provider_native_core_transport import (
 )
 from .provider_performance import observe_core_response
 from .source_start_contract import (
+    SourceStartCapability,
     SourceStartIntent,
     SourceStartReceipt,
     SourceStartRetirementReceipt,
@@ -90,7 +92,7 @@ class ProviderNativeWorkflowTransport(ProviderNativeCoreTransport):
             isinstance(binding, str)
             and re.fullmatch(r"scribe_capture_binding_[0-7][0-9a-hjkmnp-tv-z]{25}", binding)
         )
-        sequence = intent = authorize_nonce = None
+        sequence = intent = authorize_nonce = source_intent = None
         if action in {"source-start", "source-start-ready"}:
             require(mount is not None)
             assert mount is not None
@@ -104,13 +106,14 @@ class ProviderNativeWorkflowTransport(ProviderNativeCoreTransport):
             else:
                 require(set(payload) == SCOPE | {"operation"})
                 operation = obj(payload["operation"])
-                # The native owner retains the original proof and intent keys.
-                # Initial authorization belongs to the checked pair endpoint.
+                # Ready preparation carries no start authority. Its separate
+                # native authorization uses the same Core checks as the pair.
                 require(
                     set(operation) == {"kind", "action", "payload"}
                     and operation.get("kind") == "source_start"
-                    and operation.get("action") in {"stop", "cancel"}
+                    and operation.get("action") in {"prepare", "authorize", "stop", "cancel"}
                 )
+                source_intent = SourceStartIntent.model_validate(operation["payload"])
         elif action == "capture-operations":
             require(set(payload) == SCOPE | {"operation"})
             require(obj(payload["operation"]).get("kind") in OPERATIONS)
@@ -270,21 +273,53 @@ class ProviderNativeWorkflowTransport(ProviderNativeCoreTransport):
                     if action == "capture-notes":
                         require(receipt.get("session_id") == payload["expected_session_id"])
                     if action == "source-start":
-                        source_intent = SourceStartIntent.model_validate(
-                            obj(payload["operation"])["payload"]
-                        )
-                        terminal = (
-                            SourceStartRetirementReceipt.model_validate(receipt)
-                            if receipt.get("state") == "unstarted"
-                            else SourceStartReceipt.model_validate(receipt)
-                        )
-                        require(
-                            terminal.state in {"cancelled", "stopped", "expired", "unstarted"}
-                            and terminal.creator_actor_id == before.actor_ref
-                        )
+                        assert source_intent is not None
+                        source_action = obj(payload["operation"])["action"]
+                        now = datetime.now(UTC)
+                        if source_action == "authorize":
+                            decision = SourceStartCapability.model_validate(receipt)
+                            checked_source = decision.receipt
+                            require(
+                                checked_source.state == "issued"
+                                and checked_source.issued_at is not None
+                                and checked_source.expires_at is not None
+                                and checked_source.issued_at <= now + timedelta(seconds=5)
+                                and checked_source.issued_at < checked_source.preparation_expires_at
+                                and now
+                                < checked_source.expires_at
+                                <= checked_source.capture_authorized_until
+                                and timedelta(0)
+                                < checked_source.expires_at - checked_source.issued_at
+                                <= timedelta(seconds=15)
+                                and hmac.compare_digest(
+                                    decision.secret.get_secret_value().encode("utf-8"),
+                                    source_intent.owner_proof.get_secret_value().encode("ascii"),
+                                )
+                            )
+                        elif source_action == "prepare":
+                            checked_source = SourceStartReceipt.model_validate(receipt)
+                            require(
+                                checked_source.state == "prepared"
+                                and checked_source.issued_at is None
+                                and checked_source.expires_at is None
+                                and now
+                                < checked_source.preparation_expires_at
+                                <= checked_source.capture_authorized_until
+                            )
+                        else:
+                            checked_source = (
+                                SourceStartRetirementReceipt.model_validate(receipt)
+                                if receipt.get("state") == "unstarted"
+                                else SourceStartReceipt.model_validate(receipt)
+                            )
+                            require(
+                                checked_source.state
+                                in {"cancelled", "stopped", "expired", "unstarted"}
+                            )
+                        require(checked_source.creator_actor_id == before.actor_ref)
                         require(
                             all(
-                                getattr(terminal, field) == getattr(source_intent, field)
+                                getattr(checked_source, field) == getattr(source_intent, field)
                                 for field in (
                                     "attempt_id",
                                     "source",
@@ -296,8 +331,8 @@ class ProviderNativeWorkflowTransport(ProviderNativeCoreTransport):
                                 )
                             )
                         )
-                        if isinstance(terminal, SourceStartRetirementReceipt):
-                            require(terminal.owner_proof_sha256 == source_intent.proof_digest)
+                        if isinstance(checked_source, SourceStartRetirementReceipt):
+                            require(checked_source.owner_proof_sha256 == source_intent.proof_digest)
                 if await self.fresh() != before:
                     raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
                 if sequence is not None:
