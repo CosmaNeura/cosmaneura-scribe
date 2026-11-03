@@ -900,6 +900,7 @@ async def _grant_configured_worker_permissions(settings: Settings) -> None:
             )
             common = (
                 "consent_records",
+                "creator_transcript_edits",
                 "scribe_sessions",
                 "transcription_jobs",
                 "normalized_source_transcripts",
