@@ -200,7 +200,7 @@ class ProviderNativeWorkflowTransport(ProviderNativeCoreTransport):
                         response.headers.get_list("x-cosmaneura-native-capture-version") == ["1"]
                         and response.headers.get("content-type", "").split(";", 1)[0]
                         == "application/json"
-                        and response.headers.get("cache-control", "").lower() == "no-store"
+                        and _has_no_store_directive(response.headers.get("cache-control", ""))
                         and not response.headers.get_list("set-cookie")
                     )
                     raw = bytearray()
@@ -313,6 +313,25 @@ class ProviderNativeWorkflowTransport(ProviderNativeCoreTransport):
             raise
         except Exception:
             raise ProviderCoreUnavailable("core_provider_request_unconfirmed") from None
+
+
+def _has_no_store_directive(value: str) -> bool:
+    """Recognize the directive without splitting quoted extension values."""
+    start, quoted, escaped, found = 0, False, False, False
+    for index, character in enumerate(value):
+        if quoted:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                quoted = False
+        elif character == '"':
+            quoted = True
+        elif character == ",":
+            found |= value[start:index].strip(" \t").lower() == "no-store"
+            start = index + 1
+    return not quoted and (found or value[start:].strip(" \t").lower() == "no-store")
 
 
 def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
