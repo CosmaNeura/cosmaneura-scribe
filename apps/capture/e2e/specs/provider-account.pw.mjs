@@ -153,7 +153,10 @@ test("Sign out closes the workspace immediately and returns to normal sign-in", 
   await expect(page.getByRole("heading", { name: "Today's patients", exact: true })).toBeVisible();
   await account(page).click();
   await expect(menu(page)).toContainText("Dr. Morgan Reed");
-  expect(await page.evaluate(() => window.accountLab.stats)).toEqual({ signOutCalls: 1, signInCalls: 1, connections: 2, disposals: 1, aborts: 1, sourceCalls: 0 });
+  expect(await page.evaluate(() => window.accountLab.stats)).toEqual({
+    signOutCalls: 1, signInCalls: 1, connections: 2, disposals: 1, aborts: 1, sourceCalls: 0,
+    deleteAccountCalls: 0, clearLocalCalls: 0,
+  });
 });
 
 test("unconfirmed SDK sign-out keeps the workspace closed and exposes normal retry", async ({ page }) => {
@@ -166,4 +169,53 @@ test("unconfirmed SDK sign-out keeps the workspace closed and exposes normal ret
   await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
   expect(await page.evaluate(() => window.accountLab.stats.signOutCalls)).toBe(2);
   expect(await page.evaluate(() => window.accountLab.stats.sourceCalls)).toBe(0);
+});
+
+test("Settings > Delete account confirms against a synthetic Cosmas backend and signs out", async ({ page }) => {
+  await open(page);
+  await account(page).click();
+  await page.getByRole("button", { name: "Delete account", exact: true }).click();
+  const dialog = page.locator("dialog.scribe-account-self-delete");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "Delete your account?", exact: true })).toBeVisible();
+  await expect(dialog).toContainText("whole Cosmaneura sign-in, including Cosmas web access");
+  await expect(dialog).toContainText("cannot be undone");
+  await expect(dialog.getByRole("button", { name: "Delete account", exact: true })).toBeDisabled();
+  await dialog.getByLabel("Type DELETE to confirm").fill("DELETE");
+  await dialog.getByRole("button", { name: "Delete account", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
+  expect(await page.evaluate(() => window.accountLab.stats.deleteAccountCalls)).toBe(1);
+  expect(await page.evaluate(() => window.accountLab.stats.signOutCalls)).toBe(1);
+  await expect(menu(page)).toHaveCount(0);
+});
+
+test("Delete account cancel leaves the signed-in session unchanged", async ({ page }) => {
+  await open(page);
+  await account(page).click();
+  await page.getByRole("button", { name: "Delete account", exact: true }).click();
+  const dialog = page.locator("dialog.scribe-account-self-delete");
+  await dialog.getByLabel("Type DELETE to confirm").fill("DELETE");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Today's patients", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.accountLab.stats.deleteAccountCalls)).toBe(0);
+  expect(await page.evaluate(() => window.accountLab.stats.signOutCalls)).toBe(0);
+  await account(page).click();
+  await expect(page.getByRole("button", { name: "Delete account", exact: true })).toBeEnabled();
+});
+
+test("Delete account failure keeps the session signed in", async ({ page }) => {
+  await open(page, "?delete-fail");
+  await account(page).click();
+  await page.getByRole("button", { name: "Delete account", exact: true }).click();
+  const dialog = page.locator("dialog.scribe-account-self-delete");
+  await dialog.getByLabel("Type DELETE to confirm").fill("DELETE");
+  await dialog.getByRole("button", { name: "Delete account", exact: true }).click();
+  await expect(dialog.getByRole("status")).toContainText("still signed in");
+  expect(await page.evaluate(() => window.accountLab.stats.deleteAccountCalls)).toBe(1);
+  expect(await page.evaluate(() => window.accountLab.stats.signOutCalls)).toBe(0);
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Today's patients", exact: true })).toBeVisible();
+  await account(page).click();
+  await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeEnabled();
 });

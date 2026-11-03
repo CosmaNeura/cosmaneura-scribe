@@ -4,6 +4,8 @@ import { mountProviderWorkspace, type ProviderWorkspaceHost } from "./workspace"
 import type { NativeProviderSession, ProviderSessionPhase, ProviderSessionState } from "./native-plugin";
 import scribeIcon from "../../public/icon.svg?raw";
 import "./application.css";
+import { clearCachedProviderPreferences, type AccountSelfDeleteClient } from "./account-self-delete";
+import { mountAccountSelfDeleteDialog } from "./account-self-delete-dialog";
 
 export type { ProviderSessionState } from "./native-plugin";
 export interface ProviderApplicationHost {
@@ -14,6 +16,11 @@ export interface ProviderApplicationHost {
   readonly supportsWorkspaceCloseReauthentication?: true;
   /** PHI-free native link request; only existing recording navigation is allowed. */
   readonly recordingOpen?: (listener: () => void) => Promise<PluginListenerHandle>;
+  /**
+   * Optional Cosmas self-delete client (POST /account/delete). When present,
+   * Account shows Delete account. Existing users are unchanged until they confirm.
+   */
+  readonly accountSelfDelete?: AccountSelfDeleteClient;
   /** Returns the current authorized provider workflow, never credentials. */
   connect(signal: AbortSignal): Promise<{ readonly workspace: ProviderWorkspaceHost; dispose(): Promise<void> }>;
 }
@@ -38,6 +45,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   let recordingListener: PluginListenerHandle | undefined, recordingOpenPending = false;
   let disposed = false, busy = false, stopUnconfirmed = false, accessClosed = false, logoutPending = false;
   let operations = 0, signingOut = false;
+  let closeDeletionDialog: (() => void) | undefined;
   let recorderStopUnconfirmed = false;
   let notice = "", polling: Promise<void> | undefined, disposal: Promise<void> | undefined;
   root.classList.add("provider-application");
@@ -77,7 +85,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     };
     [title.textContent, message.textContent] = shown[phase];
     if (notice) message.textContent = notice;
-    actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><div class="provider-account-panel" role="group" aria-label="Account options">${button("sign-out", "Sign out")}<p data-provider-name></p><a href="mailto:dev@cosmaneura.com">Get help</a></div></details>`
+    actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><div class="provider-account-panel" role="group" aria-label="Account options">${button("sign-out", "Sign out")}${host.accountSelfDelete ? button("delete-account", "Delete account") : ""}<p data-provider-name></p><a href="mailto:dev@cosmaneura.com">Get help</a></div></details>`
       : phase === "signingIn" ? button("sign-out", "Sign out") : "";
     const providerName = actions.querySelector<HTMLElement>("[data-provider-name]"); if (providerName) providerName.textContent = state?.providerDisplayName ?? "Your account";
     recovery.innerHTML = "";
@@ -133,6 +141,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     const valid = value && ["disabled", "loading", "signedOut", "signingIn", "ready", "signOutPending", "unavailable"].includes(value.phase)
       && isUuid(value.revision);
     if (!valid) {
+      closeDeletionDialog?.(); closeDeletionDialog = undefined;
       state = null; accessClosed = true; notice = "Your secure session could not be verified.";
       invalidate(); closeInBackground(); render(); return;
     }
@@ -140,6 +149,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     // Native polling still observes revocation, but an identical observation
     // must not replace focused controls or retry a previously failed close.
     if (!changed) return;
+    closeDeletionDialog?.(); closeDeletionDialog = undefined;
     state = { phase: value.phase, revision: value.revision,
       ...(typeof value.providerDisplayName === "string" && value.providerDisplayName.length <= 200 ? { providerDisplayName: value.providerDisplayName } : {}) };
     if (value.phase === "signedOut") logoutPending = false;
@@ -161,6 +171,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         if (!disposed && before === observations) accept(value);
       } catch {
         if (!disposed && before === observations) {
+          closeDeletionDialog?.(); closeDeletionDialog = undefined;
           state = null;
           accessClosed = true; invalidate(); closeInBackground();
           notice = "Your secure session could not be checked. Your workspace is closed.";
@@ -253,6 +264,32 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     const target = event.target;
     if (!(target instanceof Element)) return;
     const action = target.closest<HTMLButtonElement>("button[data-session-action]")?.dataset.sessionAction;
+    if (action === "delete-account") {
+      if (disposed || busy || stopUnconfirmed || logoutPending || state?.phase !== "ready" || !host.accountSelfDelete) return;
+      const revision = state.revision;
+      const client = host.accountSelfDelete;
+      const menu = actions.querySelector<HTMLDetailsElement>(".provider-account-menu");
+      if (menu) menu.open = false;
+      closeDeletionDialog?.();
+      closeDeletionDialog = mountAccountSelfDeleteDialog(document.body, {
+        client,
+        sameAccountSession: () => state?.phase === "ready" && state.revision === revision,
+        closeWorkspace: close,
+        clearLocalCredentials: async () => {
+          clearCachedProviderPreferences();
+          logoutPending = true;
+          accessClosed = true;
+          invalidate();
+          const before = observations;
+          const results = await Promise.allSettled([host.session.signOut(), close()]);
+          if (results[0].status === "fulfilled") {
+            if (before === observations) accept(results[0].value);
+          } else throw new Error("account_self_delete_local_clear_failed");
+          await read();
+        },
+      });
+      return;
+    }
     if (action) void perform(action);
   };
   const dismissAccount = (event: Event): void => {
@@ -309,6 +346,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   return (): Promise<void> => {
     if (disposal) return disposal;
     disposed = true; invalidate(); clearInterval(timer); headerObserver.disconnect();
+    closeDeletionDialog?.(); closeDeletionDialog = undefined;
     root.removeEventListener("click", clicked);
     root.removeEventListener("toggle", accountToggled, true);
     document.removeEventListener("scroll", accountScrolled, true);
