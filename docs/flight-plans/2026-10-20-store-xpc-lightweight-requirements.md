@@ -40,6 +40,27 @@ compile the changed C/link inputs. This source evidence does not qualify the
 kernel policy in a signed runtime, later parent checks, auth, recording or save.
 Independent exact-source review precedes production build/signing/runtime.
 
+## TestFlight parent identity
+
+The installed build 127 has Apple's `TestFlight Beta Distribution` leaf
+certificate (`OU=TESTFLIGHT`), while its signed TeamIdentifier, application
+identifier, sandbox Boolean and Store group still identify Cosmaneura's app.
+The parent broker's former certificate-OU-only requirement rejects that legitimate
+parent before private-service admission. macOS's static requirement check on
+the installed app rejects the old requirement and accepts the corrected one.
+
+Keep the existing developer/distribution certificate branch and add only the
+Apple-anchored, exact TestFlight certificate branch. Both require the exact
+signed team, Store application identifier and group; the broker also verifies
+the signing information's TeamIdentifier and Boolean-true sandbox entitlement
+on every current-parent proof. Process generation, monitor revocation, descriptors
+and private-service policies stay unchanged. This repairs Store beta distribution
+without adding a direct-app, ad-hoc, other-team or status-driven fallback.
+
+Retain the previous packages and build a new Mac candidate. Focused parent-proof
+fixtures and the static Apple-transformed artifact comparison cover this source
+change; a normal TestFlight Open remains required for operational acceptance.
+
 Recovery: retain the existing signed 106/107 artifacts and receipts. Withdraw the
 new Store candidate if qualification fails; do not fall back to denied manual
 peer validation, loosen claims, change Keychain groups, or activate the direct

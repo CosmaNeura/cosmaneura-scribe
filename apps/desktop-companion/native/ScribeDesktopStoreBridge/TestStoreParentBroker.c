@@ -20,6 +20,7 @@ static bool bad_receipt, changed_parent, changed_bridge;
 static unsigned registrations, drains, guest_calls, validity_calls, static_calls, information_calls;
 static OSStatus guest_result, validity_result, static_result, information_result;
 static CFTypeRef sandbox;
+static CFTypeRef signing_team;
 static bool missing_information, malformed_information, malformed_claims;
 static SecCodeRef captured_code;
 static pid_t fixture_getpid(void) { return 4243; }
@@ -72,8 +73,10 @@ static OSStatus fixture_information(SecStaticCodeRef code, SecCSFlags flags, CFD
     CFMutableDictionaryRef claims = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     if (sandbox) CFDictionarySetValue(claims, CFSTR("com.apple.security.app-sandbox"), sandbox);
     CFTypeRef value = malformed_claims ? (CFTypeRef)CFSTR("malformed") : (CFTypeRef)claims;
-    const void *key = kSecCodeInfoEntitlementsDict;
-    *result = CFDictionaryCreate(NULL, &key, &value, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFMutableDictionaryRef information = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFDictionarySetValue(information, kSecCodeInfoEntitlementsDict, value);
+    if (signing_team) CFDictionarySetValue(information, kSecCodeInfoTeamIdentifier, signing_team);
+    *result = information;
     CFRelease(claims); return 0;
 }
 static xpc_object_t fixture_reply(xpc_object_t request) { assert(request); return xpc_dictionary_create_empty(); }
@@ -107,6 +110,7 @@ static void reset(void) {
     registrations = drains = guest_calls = validity_calls = static_calls = information_calls = 0;
     guest_result = validity_result = static_result = information_result = 0;
     sandbox = kCFBooleanTrue; missing_information = malformed_information = malformed_claims = false;
+    signing_team = CFSTR("JVV65668U6");
 }
 static struct scribe_store_parent_broker *prepare(void) {
     return scribe_store_parent_prepare(4242, "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store", "--provider-v1");
@@ -137,6 +141,11 @@ int main(void) {
         scribe_store_parent_discard(broker);
     }
     CFRelease(number);
+    CFTypeRef teams[] = {CFSTR("JVV65668U6"), CFSTR("TESTFLIGHT"), CFSTR("OTHERTEAM"), NULL, kCFBooleanTrue};
+    for (size_t index = 0; index < sizeof(teams)/sizeof(teams[0]); index++) {
+        reset(); signing_team = teams[index]; broker = prepare(); assert((broker != NULL) == (index == 0)); checks++;
+        scribe_store_parent_discard(broker);
+    }
     for (int failure = 0; failure < 7; failure++) {
         reset();
         if (failure == 0) guest_result = errSecParam;
