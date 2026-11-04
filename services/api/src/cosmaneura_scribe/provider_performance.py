@@ -32,6 +32,7 @@ _TOTAL_LOGGERS: dict[str, Callable[[float], None]] = {
     "capture-notes": lambda ms: log_event(action="provider.capture-notes.total", duration_ms=ms),
     "note-opening": lambda ms: log_event(action="provider.note-opening.total", duration_ms=ms),
     "cancellation": lambda ms: log_event(action="provider.cancellation.total", duration_ms=ms),
+    "activation": lambda ms: log_event(action="provider.activation.total", duration_ms=ms),
     "source-start": lambda ms: log_event(action="provider.source-start.total", duration_ms=ms),
     "source-start-ready": lambda ms: log_event(
         action="provider.source-start-ready.total",

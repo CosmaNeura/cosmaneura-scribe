@@ -5,6 +5,8 @@ import re
 from typing import cast
 from uuid import uuid4, uuid5
 
+from cosmaneura_scribe.provider_account_setup import ProviderAccountSetupRequired
+from cosmaneura_scribe.provider_activation_transport import ProviderActivationTransport
 from cosmaneura_scribe.provider_cancellation_transport import ProviderCancellationTransport
 from cosmaneura_scribe.provider_context_transport import ProviderContextTransport
 from cosmaneura_scribe.provider_core_transport import (
@@ -109,6 +111,14 @@ class CoreContextReceiver(ProviderReceiver):
                 action,
                 include_native_visit_actions_v2=self.native_visit_actions_v2_enabled,
             )
+        finally:
+            await transport.close()
+
+    async def activation(self, authorization, body, key):
+        transport = ProviderActivationTransport(self.profile.core_origin, self._verify,
+            self.workload_token, transport=self.core_http, connections=self.core_connections)
+        try:
+            return await transport.request(authorization, body, key)
         finally:
             await transport.close()
 
@@ -239,6 +249,23 @@ class CoreContextReceiver(ProviderReceiver):
     def app(self):
         app = super().app()
 
+        async def activation(request: Request):
+            try:
+                revision = _uuid(request.headers.get("x-scribe-native-revision"))
+                body = await _read(request, _LIMITS["activation"])
+                result = await self.activation(request.headers.get("authorization", ""), body,
+                    request.headers.get("idempotency-key", ""))
+                return _reply(200, {"revision": str(revision), **result})
+            except ProviderAccountSetupRequired as error:
+                return _reply(409, error.body(str(revision)))
+            except ProviderCoreUnavailable as error:
+                return _reply(error.status, {"detail": error.code})
+            except Exception:
+                return _reply(403, {"detail": "provider_request_denied"})
+
+        app.router.routes.insert(0, APIRoute(_PREFIX + "activation", activation,
+            methods=["POST"], include_in_schema=False))
+
         async def catalog(request: Request):
             try:
                 revision = _uuid(request.headers.get("x-scribe-native-revision"))
@@ -273,6 +300,8 @@ class CoreContextReceiver(ProviderReceiver):
                         ),
                     },
                 )
+            except ProviderAccountSetupRequired as error:
+                return _reply(409, error.body(str(revision)))
             except ProviderCoreUnavailable as error:
                 return _reply(error.status, {"code": error.code})
             except Exception:

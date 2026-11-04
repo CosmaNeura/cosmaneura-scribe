@@ -91,6 +91,7 @@ _LIMITS = {
     "recorder": 1024,
     "note-opening": 1024,
     "cancellation": 2048,
+    "activation": 1024,
     "source-start": 4096,
     "source-start-ready": 8192,
     "capture-admissions": 2048,
