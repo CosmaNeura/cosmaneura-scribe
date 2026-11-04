@@ -507,10 +507,13 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
 
     @objc nonisolated public func openProviderCore(_ call: CAPPluginCall) {
         Task { @MainActor in
-            guard self.providerRequestsAvailable, self.auth?.state().phase == .ready,
-                  Set(call.options.keys) == ["appointmentRef"] else { return Self.rejectProvider(call) }
+            guard self.providerRequestsAvailable, self.auth?.state().phase == .ready else { return Self.rejectProvider(call) }
+            let revision = self.auth?.state().revision
             let path: String
-            if let appointment = call.getString("appointmentRef"),
+            if Set(call.options.keys) == ["destination"], call.getString("destination") == "onboarding" {
+                path = "/onboarding"
+            } else if Set(call.options.keys) != ["appointmentRef"] { return Self.rejectProvider(call) }
+            else if let appointment = call.getString("appointmentRef"),
                appointment.range(of: "^appointment_[0-7][0-9a-hjkmnp-tv-z]{25}$", options: .regularExpression) != nil {
                 path = "/notes/" + appointment
             } else if call.options["appointmentRef"] is NSNull { path = "/notes" }
@@ -519,7 +522,9 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             guard let configuration = Self.providerApplicationConfiguration(),
                   let origin = configuration["coreOrigin"] as? String,
                   let url = URL(string: origin + path),
-                  await UIApplication.shared.open(url) else { return Self.rejectProvider(call) }
+                   await UIApplication.shared.open(url), self.providerRequestsAvailable,
+                   self.auth?.state().phase == .ready, self.auth?.state().revision == revision
+            else { return Self.rejectProvider(call) }
             call.resolve()
             #else
             Self.rejectProvider(call)

@@ -6,6 +6,7 @@ import scribeIcon from "../../public/icon.svg?raw";
 import "./application.css";
 import { openCancellationDialog } from "./cancellation-dialog";
 import type { CancellationReceipt, ScribeCancellation } from "./cancellation";
+import { ProviderSetupRequired, type ProviderSetup } from "./account-setup";
 
 export type { ProviderSessionState } from "./native-plugin";
 export interface ProviderApplicationHost {
@@ -14,6 +15,8 @@ export interface ProviderApplicationHost {
   readonly cancellation?: ScribeCancellation;
   /** Fixed native account-level destination; no URL is supplied by the UI. */
   readonly openDashboard?: (signal: AbortSignal) => Promise<void>;
+  readonly openPracticeSetup?: (signal: AbortSignal) => Promise<void>;
+  readonly activateScribe?: (signal: AbortSignal, revision: string) => Promise<void>;
   /** Trusted host supports volatile, same-account native cessation recovery. */
   readonly supportsRecorderStopReauthentication?: true;
   /** Main may own a preparation before the renderer obtains its recorder. */
@@ -49,6 +52,9 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   let cancellationReceipt: CancellationReceipt | null = null, cancellationCheckedRevision: string | null = null;
   let cancellationCheck: AbortController | undefined;
   let notice = "", polling: Promise<void> | undefined, disposal: Promise<void> | undefined;
+  let setup: ProviderSetup | undefined, setupAbort: AbortController | undefined;
+  let activationAttemptedRevision: string | null = null, practiceHandoffRevision: string | null = null;
+  let practiceReturned = false;
   root.classList.add("provider-application");
   root.innerHTML = `<header class="provider-session-header"><div class="provider-brand"><span class="provider-brand-icon" aria-hidden="true">${scribeIcon}</span><strong>Scribe</strong></div><div data-session-actions></div></header>
     <section class="provider-session-status" aria-live="polite"><h1 data-session-title></h1><p data-session-message></p>
@@ -112,6 +118,14 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
       title.textContent = "Sign-out needs attention";
       message.textContent = "Your workspace is closed. Retry sign-out to finish.";
       recovery.innerHTML = button("sign-out", "Retry sign out");
+    } else if (phase === "ready" && setup) {
+      title.textContent = setup === "practice" ? "Complete practice setup" : "Finish Scribe activation";
+      if (!notice) message.textContent = setup === "practice"
+        ? "Use the same account to join or create your practice and complete setup. Recording stays closed until access is confirmed."
+        : "Your practice is ready. Complete activation to open Scribe. Recording stays closed until access is confirmed.";
+      recovery.innerHTML = setup === "practice"
+        ? (host.openPracticeSetup ? button("practice-setup", "Complete practice setup") : "") + button("open", "Check access")
+        : (host.activateScribe ? button("activate", "Retry activation") : button("open", "Check access"));
     } else if (phase === "signedOut") recovery.innerHTML = button("sign-in", "Sign in");
     else if (phase === "signOutPending") recovery.innerHTML = button("sign-out", "Retry sign out");
     else if (phase === "unavailable") recovery.innerHTML = button("check", "Check session") + button("sign-out", "Sign out");
@@ -153,6 +167,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     const valid = value && ["disabled", "loading", "signedOut", "signingIn", "ready", "signOutPending", "unavailable"].includes(value.phase)
       && isUuid(value.revision);
     if (!valid) {
+      setupAbort?.abort(); setup = undefined; practiceHandoffRevision = null;
       state = null; accessClosed = true; notice = "Your secure session could not be verified.";
       invalidate(); closeInBackground(); render(); return;
     }
@@ -160,6 +175,8 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     // Native polling still observes revocation, but an identical observation
     // must not replace focused controls or retry a previously failed close.
     if (!changed) return;
+    setupAbort?.abort(); setupAbort = undefined; setup = undefined;
+    activationAttemptedRevision = null; practiceHandoffRevision = null; practiceReturned = false;
     cancelDialog?.(); cancelDialog = undefined;
     cancellationCheck?.abort(); cancellationCheck = undefined;
     cancellationCheckedRevision = null; cancellationReceipt = null;
@@ -184,6 +201,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         if (!disposed && before === observations) accept(value);
       } catch {
         if (!disposed && before === observations) {
+          setupAbort?.abort(); setup = undefined; practiceHandoffRevision = null;
           state = null;
           accessClosed = true; invalidate(); closeInBackground();
           notice = "Your secure session could not be checked. Your workspace is closed.";
@@ -226,6 +244,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     notice = "Checking Scribe access…"; render();
     if (!await checkCancellation()) return;
     if (disposed || logoutPending || state?.phase !== "ready") return;
+    setup = undefined;
     const owned: Scope = { abort: new AbortController(), revision: state.revision, connecting: Promise.resolve() };
     scope = owned; accessClosed = false;
     notice = "Connecting your workspace…"; render();
@@ -242,13 +261,35 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         }, { once: true });
         owned.unmount = mountProviderWorkspace(workflow, connection.workspace);
         notice = "";
-      } catch {
+      } catch (error) {
+        if (disposed || owned.abort.signal.aborted || state?.phase !== "ready" || state.revision !== owned.revision) return;
         owned.abort.abort(); accessClosed = true;
-        notice = "Your workspace could not be opened. Check your connection and try again.";
+        if (error instanceof ProviderSetupRequired) {
+          setup = error.setup; notice = ""; recordingOpenPending = false;
+        } else notice = "Your workspace could not be opened. Check your connection and try again.";
       }
     });
     await owned.connecting;
     if (owned.abort.signal.aborted) await close();
+    if (!disposed && !logoutPending && sessionState()?.phase === "ready" && sessionState()?.revision === owned.revision
+      && setup === "activation" && host.activateScribe && activationAttemptedRevision !== owned.revision) {
+      activationAttemptedRevision = owned.revision;
+      const abort = new AbortController(); setupAbort?.abort(); setupAbort = abort;
+      notice = "Activating Scribe… Recording stays closed while access is checked."; render();
+      try {
+        await host.activateScribe(abort.signal, owned.revision);
+        await read();
+        if (disposed || abort.signal.aborted || logoutPending || sessionState()?.phase !== "ready"
+          || sessionState()?.revision !== owned.revision) return;
+        setup = undefined;
+        await open(); // A fresh authorized connection is required after the write.
+      } catch (error) {
+        if (!disposed && !abort.signal.aborted && sessionState()?.phase === "ready" && sessionState()?.revision === owned.revision) {
+          if (error instanceof ProviderSetupRequired && error.setup === "practice") { setup = "practice"; notice = ""; }
+          else notice = "Scribe activation could not be confirmed. Recording stays closed. Retry activation or sign out.";
+        }
+      } finally { abort.abort(); if (setupAbort === abort) setupAbort = undefined; }
+    }
     render();
     flushRecordingOpen();
   };
@@ -259,6 +300,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     notice = ""; render();
     try {
       if (action === "sign-out") {
+        setupAbort?.abort(); practiceHandoffRevision = null;
         logoutPending = true;
         accessClosed = true; invalidate();
         // Persist native logout intent even if the recorder's stop fails. A
@@ -306,6 +348,16 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
       } else if (action === "dashboard") {
         if (state?.phase !== "ready" || cancellationReceipt?.phase !== "read-only-export" || !host.openDashboard) return;
         await host.openDashboard(new AbortController().signal);
+      } else if (action === "practice-setup") {
+        if (state?.phase !== "ready" || setup !== "practice" || !host.openPracticeSetup || cancellationReceipt || stopUnconfirmed) return;
+        const revision = state.revision, abort = new AbortController(); setupAbort = abort;
+        practiceHandoffRevision = revision; practiceReturned = false;
+        try { await host.openPracticeSetup(abort.signal); }
+        catch (error) { if (practiceHandoffRevision === revision) practiceHandoffRevision = null; throw error; }
+        finally { if (setupAbort === abort) setupAbort = undefined; }
+      } else if (action === "activate") {
+        if (setup !== "activation" || cancellationReceipt || stopUnconfirmed) return;
+        activationAttemptedRevision = null; await open();
       } else if (action === "check-cancellation") { await checkCancellation(); }
       else if (action === "open") await open();
       else if (action === "check") await read();
@@ -315,6 +367,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
       operations -= 1; busy = operations > 0;
       if (action === "sign-out") signingOut = false;
       render();
+      recheckPractice();
     }
   };
   const clicked = (event: Event): void => {
@@ -342,7 +395,17 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     menu.open = false;
     menu.querySelector("summary")?.focus();
   };
-  const resume = (): void => { if (document.visibilityState === "visible") void read(); };
+  const recheckPractice = (): void => {
+    if (!disposed && !busy && !logoutPending && !stopUnconfirmed && !cancellationReceipt && setup === "practice"
+      && practiceReturned && practiceHandoffRevision === sessionState()?.revision && sessionState()?.phase === "ready") {
+      practiceHandoffRevision = null; practiceReturned = false; void perform("open");
+    }
+  };
+  const resume = (): void => {
+    if (document.visibilityState !== "visible") return;
+    if (practiceHandoffRevision !== null) practiceReturned = true;
+    void read().then(recheckPractice);
+  };
   const sessionState = (): ProviderSessionState | null => state;
   root.addEventListener("click", clicked);
   root.addEventListener("toggle", accountToggled, true);
@@ -376,7 +439,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   })();
   return (): Promise<void> => {
     if (disposal) return disposal;
-    disposed = true; cancellationCheck?.abort(); cancelDialog?.(); invalidate(); clearInterval(timer); headerObserver.disconnect();
+    disposed = true; setupAbort?.abort(); cancellationCheck?.abort(); cancelDialog?.(); invalidate(); clearInterval(timer); headerObserver.disconnect();
     root.removeEventListener("click", clicked);
     root.removeEventListener("toggle", accountToggled, true);
     document.removeEventListener("scroll", accountScrolled, true);

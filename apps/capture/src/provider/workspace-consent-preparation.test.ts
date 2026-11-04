@@ -1,6 +1,6 @@
 import { webcrypto } from "node:crypto";
 import { Capacitor } from "@capacitor/core";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Surface } from "./test-workspace-surface";
 import { mountProviderWorkspace, type ProviderWorkspaceHost } from "./workspace";
 import type { ProviderCaptureBinding, ProviderRecorderSnapshot } from "../provider-binding";
@@ -43,7 +43,9 @@ class CommandSurface extends Surface {
 function gate<T>() { let resolve!: (v: T) => void, reject!: (reason: Error) => void;
   const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; }
 const disposers: (() => Promise<void>)[] = [];
-afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+// Exercise the enabled fixture before its fixed rollout expiry on every calendar date.
+beforeEach(() => vi.setSystemTime(new Date("2026-10-31T12:00:00Z")));
+afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
 const sid = "00000000-0000-4000-8000-000000000001", suffix = "01j" + "0".repeat(23);
 const ref = "appointment_" + suffix;
 function fixture(options: { preparing?: boolean; admission?: Promise<void>; acquisition?: Promise<void>; release?: boolean; saved?: JournalSnapshot; metadataClose?: Promise<void>; journalSave?: Promise<void>;
