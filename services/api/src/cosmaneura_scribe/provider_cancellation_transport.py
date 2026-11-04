@@ -5,6 +5,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 import httpx
@@ -26,24 +27,26 @@ BASE = {
 }
 
 
-def require(value) -> None:
+def require(value: object) -> None:
     if not value:
         raise ValueError("cancellation_contract_invalid")
 
 
-def uuid(value) -> None:
-    require(isinstance(value, str) and str(UUID(value)) == value and UUID(value).int != 0)
+def uuid(value: object) -> None:
+    require(isinstance(value, str))
+    assert isinstance(value, str)
+    require(str(UUID(value)) == value and UUID(value).int != 0)
 
 
-def unique(pairs):
-    result = {}
+def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
     for name, value in pairs:
         require(name not in result)
         result[name] = value
     return result
 
 
-def validate_request(body: dict, key: str) -> None:
+def validate_request(body: dict[str, Any], key: str) -> None:
     require(type(body) is dict and len(json.dumps(body).encode()) <= 2048)
     uuid(body.get("request_nonce"))
     action = body.get("action")
@@ -67,7 +70,7 @@ def validate_request(body: dict, key: str) -> None:
         require(False)
 
 
-def validate_response(value: dict, body: dict) -> None:
+def validate_response(value: dict[str, Any], body: dict[str, Any]) -> None:
     require(
         type(value) is dict
         and value.get("contract_version") == "1"
@@ -120,7 +123,7 @@ class ProviderCancellationTransport:
     def __init__(
         self,
         origin: str,
-        verify: Callable[[str], Awaitable[dict]],
+        verify: Callable[[str], Awaitable[dict[str, object]]],
         workload: Callable[[], Awaitable[SecretStr]],
         *,
         transport: httpx.AsyncBaseTransport | None = None,
@@ -146,7 +149,7 @@ class ProviderCancellationTransport:
     async def close(self) -> None:
         await self.client.aclose()
 
-    async def request(self, authorization: str, body: dict, key: str) -> dict:
+    async def request(self, authorization: str, body: dict[str, Any], key: str) -> dict[str, Any]:
         try:
             validate_request(body, key)
             require(authorization.startswith("Bearer ") and 8 <= len(authorization) <= 8200)
