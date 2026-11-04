@@ -105,6 +105,44 @@ struct CheckNativeProvider {
     }
     @MainActor static func main() async throws {
         var checks = 0
+        // Closed account setup is tied to this native request and never a mount.
+        do {
+            let revision = UUID().uuidString.lowercased(), nonce = UUID().uuidString.lowercased()
+            let activation = try ProviderNativeRequest(id: UUID().uuidString.lowercased(),
+                revision: revision, action: "activation", key: UUID().uuidString.lowercased(),
+                body: "{\"action\":\"activate\",\"request_nonce\":\"\(nonce)\"}")
+            let catalog = try ProviderNativeRequest(id: UUID().uuidString.lowercased(),
+                revision: revision, action: "catalog", key: "offline-provider-key", body: "{}")
+            for request in [activation, catalog] {
+                let value: [String: Any] = ["type": "scribe_account_setup_required", "status": 409,
+                    "setup": "practice", "request_nonce": nonce, "revision": revision]
+                let reply = ProviderNativeReply(status: 409, body: try JSONSerialization.data(withJSONObject: value))
+                let safe = NativeProviderConnection.sanitizedFailure(reply, action: request.action, request: request)
+                let accepted = try JSONSerialization.jsonObject(with: safe.body) as! [String: Any]
+                try require(accepted["setup"] as? String == "practice" && accepted["revision"] as? String == revision)
+                checks += 1
+                for fault in ["revision", "request_nonce", "setup", "extra", "status"] {
+                    var invalid = value
+                    if fault == "extra" { invalid["tenant_ref"] = "forbidden" }
+                    else if fault == "status" { invalid["status"] = 409.5 }
+                    else { invalid[fault] = fault == "request_nonce" ? UUID().uuidString.lowercased() : "forbidden" }
+                    if request.action == .catalog && fault == "request_nonce" { continue }
+                    let rejected = NativeProviderConnection.sanitizedFailure(
+                        ProviderNativeReply(status: 409, body: try JSONSerialization.data(withJSONObject: invalid)),
+                        action: request.action, request: request)
+                    try require(String(decoding: rejected.body, as: UTF8.self) == "{\"detail\":\"provider_request_unconfirmed\"}")
+                    checks += 1
+                }
+            }
+            for body in ["{}", "{\"action\":\"activate\",\"request_nonce\":\"\(nonce)\",\"doctor_ref\":\"forbidden\"}"] {
+                do {
+                    _ = try ProviderNativeRequest(id: UUID().uuidString.lowercased(), revision: revision,
+                        action: "activation", key: UUID().uuidString.lowercased(), body: body)
+                    try require(false)
+                } catch is CheckFailure { throw CheckFailure.failed }
+                catch { checks += 1 }
+            }
+        }
         // Only the two closed operation dispositions cross the native bridge.
         do {
             for (source, expected) in [

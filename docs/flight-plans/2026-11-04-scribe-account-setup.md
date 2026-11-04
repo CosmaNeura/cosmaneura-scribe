@@ -45,3 +45,34 @@ cancellation and revocation evidence. A setup signal never restores cancelled ac
 No Stripe configuration, real card charge, membership grant or grandfather entitlement
 rewrite belongs to this stack. Synthetic billing exemption uses the existing approved
 admin path only after John's approval of the exact practice/action.
+
+## Native qualification
+
+Before mounting a recorder-capable workspace, the native application performs
+catalog discovery and preserves only the validated setup signal. Practice setup
+opens only the fixed Core `/onboarding` destination with closed native arguments;
+the user must use the same account. Returning to the app rechecks that same native
+revision. Eligible missing connections get one explicit activation attempt per
+revision, visible progress, and a fresh authorized connection read before mounting.
+Failure stays closed with an explicit retry. Logout, disposal and revision changes
+discard late replies; an activation reply never starts recording or restores consent.
+Cancellation status remains the first gate and keeps read-only accounts closed.
+
+Keep the native bridge and standalone builder's `NativeProviderConnection.swift`
+copies byte-identical. Bound activation requests and setup replies to canonical
+nonzero UUIDs, exact keys, the current revision and, for activation, the request nonce.
+The native bridge reconstructs only the safe setup fields; arbitrary errors stay generic.
+
+Local qualification includes all capture tests, full TypeScript/API type checks,
+affected lint, Core-context receiver routes, transport/client wire checks, offline
+Swift provider checks, renderer packaging and an unsigned disabled iOS compile with
+the retained hash-verified Clerk SDK and production compilation conditions. This
+compiler candidate is neither installed nor a TestFlight build. Record exact commits
+and compiler evidence in the PR. The consent fixture's clock is pinned before its
+fixed November 1 expiry; product expiry and its expiration test remain unchanged.
+
+Account wording verified in source: **Cancel Scribe access** cancels Scribe access
+and preserves the shared Cosmaneura login. PR 525 is merged, but that is not evidence
+of complete login deletion or completed erasure. No separate full-delete link has
+been confirmed in the native source. Verify the installed candidate and review
+requirements before filming; do not describe cancellation as full account deletion.

@@ -2,7 +2,7 @@ import type { NativeRecordingCommand } from "./native-recorder";
 import type { MicrophoneInput } from "../native/microphone-input";
 import { registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 
-export type ProviderAction = "catalog" | "encounters" | "mount" | "recorder" | "recorder-context" | "capture-admissions" | "capture-operations" | "capture-notes" | "note-opening" | "cancellation";
+export type ProviderAction = "catalog" | "encounters" | "mount" | "recorder" | "recorder-context" | "capture-admissions" | "capture-operations" | "capture-notes" | "note-opening" | "cancellation" | "activation";
 export type ProviderSessionPhase = "disabled" | "loading" | "signedOut" | "signingIn" | "ready" | "signOutPending" | "unavailable";
 export interface ProviderSessionState {
   readonly phase: ProviderSessionPhase; readonly revision: string;
@@ -52,7 +52,7 @@ export interface StandaloneProviderNative {
   getProviderConfiguration(): Promise<{ enabled: boolean; coreOrigin: string; uploadOrigins: string[];
     /** Returned only by the receipt-gated, production-compiled native bridge. */
     profile?: "core-production-organization-v1" | "core-production-personal-v1" }>;
-  openProviderCore(request: { appointmentRef: string | null }): Promise<void>;
+  openProviderCore(request: { appointmentRef: string | null } | { destination: "onboarding" }): Promise<void>;
 }
 
 export interface IOSRecordingOpenPlugin {

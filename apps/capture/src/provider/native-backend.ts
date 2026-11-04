@@ -1,4 +1,5 @@
 import { nativePassagePlayer } from "./native-passage";
+import { checkedProviderSetup, ProviderSetupRequired } from "./account-setup";
 import { scopedSignInPreparation } from "./signin-preparation";
 import { parseEncounterDisplay } from "./encounter-display";
 import { speakerNameSuggestion } from "../../../review-ui/src/creator-edit";
@@ -19,7 +20,7 @@ import type { ProviderEncounter } from "./workspace";
 import { SecureQueue } from "@cosmaneura-scribe/capacitor-secure-queue";
 import { parseProviderAccount, existingPatientSetup, fullNativeVisitSetup, providerVisitCapabilities, type ProviderAccount, createEncounterSetup } from "./encounter-setup";
 
-const limits: Record<Action, number> = { catalog: 2, encounters: 16384, mount: 256, recorder: 1024, "recorder-context": 1024, "note-opening": 1024, cancellation: 2048,
+const limits: Record<Action, number> = { catalog: 2, encounters: 16384, mount: 256, recorder: 1024, "recorder-context": 1024, "note-opening": 1024, cancellation: 2048, activation: 1024,
   "capture-admissions": 2048, "capture-operations": 4_194_304, "capture-notes": 262_144 + 8192 };
 type NativeReply = Awaited<ReturnType<ProviderNativePlugin["providerRequest"]>>;
 export type { ProviderNativePlugin } from "./native-plugin";
@@ -170,6 +171,11 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
   const json = async (action: "catalog" | "mount" | "recorder", body: Record<string, unknown>,
     signal: AbortSignal): Promise<Record<string, unknown>> => {
     const response = await request(action, body, crypto.randomUUID(), [signal]);
+    if (action === "catalog" && response.status === 409) {
+      const value: unknown = await response.json(); current(signal);
+      const setup = checkedProviderSetup(value, revision);
+      if (setup) throw new ProviderSetupRequired(setup);
+    }
     if (response.status !== 200) throw new BffResponseError(response.status, "provider_request_unconfirmed", null);
     const value: unknown = await response.json();
     current(signal);
