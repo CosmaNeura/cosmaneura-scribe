@@ -375,7 +375,7 @@ def test_existing_receiver_record_operations_are_unchanged():
         [
             "git",
             "show",
-            "6ca3b86d40859063ad29f7b111e49efafe4d1091:scripts/standalone-provider/receiver.py",
+            "0784c2451f42da7fb46abafddc3db18a5ca6bbda:scripts/standalone-provider/receiver.py",
         ],
         cwd=root,
         check=True,
