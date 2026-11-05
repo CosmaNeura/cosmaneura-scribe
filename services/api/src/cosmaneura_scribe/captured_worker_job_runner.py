@@ -154,7 +154,7 @@ async def _targets(
 def _cohort_order(settings: CapturedWorkerSettings) -> tuple[UUID, ...]:
     tenants = tuple(sorted(settings.configured_capture_tenant_ids))
     # Schedule-minute rotation is fairness only; membership was already gated.
-    offset = (int(time.time() // 60) * settings.captured_worker_batch_size) % len(tenants)
+    offset = int(time.time() // 60) % len(tenants)
     return tenants[offset:] + tenants[:offset]
 
 

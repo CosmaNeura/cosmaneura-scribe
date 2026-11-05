@@ -40,11 +40,13 @@ One aggregate batch budget remains 8 by default (maximum 32), and one aggregate
 after pickup expires, as in the legacy path. Existing durable leases arbitrate
 overlapping scheduled executions; failed targets are not retried within a run.
 
-Sorted UUIDs rotate by `schedule_minute * batch_size` modulo cohort size. This
-provides bounded preference across a continuously busy cohort; for 32 tenants
-and batch 8, four successive schedule minutes visit every tenant before taking
-a second target from a preferred tenant. Rotation is fairness only, never
-permission, and does not promise completion within a particular minute.
+Sorted UUIDs rotate by `schedule_minute` modulo cohort size, independently of
+batch size or how much accepted work fits the pickup window. Across N successive
+schedule minutes, each of N configured tenants gets first pickup preference once,
+including when the first accepted task runs beyond 65 seconds. Later preferences
+are visited only while the shared deadline and batch budget permit. Rotation is
+fairness only, never permission, and does not promise execution or completion
+within a particular minute.
 
 The retained speech observer is bound to a tenant when its provider is built.
 Cohort CLI mode refuses any configured speech observation scope before resource

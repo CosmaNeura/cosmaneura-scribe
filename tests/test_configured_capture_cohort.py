@@ -115,7 +115,7 @@ async def test_cohort_cli_selects_only_validated_members(tmp_path: Path, monkeyp
         execute_cohort=execute,
     )
     ordered = tuple(sorted(settings.configured_capture_tenant_ids))
-    assert calls == [ordered[8:] + ordered[:8]]
+    assert calls == [ordered[1:] + ordered[:1]]
     assert set(calls[0]) == settings.configured_capture_tenant_ids
 
 
@@ -182,12 +182,70 @@ def test_rotation_covers_busy_cohort_without_authorizing_anyone(
 ) -> None:
     settings = _cohort_settings(tmp_path, count=32)
     visited = set()
-    for minute in range(4):
+    for minute in range(32):
         monkeypatch.setattr(runner.time, "time", lambda minute=minute: minute * 60.0)
         order = runner._cohort_order(settings)
-        visited.update(order[: settings.captured_worker_batch_size])
+        visited.add(order[0])
         assert set(order) == settings.configured_capture_tenant_ids
     assert visited == settings.configured_capture_tenant_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [2, 4, 8, 16, 32])
+@pytest.mark.parametrize("stage", ["speech", "translation"])
+async def test_long_accepted_first_work_rotates_next_run_without_budget_amplification(
+    tmp_path: Path, monkeypatch, count: int, stage: str
+) -> None:
+    settings = _cohort_settings(tmp_path, count=count, stage=stage)
+    assert settings.captured_worker_batch_size == 8
+    clock = [0.0]
+    session = uuid4()
+    processed, completed = [], []
+
+    async def selected(_, config, tenant, target):
+        assert config is settings and tenant in settings.configured_capture_tenant_ids
+        assert target is None
+        return (session,)
+
+    @asynccontextmanager
+    async def transaction(tenant):
+        async def reconcile(actual_tenant, target, *, max_attempts):
+            assert actual_tenant == tenant and target == session and max_attempts == 3
+
+        yield SimpleNamespace(reconcile_exhausted_speech=reconcile)
+
+    async def process(*, tenant_id, session_id):
+        assert session_id == session
+        processed.append(tenant_id)
+        # An accepted provider call may finish after pickup has closed. Only the
+        # first preference fits, so full-batch rotation cannot prevent starvation.
+        clock[0] += runner.PENDING_PICKUP_SECONDS + 1.0
+        completed.append(tenant_id)
+
+    async def execute_cohort(config, tenants):
+        await runner._dispatch_cohort(
+            SimpleNamespace(transaction=transaction),
+            config,
+            tenants,
+            SimpleNamespace(process=process),
+        )
+
+    monkeypatch.setattr(runner, "_targets", selected)
+    monkeypatch.setattr(runner.time, "monotonic", lambda: clock[0])
+    for minute in range(count):
+        monkeypatch.setattr(runner.time, "time", lambda minute=minute: minute * 60.0)
+        clock[0] = 0.0
+        before = len(processed)
+        await runner.run_captured_worker(
+            arguments=("--cohort-pending",),
+            environ=_ENVIRON,
+            settings_factory=lambda: settings,
+            execute_cohort=execute_cohort,
+        )
+        assert len(processed) == before + 1
+        assert clock[0] == 66.0  # Accepted work completed; no second pickup occurred.
+    assert processed == list(sorted(settings.configured_capture_tenant_ids))
+    assert completed == processed
 
 
 @pytest.mark.asyncio
