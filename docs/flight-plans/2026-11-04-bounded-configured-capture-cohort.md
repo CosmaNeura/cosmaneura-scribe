@@ -110,3 +110,42 @@ only under its separately approved security runbook. The ordinary grant reset
 and disabled configured permission gate retain their existing closed behavior.
 Other admitted practice namespaces remain closed until an approved forward
 recovery requalifies them. No database structure is dropped or downgraded.
+
+
+## Dormant worker renderer follow-on — 2026-11-05
+
+Tier 2 source-only preparation for Goal 1's new-practice/legacy admission work.
+The existing schema1 binding and complete output bytes remain the singleton
+format, including previously accepted tenant UUID spellings. Unknown/mixed
+fields and duplicate JSON keys now fail closed before an output directory is
+created. Both worker identity/stage/resource/reference checks remain intact.
+
+Explicit schema2 uses `configured_capture_multi_tenant_enabled: true` and
+`tenant_ids` in place of `tenant_id`. It requires 1–32 unique, canonical lowercase,
+nonzero UUID strings and preserves their exact selected order. False/missing
+opt-in, invalid schemas, unknown top/nested fields and mixed formats are refused.
+Both disabled jobs receive the same exact JSON list, the existing multi-tenant
+flag and exactly `--cohort-pending`; all remaining output fields are unchanged.
+The renderer neither registers tenants nor qualifies an image's support.
+
+This supplies the existing #538 worker mode's missing renderer representation.
+It does not enable workers, capture, billing, intake, a practice or unknown future
+accounts. The immediate physical build 97 JOIN demo uses the existing singleton and
+needs no new native build. Goal 1's selected CREATE/unlinked-practice plan still
+requires actual authoritative UUIDs, source-bound API/job artifacts, exact
+approved Core/Scribe cohorts and rehearsed complete database permissions, as
+specified by this flight plan. Missing lawful BAA/enrollment facts remain a
+separate block; global admission-maintenance policy remains unresolved.
+
+Local qualification compares whole schema1 CLI job bytes for both stages and
+legacy UUID spellings to the merged #542 baseline, proves only the schema2 list/
+flag/arguments delta, and refuses malformed/mixed/duplicate input before output
+mkdir without exposing values. Independent final-push review is required.
+
+Recovery before any release is revert this follow-on or render the preserved
+schema1 format. After a separately approved rollout, hold new pickup/intake and
+restore qualified prior job/image/args/cohort and restrictive role policies via
+its approved recovery, retaining pending work and namespace correspondence.
+This source change performs no live configuration, grant, schema, activation,
+publication, deployment or Core operational preparation. The blocked 350b Core
+operator is outside its scope and has no alternate route in this change.
