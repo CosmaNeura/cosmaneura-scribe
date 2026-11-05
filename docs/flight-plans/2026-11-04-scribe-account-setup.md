@@ -11,8 +11,8 @@ Source preparation authorizes no deployment, capability/cohort change or billing
 3. Scribe checked setup problem and fixed activation transport/receiver.
 4. Native client setup/progress, fixed Core onboarding handoff and fresh connection read.
 5. Independent review of each final substantive commit. Record commit, findings and
-   dispositions in durable PR evidence; John relays the review packet to Claude under
-   the current cross-task isolation agreement.
+   dispositions in durable PR evidence. John authorized local non-implementer agents
+   for the final review; no cross-chat review relay is required.
 6. Founder reconciles the exact reviewed merged source, image digests, schema and
    configuration against the running services before separately authorizing promotion.
    Preserve or explicitly reconcile deployed fixes that differ from the repository tip.
@@ -76,3 +76,27 @@ and preserves the shared Cosmaneura login. PR 525 is merged, but that is not evi
 of complete login deletion or completed erasure. No separate full-delete link has
 been confirmed in the native source. Verify the installed candidate and review
 requirements before filming; do not describe cancellation as full account deletion.
+
+## Staging qualification
+
+John selected staging for the App Review demo. The existing installed build 94 uses
+production Clerk and Core, so it cannot establish staging acceptance. A separately
+bound iOS 95+ candidate must use the existing `core-staging-personal-v1` identity,
+the fixed staging Clerk issuer and `core-staging-https-v1` receiver endpoint. No
+production profile, receipt or origin is reused as staging authority.
+
+The explicit `core-provider-context-v1` backend now accepts the existing staging
+personal profile with its matching real Clerk verifier. The receiver keeps the
+fixed staging origin/issuer/native-origin checks, verifies the human again after
+Core I/O, and never constructs a registry SQL engine in this mode. Production
+identity policies and the default legacy registry composition remain unchanged.
+Catalog display labels this profile **Staging**. Activation success grants no visit,
+recording or consent authority, and malformed setup replies remain closed.
+
+Retain the existing separate staging receiver topology. Canonical Core Nixpacks
+builds do not assemble the separately bundled Scribe runtime. Core staging release
+configuration must explicitly own the default-off native, activation/cohort and
+cancellation controls before a founder-selected exact merged candidate can be
+qualified. Source and local package preparation authorize no live config, migration,
+cohort activation, billing change or workflow enablement. Record each component's
+source/digest/schema/configuration before its separately approved staging release.

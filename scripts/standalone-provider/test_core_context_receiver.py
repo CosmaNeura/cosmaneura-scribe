@@ -8,13 +8,14 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from azure_ingress import STAGING_ORIGIN
 from core_context_receiver import CoreContextReceiver
 from cosmaneura_scribe.provider_core_transport import ProviderCoreUnavailable
 from cosmas_os.api import auth
 from cosmas_os.config import Settings
 from pydantic import SecretStr
 from receiver import ProviderReceiver, ReceiverProfile
-from receiver_runtime import ReceiverConfiguration, build_runtime
+from receiver_runtime import ReceiverConfiguration, build_runtime, identity_arguments
 from test_production_composition import configured, personal_config, production, validate
 from test_production_native_policy import OfflineKeys, claims, personal_settings, settings, signed
 
@@ -45,15 +46,28 @@ def config(**changes):
     )
 
 
-def test_new_mode_is_default_off_and_cannot_mix_registry_or_staging():
+def staging_config(**changes):
+    return validate(
+        configured(
+            authority_backend="core-provider-context-v1",
+            database_host=None,
+            database_name=None,
+            database_reader_role=None,
+            **changes,
+        )
+    )
+
+
+def test_new_mode_is_default_off_and_cannot_mix_registry_configuration():
     assert ReceiverConfiguration().authority_backend == "registry"
     assert not ReceiverConfiguration().enabled
     assert config().database_host is None
     personal = validate(personal_config())
     assert personal.authority_backend == "core-provider-context-v1"
     assert personal.database_host is None and personal.production.organization_id is None
+    assert staging_config().profile == "core-staging-personal-v1"
+    assert staging_config().production is None
     for changes in (
-        {"profile": "core-staging-personal-v1", "production": None},
         {"database_name": "forbidden"},
         {"core_scope": "api://00000000-0000-0000-0000-000000000000/.default"},
     ):
@@ -62,24 +76,45 @@ def test_new_mode_is_default_off_and_cannot_mix_registry_or_staging():
             ReceiverConfiguration.model_validate_json(json.dumps(values))
 
 
-def receiver(*, deny=False, revoke_after_native=False, full=False, core_full=None, personal=False):
-    projected = (
-        personal_settings(Settings, "app://cosmas")
-        if personal
-        else settings(Settings, "app://cosmas")
-    )
+def receiver(
+    *,
+    deny=False,
+    revoke_after_native=False,
+    full=False,
+    core_full=None,
+    personal=False,
+    staging=False,
+):
+    assert not (personal and staging)
+    core_origin = "https://staging-app.cosmaneura.com" if staging else "https://app.cosmaneura.com"
+    if staging:
+        projected_arguments, verifier_arguments = identity_arguments(
+            staging_config(desktop_native_session_without_origin=True), "desktop"
+        )
+        projected = Settings(_env_file=None, **projected_arguments)
+    else:
+        projected = (
+            personal_settings(Settings, "app://cosmas")
+            if personal
+            else settings(Settings, "app://cosmas")
+        )
+        verifier_arguments = dict(
+            production_native_origin="app://cosmas",
+            production_native_policy_receipt_sha256="4" * 64,
+            production_core_personal_session=personal,
+        )
     verifier = auth.ClerkTokenVerifier(
         projected,
         jwks_client=OfflineKeys(),
         start_background_refresh=False,
-        production_native_origin="app://cosmas",
-        production_native_policy_receipt_sha256="4" * 64,
-        production_core_personal_session=personal,
+        **verifier_arguments,
     )
     token_claims = claims(azp="app://cosmas")
-    if personal:
+    if personal or staging:
         token_claims.pop("org_id")
         token_claims.pop("aud")
+    if staging:
+        token_claims["iss"] = "https://resolved-emu-53.clerk.accounts.dev"
     token = signed(token_claims)
     calls = []
     revoked = False
@@ -130,10 +165,7 @@ def receiver(*, deny=False, revoke_after_native=False, full=False, core_full=Non
                 },
                 headers={"Cache-Control": "no-store", "X-Cosmaneura-Native-Capture-Version": "1"},
             )
-        assert (
-            str(request.url)
-            == "https://app.cosmaneura.com/service/v1/agent/scribe/provider-context"
-        )
+        assert str(request.url) == core_origin + "/service/v1/agent/scribe/provider-context"
         if deny or revoked:
             return httpx.Response(403)
         body = json.loads(request.content)
@@ -185,11 +217,17 @@ def receiver(*, deny=False, revoke_after_native=False, full=False, core_full=Non
 
     result = CoreContextReceiver(
         ReceiverProfile(
-            ORIGIN,
-            "https://app.cosmaneura.com",
+            STAGING_ORIGIN if staging else ORIGIN,
+            core_origin,
             uuid4(),
             frozenset({"app://cosmas"}),
-            identity_profile="core-production-personal-v1" if personal else "clerk-organization-v1",
+            identity_profile=(
+                "core-staging-personal-v1"
+                if staging
+                else "core-production-personal-v1"
+                if personal
+                else "clerk-organization-v1"
+            ),
         ),
         None,
         projected,
@@ -204,16 +242,18 @@ def receiver(*, deny=False, revoke_after_native=False, full=False, core_full=Non
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("personal", [False, True])
-async def test_catalog_and_selection_revalidate_core_without_any_registry(monkeypatch, personal):
+@pytest.mark.parametrize("personal,staging", [(False, False), (True, False), (False, True)])
+async def test_catalog_and_selection_revalidate_core_without_any_registry(
+    monkeypatch, personal, staging
+):
     def no_sql(*args, **kwargs):
         raise AssertionError("No registry SQL may run")
 
     monkeypatch.setattr("receiver.Session", no_sql)
-    client, token, calls, verifier = receiver(personal=personal)
+    client, token, calls, verifier = receiver(personal=personal, staging=staging)
     try:
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=client.app()), base_url=ORIGIN
+            transport=httpx.ASGITransport(app=client.app()), base_url=client.profile.origin
         ) as http:
             response = await http.post(
                 "/provider/v1/catalog",
@@ -226,7 +266,8 @@ async def test_catalog_and_selection_revalidate_core_without_any_registry(monkey
             )
             assert response.status_code == 200
             value = response.json()
-            assert value["environment"] == "Production" and value["encounter_creation_v1"] is True
+            assert value["environment"] == ("Staging" if staging else "Production")
+            assert value["encounter_creation_v1"] is True
             assert value["existing_patient_visits_v1"] is True
             assert value["encounters"][0]["workspaceId"] == WORKSPACE
             assert response.headers["cache-control"] == "no-store"
@@ -332,8 +373,10 @@ async def test_core_denial_and_missing_signed_session_never_fall_back(monkeypatc
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("personal", [False, True])
-async def test_runtime_new_mode_never_constructs_engine_or_requests_pg_token(monkeypatch, personal):
+@pytest.mark.parametrize("personal,staging", [(False, False), (True, False), (False, True)])
+async def test_runtime_new_mode_never_constructs_engine_or_requests_pg_token(
+    monkeypatch, personal, staging
+):
     calls = []
     original = auth.ClerkTokenVerifier
 
@@ -360,7 +403,10 @@ async def test_runtime_new_mode_never_constructs_engine_or_requests_pg_token(mon
     monkeypatch.setattr("azure.identity.aio.ManagedIdentityCredential", Credential)
     monkeypatch.setattr(auth, "ClerkTokenVerifier", make_verifier)
     monkeypatch.setattr("sqlalchemy.ext.asyncio.create_async_engine", forbidden_engine)
-    resources = await build_runtime(validate(personal_config()) if personal else config())
+    selected = (
+        staging_config() if staging else validate(personal_config()) if personal else config()
+    )
+    resources = await build_runtime(selected)
     await resources.close()
     assert calls == ["identity", "close"]
 
@@ -478,11 +524,14 @@ async def test_full_receiver_opt_in_without_core_gate_keeps_the_existing_only_ca
 
 
 @pytest.mark.asyncio
-async def test_full_native_catalog_and_five_actions_use_fresh_core_v2_without_registry(monkeypatch):
+@pytest.mark.parametrize("staging", [False, True])
+async def test_full_native_catalog_and_five_actions_use_fresh_core_v2_without_registry(
+    monkeypatch, staging
+):
     monkeypatch.setattr(
         "receiver.Session", lambda *_args, **_kwargs: pytest.fail("Registry forbidden")
     )
-    client, token, calls, verifier = receiver(full=True)
+    client, token, calls, verifier = receiver(full=True, staging=staging)
     original = client.core_http
     assert isinstance(original, httpx.MockTransport)
     patient = "patient_00000000000000000000000007"
@@ -542,7 +591,7 @@ async def test_full_native_catalog_and_five_actions_use_fresh_core_v2_without_re
     client.core_http = httpx.MockTransport(reply)
     try:
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=client.app()), base_url=ORIGIN
+            transport=httpx.ASGITransport(app=client.app()), base_url=client.profile.origin
         ) as http:
             headers = {
                 "Origin": "app://cosmas",
