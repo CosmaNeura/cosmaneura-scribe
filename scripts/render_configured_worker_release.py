@@ -2,7 +2,8 @@
 
 No Azure login, credentials, reads, writes, deployment, or job start. Inputs must
 name the reviewed private staging worker environment and distinct managed identities. Outputs
-are new local files. Enablement is deliberately not a renderer option.
+are new local files. Worker enablement is deliberately not a renderer option. Schema 2 may render
+the existing bounded cohort mode, with both jobs still disabled.
 """
 
 from __future__ import annotations
@@ -12,9 +13,31 @@ import ipaddress
 import json
 import re
 from pathlib import Path
+from typing import Any, cast
 from uuid import UUID
 
 _ASSEMBLY = "/mnt/encrypted-assembly"
+_COMMON_FIELDS = {
+    "schema",
+    "environment_id",
+    "environment_name",
+    "location",
+    "image",
+    "database_host",
+    "database_name",
+    "speech",
+    "translation",
+}
+_WORKER_FIELDS = {
+    "client_id",
+    "object_id",
+    "principal_name",
+    "identity_resource_id",
+    "private_host_cidr",
+    "key_id",
+    "endpoint",
+}
+_COHORT_FLAG = "configured_capture_multi_tenant_enabled"
 
 
 def require(value: object) -> None:
@@ -22,9 +45,47 @@ def require(value: object) -> None:
         raise ValueError("worker_binding_invalid")
 
 
-def checked_bindings(path: Path) -> dict:
-    data = json.loads(path.read_text())
-    require(data["schema"] == 1)
+def unique_json(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    data: dict[str, object] = {}
+    for key, value in pairs:
+        require(key not in data)
+        data[key] = value
+    return data
+
+
+def capture_tenants(data: object) -> list[str]:
+    require(type(data) is dict)
+    bindings = cast("dict[str, object]", data)
+    require(type(bindings.get("schema")) is int)
+    if bindings["schema"] == 1:
+        require(set(bindings) == _COMMON_FIELDS | {"tenant_id"})
+        tenant = bindings["tenant_id"]
+        require(type(tenant) is str)
+        legacy_tenant = cast(str, tenant)
+        require(UUID(legacy_tenant).int)
+        # Retain every existing accepted schema-1 UUID spelling and output byte.
+        return [legacy_tenant]
+    require(bindings["schema"] == 2)
+    require(set(bindings) == _COMMON_FIELDS | {_COHORT_FLAG, "tenant_ids"})
+    require(bindings[_COHORT_FLAG] is True)
+    raw_tenants = bindings["tenant_ids"]
+    require(type(raw_tenants) is list)
+    tenants = cast("list[object]", raw_tenants)
+    require(1 <= len(tenants) <= 32)
+    result: list[str] = []
+    for tenant in tenants:
+        require(type(tenant) is str)
+        canonical_tenant = cast(str, tenant)
+        require(str(UUID(canonical_tenant)) == canonical_tenant and UUID(canonical_tenant).int)
+        result.append(canonical_tenant)
+    require(len(set(result)) == len(result))
+    return result
+
+
+def checked_bindings(path: Path) -> dict[str, Any]:
+    raw = json.loads(path.read_text(), object_pairs_hook=unique_json)
+    capture_tenants(raw)
+    data = cast("dict[str, Any]", raw)
     require(
         data["environment_id"]
         == (
@@ -37,12 +98,17 @@ def checked_bindings(path: Path) -> dict:
         and data["location"] == "northcentralus"
     )
     require(re.fullmatch("[a-z0-9]+\\.azurecr\\.io/[^@]+@sha256:[0-9a-f]{64}", data["image"]))
-    require(UUID(data["tenant_id"]).int)
     require(re.fullmatch("[a-z0-9-]+\\.postgres\\.database\\.azure\\.com", data["database_host"]))
     require(re.fullmatch("[a-zA-Z_][a-zA-Z0-9_]{0,62}", data["database_name"]))
-    identities = []
+    identities: list[dict[str, Any]] = []
     for phase in ("speech", "translation"):
-        worker = data[phase]
+        raw_worker = data[phase]
+        require(type(raw_worker) is dict)
+        worker = cast("dict[str, Any]", raw_worker)
+        expected = _WORKER_FIELDS | (
+            {"storage_url", "container"} if phase == "speech" else {"deployment"}
+        )
+        require(set(worker) == expected)
         require(UUID(worker["client_id"]).int and UUID(worker["object_id"]).int)
         require(re.fullmatch("[A-Za-z0-9_-]{1,63}", worker["principal_name"]))
         require(
@@ -82,14 +148,16 @@ def checked_bindings(path: Path) -> dict:
     return data
 
 
-def definition(data: dict, phase: str) -> dict:
+def definition(data: dict[str, Any], phase: str) -> dict[str, Any]:
+    require(phase in ("speech", "translation"))
+    tenants = capture_tenants(data)
     worker = data[phase]
     env = {
         "AZURE_TOKEN_CREDENTIALS": "ManagedIdentityCredential",
         "COSMANEURA_SCRIBE_CAPTURED_WORKER_ENABLED": "false",
         "COSMANEURA_SCRIBE_CAPTURED_WORKER_STAGE": phase,
         "COSMANEURA_SCRIBE_CAPTURED_WORKER_BATCH_SIZE": "8",
-        "COSMANEURA_SCRIBE_CONFIGURED_CAPTURE_TENANT_IDS": json.dumps([data["tenant_id"]]),
+        "COSMANEURA_SCRIBE_CONFIGURED_CAPTURE_TENANT_IDS": json.dumps(tenants),
         "COSMANEURA_SCRIBE_REPOSITORY_BACKEND": "postgres",
         "COSMANEURA_SCRIBE_DATABASE_HOST": data["database_host"],
         "COSMANEURA_SCRIBE_DATABASE_NAME": data["database_name"],
@@ -103,17 +171,19 @@ def definition(data: dict, phase: str) -> dict:
         "COSMANEURA_SCRIBE_CONFIGURED_CAPTURE_ENABLED": "false",
         "COSMANEURA_SCRIBE_EXTERNAL_INGEST_ADMISSION_ENABLED": "false",
     }
+    if data["schema"] == 2:
+        env["COSMANEURA_SCRIBE_CONFIGURED_CAPTURE_MULTI_TENANT_ENABLED"] = "true"
     principal = "TRANSCRIPTION" if phase == "speech" else "TRANSLATION"
     env[f"COSMANEURA_SCRIBE_DATABASE_{principal}_PRINCIPAL_NAME"] = worker["principal_name"]
     env[f"COSMANEURA_SCRIBE_DATABASE_{principal}_PRINCIPAL_OBJECT_ID"] = worker["object_id"]
-    container = {
+    container: dict[str, Any] = {
         "name": "worker",
         "image": data["image"],
         "command": ["python", "-m", "cosmaneura_scribe.captured_worker_job_runner"],
-        "args": [data["tenant_id"], "--pending"],
+        "args": ["--cohort-pending"] if data["schema"] == 2 else [data["tenant_id"], "--pending"],
         "resources": {"cpu": 0.5, "memory": "1Gi"},
     }
-    template = {"containers": [container]}
+    template: dict[str, Any] = {"containers": [container]}
     if phase == "speech":
         env.update(
             {
