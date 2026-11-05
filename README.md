@@ -81,11 +81,15 @@ allowed to supply practice-tenant context. Follow
 
 ## Capture companion
 
-The P1 recording companion foundation is one Capacitor application at `apps/capture/`. One
-TypeScript source tree now builds as a foreground browser/PWA experience and as iOS/Android shells.
-Phase 2 provides the generated protocol client, durable encrypted queue, synthetic-only mock BFF,
-and native device-bound queue storage; recording, active DEK custody, production BFF integration,
-background audio, and clinical enablement remain deliberately unimplemented.
+The P1 recording companion is one Capacitor application at `apps/capture/`. One TypeScript source
+tree builds the foreground browser/PWA experience and the iOS/Android shells. The current
+false-gated implementation includes the generated protocol client, durable encrypted queue,
+synthetic-only mock BFF, foreground browser AudioWorklet adapter, native iOS PCM bridge,
+device-bound queue storage, explicit recording controls, recovery, upload, processing status, and
+read-only transcript states. The deployed preview remains synthetic-only with microphone capture
+disabled. Production BFF/upload-edge activation, physical-device qualification, signing, reviewed
+runtime flags, and clinical enablement remain separate required work; the implemented source and
+simulator tests do not claim those gates have passed.
 
 Every authenticated API and control operation goes through the master platform BFF; only immutable
 ciphertext uses the separately governed ADR 0016 upload edge. The companion does not receive a
