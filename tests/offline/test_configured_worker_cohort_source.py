@@ -53,9 +53,16 @@ class Provider:
         self.closed = True
 
 
-def emitted(source: str, *, enabled: bool = True) -> list[str]:
+def emitted(
+    source: str,
+    *,
+    enabled: bool = True,
+    tenants: frozenset[UUID] = frozenset({TENANT}),
+    multi_enabled: bool = False,
+) -> list[str]:
     names = {
         "_grant_configured_worker_permissions",
+        "_nonzero_configured_tenant",
         "_grant_working_transcript_permissions",
         "_translation_session_scope_policy_name",
         "_quoted_identifier",
@@ -92,7 +99,8 @@ def emitted(source: str, *, enabled: bool = True) -> list[str]:
     exec(compile(ast.fix_missing_locations(module), str(SOURCE), "exec"), namespace)
     settings = SimpleNamespace(
         configured_worker_database_permissions_enabled=enabled,
-        configured_capture_tenant_ids=frozenset({TENANT}),
+        configured_capture_tenant_ids=tenants,
+        configured_capture_multi_tenant_enabled=multi_enabled,
         database_transcription_principal_name="synthetic_speech",
         database_transcription_principal_object_id=SPEECH,
         database_translation_principal_name="synthetic_translation",
@@ -139,6 +147,26 @@ def main() -> None:
     assert all("tenant_isolation" not in s for s in additions)
     assert all(s in current for s in original)
     assert emitted(source, enabled=False) == []
+    second = UUID("00000000-0000-0000-0000-000000000004")
+    cohort = emitted(source, tenants=frozenset({second, TENANT}), multi_enabled=True)
+    singleton_predicate = f"tenant_id='{TENANT}'::uuid"
+    cohort_predicate = f"tenant_id IN ('{TENANT}'::uuid,'{second}'::uuid)"
+    assert cohort == [
+        statement.replace(singleton_predicate, cohort_predicate) for statement in current
+    ]
+    for tenants, multi_enabled in (
+        (frozenset(), True),
+        (frozenset({UUID(int=0)}), True),
+        (frozenset({TENANT, second}), False),
+        (frozenset(UUID(int=i + 1) for i in range(33)), True),
+        (frozenset({"*"}), True),
+    ):
+        try:
+            emitted(source, tenants=tenants, multi_enabled=multi_enabled)
+        except RuntimeError as error:
+            assert str(error) == "configured_worker_cohort_invalid"
+        else:
+            raise AssertionError("Invalid worker cohort opened policy generation")
     print(
         "PASS: exact two worker creator-edit cohort policies; grants/mode/status fences preserved; "
         "default disabled; no database/API/conftest used"

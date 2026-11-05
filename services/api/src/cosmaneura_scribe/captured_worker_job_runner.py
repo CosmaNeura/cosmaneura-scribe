@@ -40,6 +40,7 @@ _ENABLED = "COSMANEURA_SCRIBE_CAPTURED_WORKER_ENABLED"
 PENDING_PICKUP_SECONDS = 65.0
 PENDING_POLL_SECONDS = 5.0
 WorkerExecution = Callable[[CapturedWorkerSettings, UUID, UUID | None], Awaitable[None]]
+CohortWorkerExecution = Callable[[CapturedWorkerSettings, tuple[UUID, ...]], Awaitable[None]]
 
 
 class _SpeechObservationOptions(TypedDict, total=False):
@@ -56,6 +57,7 @@ async def run_captured_worker(
     environ: Mapping[str, str] | None = None,
     settings_factory: Callable[[], CapturedWorkerSettings] | None = None,
     execute: WorkerExecution | None = None,
+    execute_cohort: CohortWorkerExecution | None = None,
 ) -> bool:
     source = os.environ if environ is None else environ
     if source.get(_ENABLED, "").strip().casefold() != "true":
@@ -63,19 +65,37 @@ async def run_captured_worker(
     tenant_id: UUID | None = None
     try:
         args = list(sys.argv[1:] if arguments is None else arguments)
-        if len(args) != 2:
+        cohort_pending = args == ["--cohort-pending"]
+        if not cohort_pending and len(args) != 2:
             raise CapturedWorkerError("captured_worker_target_invalid")
-        tenant_id = UUID(args[0])
-        session_id = None if args[1] == "--pending" else UUID(args[1])
+        session_id = None
+        if not cohort_pending:
+            tenant_id = UUID(args[0])
+            session_id = None if args[1] == "--pending" else UUID(args[1])
         settings = (settings_factory or CapturedWorkerSettings)()
         if (
             not settings.captured_worker_enabled
-            or tenant_id not in settings.configured_capture_tenant_ids
+            or (not cohort_pending and tenant_id not in settings.configured_capture_tenant_ids)
             or (session_id is not None and session_id.int == 0)
             or source.get("AZURE_TOKEN_CREDENTIALS") != "ManagedIdentityCredential"
         ):
             raise CapturedWorkerError("captured_worker_bindings_invalid")
-        await (execute or _execute)(settings, tenant_id, session_id)
+        if cohort_pending:
+            tenants = settings.configured_capture_tenant_ids
+            if (
+                not settings.configured_capture_multi_tenant_enabled
+                or not 1 <= len(tenants) <= 32
+                or any(tenant.int == 0 for tenant in tenants)
+                # The existing observer is bound when clients are built. Cohort
+                # work explicitly refuses that unsupported diagnostic mode.
+                or settings.captured_speech_observation_scope is not None
+            ):
+                raise CapturedWorkerError("captured_worker_bindings_invalid")
+            await (execute_cohort or _execute_cohort)(settings, _cohort_order(settings))
+        else:
+            if tenant_id is None:
+                raise CapturedWorkerError("captured_worker_target_invalid")
+            await (execute or _execute)(settings, tenant_id, session_id)
         log_event(action="captured_worker.completed", tenant_id=tenant_id)
         return True
     except asyncio.CancelledError:
@@ -131,7 +151,28 @@ async def _targets(
         return tuple(rows.scalars())
 
 
+def _cohort_order(settings: CapturedWorkerSettings) -> tuple[UUID, ...]:
+    tenants = tuple(sorted(settings.configured_capture_tenant_ids))
+    # Schedule-minute rotation is fairness only; membership was already gated.
+    offset = int(time.time() // 60) % len(tenants)
+    return tenants[offset:] + tenants[:offset]
+
+
 async def _execute(settings: CapturedWorkerSettings, tenant: UUID, session: UUID | None) -> None:
+    await _execute_work(settings, tenant, session)
+
+
+async def _execute_cohort(settings: CapturedWorkerSettings, tenants: tuple[UUID, ...]) -> None:
+    await _execute_work(settings, None, None, tenants=tenants)
+
+
+async def _execute_work(
+    settings: CapturedWorkerSettings,
+    tenant: UUID | None,
+    session: UUID | None,
+    *,
+    tenants: tuple[UUID, ...] | None = None,
+) -> None:
     base = build_postgres_provider(settings)
     repositories = CapturedSourceRepositoryProvider(base.engine)
     closers: list[AsyncCloser] = [base.close]
@@ -140,8 +181,12 @@ async def _execute(settings: CapturedWorkerSettings, tenant: UUID, session: UUID
         if settings.captured_worker_stage == "speech":
             assembler = build_audio_track_assembler(settings, repositories)
             closers.insert(0, assembler.close)
-            observer = capture_speech_observer(
-                settings.captured_speech_observation_scope, tenant_id=tenant
+            observer = (
+                capture_speech_observer(
+                    settings.captured_speech_observation_scope, tenant_id=tenant
+                )
+                if tenant is not None
+                else None
             )
             transcriber = (
                 build_speech_to_text_provider(settings, observer_for_request=observer)
@@ -205,7 +250,12 @@ async def _execute(settings: CapturedWorkerSettings, tenant: UUID, session: UUID
                 enabled=True,
                 limit=settings.captured_worker_batch_size,
             )
-        await _dispatch(repositories, settings, tenant, session, worker)
+        if tenants is not None:
+            await _dispatch_cohort(repositories, settings, tenants, worker)
+        elif tenant is not None:
+            await _dispatch(repositories, settings, tenant, session, worker)
+        else:
+            raise CapturedWorkerError("captured_worker_target_invalid")
     finally:
         await close_job_resources(closers)
 
@@ -243,6 +293,53 @@ async def _dispatch(
         await asyncio.sleep(min(PENDING_POLL_SECONDS, remaining))
         if time.monotonic() >= deadline:
             break  # Pickup expires; accepted work was allowed to finish normally.
+    if failed:
+        raise CapturedWorkerError("captured_worker_target_unavailable")
+
+
+async def _dispatch_cohort(
+    repositories: CapturedSourceRepositoryProvider,
+    settings: CapturedWorkerSettings,
+    tenants: tuple[UUID, ...],
+    worker: CapturedTranscriptionWorker | CapturedTranslationWorker,
+) -> None:
+    deadline = time.monotonic() + PENDING_PICKUP_SECONDS
+    seen: set[tuple[UUID, UUID]] = set()
+    failed = False
+    while len(seen) < settings.captured_worker_batch_size:
+        progressed = False
+        for tenant in tenants:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                # Discovery is bounded by the shared deadline, including DB wait.
+                async with asyncio.timeout(remaining):
+                    targets = await _targets(repositories, settings, tenant, None)
+            except TimeoutError:
+                failed = True
+                break
+            target = next((target for target in targets if (tenant, target) not in seen), None)
+            if target is None:
+                continue
+            if time.monotonic() >= deadline:
+                break
+            seen.add((tenant, target))
+            progressed = True
+            try:
+                if settings.captured_worker_stage == "speech":
+                    async with repositories.transaction(tenant) as store:
+                        await store.reconcile_exhausted_speech(tenant, target, max_attempts=3)
+                await worker.process(tenant_id=tenant, session_id=target)
+            except Exception:
+                failed = True
+            if len(seen) >= settings.captured_worker_batch_size:
+                break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or len(seen) >= settings.captured_worker_batch_size:
+            break
+        if not progressed:
+            await asyncio.sleep(min(PENDING_POLL_SECONDS, remaining))
     if failed:
         raise CapturedWorkerError("captured_worker_target_unavailable")
 

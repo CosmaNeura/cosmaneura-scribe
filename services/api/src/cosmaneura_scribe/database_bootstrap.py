@@ -780,6 +780,10 @@ async def _grant_translation_permissions(settings: Settings) -> None:
         await provider.close()
 
 
+def _nonzero_configured_tenant(value: object) -> bool:
+    return isinstance(value, UUID) and value.int != 0
+
+
 async def _grant_configured_worker_permissions(settings: Settings) -> None:
     """Opt in after the ordinary grant reset; never union the two worker roles.
 
@@ -802,7 +806,20 @@ async def _grant_configured_worker_permissions(settings: Settings) -> None:
         or runtime_name is None
     ):
         raise RuntimeError("configured_worker_principals_unavailable")
-    tenant = next(iter(settings.configured_capture_tenant_ids))
+    cohort = settings.configured_capture_tenant_ids
+    if (
+        not cohort
+        or len(cohort) > (32 if settings.configured_capture_multi_tenant_enabled else 1)
+        or any(not _nonzero_configured_tenant(tenant) for tenant in cohort)
+    ):
+        raise RuntimeError("configured_worker_cohort_invalid")
+    tenants = sorted(cohort)
+    # UUID-only literals are validated above; singleton SQL remains unchanged.
+    tenant_scope = (
+        f"tenant_id='{tenants[0]}'::uuid"
+        if len(tenants) == 1
+        else "tenant_id IN (" + ",".join(f"'{tenant}'::uuid" for tenant in tenants) + ")"
+    )
     provider = build_postgres_provider(settings)
     try:
         async with provider.engine.begin() as connection:
@@ -941,8 +958,8 @@ async def _grant_configured_worker_permissions(settings: Settings) -> None:
                     await connection.execute(
                         text(
                             f"CREATE POLICY {policy_sql} ON {table_sql} AS RESTRICTIVE FOR ALL "
-                            f"TO {role} USING (tenant_id='{tenant}'::uuid) "
-                            f"WITH CHECK (tenant_id='{tenant}'::uuid)"
+                            f"TO {role} USING ({tenant_scope}) "
+                            f"WITH CHECK ({tenant_scope})"
                         )
                     )
     finally:
