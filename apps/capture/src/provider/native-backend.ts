@@ -18,6 +18,7 @@ import { nativeProviderPlugin, type ProviderAction as Action, type NativeProvide
 import type { NativeRecordingPort } from "./native-recorder";
 import type { ProviderEncounter } from "./workspace";
 import { SecureQueue } from "@cosmaneura-scribe/capacitor-secure-queue";
+import { providerRuntimeProfile, type ProviderRuntimeProfile } from "./runtime-profile";
 import { parseProviderAccount, existingPatientSetup, fullNativeVisitSetup, providerVisitCapabilities, type ProviderAccount, createEncounterSetup } from "./encounter-setup";
 
 const limits: Record<Action, number> = { catalog: 2, encounters: 16384, mount: 256, recorder: 1024, "recorder-context": 1024, "note-opening": 1024, cancellation: 2048, activation: 1024,
@@ -26,6 +27,7 @@ type NativeReply = Awaited<ReturnType<ProviderNativePlugin["providerRequest"]>>;
 export type { ProviderNativePlugin } from "./native-plugin";
 export interface NativeProviderOptions {
   readonly signal: AbortSignal;
+  readonly profile: ProviderRuntimeProfile;
   /** Existing authorized ciphertext target and Core navigation, configured by the native host. */
   readonly uploadTarget: CiphertextUploadTarget;
   readonly core: {
@@ -41,6 +43,7 @@ export interface NativeProviderBackend extends ProviderIOSBackend { dispose(): P
  */
 export async function connectNativeProviderIOSBackend(options: NativeProviderOptions,
   plugin: ProviderNativePlugin = nativeProviderPlugin): Promise<NativeProviderBackend> {
+  const profile = providerRuntimeProfile(options.profile).profile;
   if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "ios"
     || !Capacitor.isPluginAvailable("CosmasWorkspaceAuth")) throw unavailable();
   const abort = new AbortController();
@@ -206,7 +209,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       if (next.has(entry.appointmentRef)) throw unavailable();
       next.set(entry.appointmentRef, { workspaceId: row.workspaceId, encounter: entry });
     }
-    const capabilities = providerVisitCapabilities(value);
+    const capabilities = providerVisitCapabilities(value, profile);
     const { supportsCreation, existingPatientOnly: nextExistingPatientOnly } = capabilities;
     const nextAccount = supportsCreation ? parseProviderAccount({ email: objectAccount(value.account).email, environment: value.environment }, capabilities.environment) : undefined;
     if (supportsCreation) {

@@ -2,10 +2,12 @@ import { mountNativeProviderIOSApplication } from "../src/provider/native-applic
 import { HttpCiphertextUploadTarget } from "../src/bff/upload-target";
 import { nativeProviderPlugin as native, type StandaloneProviderNative } from "../src/provider/native-plugin";
 import { BETA_CONSENT_PREPARATION } from "../src/provider/beta-consent-preparation";
+import { providerRuntimeProfile } from "../src/provider/runtime-profile";
 
 export function mount(root: HTMLElement,
   configuration: Awaited<ReturnType<StandaloneProviderNative["getProviderConfiguration"]>>): () => Promise<void> {
   return mountNativeProviderIOSApplication(root, {
+    profile: providerRuntimeProfile(configuration.profile).profile,
     uploadTarget: new HttpCiphertextUploadTarget(configuration.uploadOrigins, fetch, "azure_block_blob"),
     core: {
       createEncounter: signal => { signal.throwIfAborted(); return native.openProviderCore({ appointmentRef: null }); },
