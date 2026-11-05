@@ -3,6 +3,9 @@ import test from 'node:test';
 import vm from 'node:vm';
 import { randomUUID, createHash, webcrypto } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { stripTypeScriptTypes } from 'node:module';
 import { installDesktopMainObserver, missingDesktopObserver, validateInspectorEndpoint } from './desktop-observer.mjs';
 import { projectNoteObservation } from '../native/note-observation.mjs';
@@ -13,9 +16,11 @@ const appointment='appointment_01m5q661ryetaa28yxe7vbqrex',otherAppointment='app
 const bindingRef='scribe_capture_binding_01m5q661ryetaa28yxe7vbqrex',operationRef='scribe_admission_01m5q661ryetaa28yxe7vbqrex';
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const deferred=()=>{let resolve;const promise=new Promise(yes=>{resolve=yes;});return{promise,resolve};};
-async function setup() {
+async function setup({ profile = null } = {}) {
   let sessionListener,recorderListener,subscriptionRequests=0;
-  const performance={now:()=>Date.now()-1000,timeOrigin:1000};
+  let clockOffset=0;
+  class ClockDate extends Date { static now(){return Date.now()+clockOffset;} }
+  const performance={now:()=>ClockDate.now()-1000,timeOrigin:1000};
   const renderer=vm.createContext({performance,TextEncoder,crypto:webcrypto,window:{scribeProvider:{subscribe:fn=>{sessionListener=fn;return()=>{sessionListener=null;};},request:()=>{subscriptionRequests++;}},
     scribeRecorder:{subscribe:fn=>{recorderListener=fn;return()=>{recorderListener=null;};},request:()=>{subscriptionRequests++;}}}});
   const replies=new Map(),calls=[];
@@ -23,8 +28,9 @@ async function setup() {
   const handlers=new Map([[workspaceChannel,original]]);
   const target={id:41,getURL:()=> 'app://cosmas/index.html',isDestroyed:()=>false,executeJavaScript:async script=>vm.runInContext(script,renderer)};
   const owner={runId:randomUUID(),observerSHA256:createHash('sha256').update(installDesktopMainObserver.toString()).digest('hex'),pid:123,executablePath:'/owned/App/Contents/MacOS/Scribe',appPath:'/owned/App/Contents/Resources/app',webContentsId:41};
-  const electron={app:{getAppPath:()=>owner.appPath},webContents:{getAllWebContents:()=>[target]},ipcMain:{_invokeHandlers:handlers}};
-  const context=vm.createContext({Map,performance,Date,process:{pid:owner.pid,execPath:owner.executablePath,versions:{electron:'44.4.3'}},require:()=>electron});
+  const electron={app:{getAppPath:()=>owner.appPath,getPath:()=>profile},webContents:{getAllWebContents:()=>[target]},ipcMain:{_invokeHandlers:handlers}};
+  const context=vm.createContext({Map,performance,Date:ClockDate,Buffer,process:{pid:owner.pid,execPath:owner.executablePath,versions:{electron:'44.4.3'},getuid:()=>process.getuid(),hrtime:process.hrtime},
+    require:name=>name==='node:fs'?fs:name==='node:path'?path:name==='node:crypto'?{createHash,randomUUID}:name==='node:os'?os:electron});
   await vm.runInContext(`(${installDesktopMainObserver.toString()})`,context)(owner, projectNoteObservation, snapshotSaveFields, SAVE_UI_SCRIPT);
   const api=context.__scribeLabDesktopMainObserver,revision=randomUUID(),connectionId=randomUUID(),workspaceId=randomUUID(),encounterId=randomUUID(),sessionId=randomUUID(),consentRecordId=randomUUID();
   async function call(method,result,options={}) {
@@ -41,7 +47,7 @@ async function setup() {
   async function connected() {await call('connect',{connectionId,revision},{connectionId:null});}
   async function prepared() {await connected();await call('encounter_setup',{appointmentRef:appointment,patientName:'must-not-be-retained'},{payload:{action:'submit',draft:{name:'must-not-be-retained'}}});await open();await api.bindVisit({runId:owner.runId,workspaceId,appointmentRef:appointment});await admit();}
   const snapshot=(phase='recording')=>({recorderId:randomUUID(),revision:1,snapshot:{sessionId,state:phase,desktop:{phase:phase==='paused'?'stopped':phase},elapsedSeconds:3,recordedChunks:0,queuedChunks:0,transcript:'must-not-be-retained'}});
-  return {api,owner,handlers,original,replies,calls,target,renderer,context,revision,connectionId,workspaceId,encounterId,sessionId,consentRecordId,call,open,admit,connected,prepared,snapshot,
+  return {api,owner,handlers,original,replies,calls,target,renderer,context,revision,connectionId,workspaceId,encounterId,sessionId,consentRecordId,call,open,admit,connected,prepared,snapshot,advanceClock:ms=>{clockOffset+=ms;},
     subscriptionRequests:()=>subscriptionRequests,sessionEvent:value=>sessionListener(value),recorderEvent:value=>recorderListener(value)};
 }
 
@@ -144,6 +150,41 @@ test('actual recorder responses bind sessions and hide old Recording during pend
   held.resolve({requestId:pause.requestId,ok:true,state:{...state,revision:2,snapshot:{...state.snapshot,state:'paused',desktop:{phase:'stopped'}}}});await tick();
   const after=await h.api.read('recording');assert.equal(after.phase,'stopped');assert.equal(after.captureState,'paused');assert.equal(after.nativeRevision,2);
   await h.api.uninstall();assert.equal(h.handlers.get(recorderChannel),normal);
+});
+
+async function currentReadFixture(mode='same') {
+  const h=await setup();await h.prepared();const state=h.snapshot('ready');
+  Object.assign(state.snapshot,{elapsedSeconds:0,recordedChunks:0,queuedChunks:0});
+  const commands=[];
+  h.handlers.set(recorderChannel,(_event,request)=>{
+    commands.push(request);
+    if(mode==='account')h.sessionEvent({kind:'session',state:{phase:'ready',revision:randomUUID(),accountIdentitySHA256:'b'.repeat(64)}});
+    return Promise.resolve({requestId:request.requestId,ok:mode!=='failed',state:mode==='foreign'
+      ?{...state,recorderId:randomUUID()}:state});
+  });
+  h.renderer.window.scribeRecorder.request=request=>h.handlers.get(recorderChannel)({sender:{id:41}},request);
+  h.sessionEvent({kind:'session',state:{phase:'ready',revision:h.revision,accountIdentitySHA256:'a'.repeat(64)}});
+  h.recorderEvent(state);const original=await h.api.read('recording'),admission=await h.api.read('admission');
+  h.advanceClock(20000);assert.equal(await h.api.read('recording'),null);
+  h.sessionEvent({kind:'session',state:{phase:'ready',revision:h.revision,accountIdentitySHA256:'a'.repeat(64)}});
+  return {h,commands,state,original,admission};
+}
+test('explicit public read refreshes actual unchanged ready state while retaining old event and original consent',async()=>{
+ const {h,commands,state,original,admission}=await currentReadFixture();
+ try{
+  const r=await h.api.readCurrentRecording();assert.equal(commands.length,1);
+  assert.deepEqual(Object.keys(commands[0]).sort(),['kind','recorderId','requestId']);
+  assert.equal(commands[0].kind,'read');assert.equal(commands[0].recorderId,state.recorderId);
+  assert.equal(r.productMutation,false);assert.equal(r.retainedEvent.observedAtMonotonicMs,original.observedAtMonotonicMs);
+  assert.equal(JSON.stringify(r.admission),JSON.stringify(admission));assert.equal(r.recording.nativeRevision,original.nativeRevision);
+  assert.ok(r.recording.observedAtMonotonicMs-original.observedAtMonotonicMs>=20000);
+  assert.equal((await h.api.read('recording')).recorderId,state.recorderId);
+ }finally{await h.api.uninstall();}
+});
+for(const mode of ['foreign','failed','account'])test(`explicit public read rejects ${mode} response without another request`,async()=>{
+ const {h,commands}=await currentReadFixture(mode);
+ try{await assert.rejects(h.api.readCurrentRecording());assert.equal(commands.length,1);assert.equal(commands[0].kind,'read');}
+ finally{await h.api.uninstall();}
 });
 
 test('cleanup restores only owned handlers and reports outstanding observed replies',async()=>{
@@ -456,4 +497,22 @@ test('idempotent desktop deactivation preserves the first correlated physical-cl
   assert(repeated.captureMutationSequence > first.captureMutationSequence);
   assert.equal(repeated.captureMutationSequence, repeated.currentCaptureMutationSequence);
   await h.api.uninstall();
+});
+
+test('performance reads only fixed current-process metadata and issues no product request',async()=>{
+  const profile=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'scribe-desktop-timing-test-')));
+  const file=path.join(profile,'runtime-diagnostics-v1.jsonl');
+  const rows=[{utc:new Date().toISOString(),pid:123,event:'host_open',monotonic_ns:'1',capture_attempt:0},
+    {utc:new Date().toISOString(),pid:999,event:'host_open',monotonic_ns:'2',capture_attempt:0,private:'not retained'},
+    {pid:123,event:'not_an_allowed_timing',private:'not retained'}];
+  fs.writeFileSync(file,rows.map(v=>JSON.stringify(v)).join('\n')+'\n',{mode:0o600});
+  const h=await setup({profile});
+  try{
+    const r=await h.api.readPerformance();assert.equal(r.pid,123);assert.equal(r.profile,profile);
+    assert.equal(r.diagnostics.events.length,1);assert.equal(r.diagnostics.events[0].event,'host_open');
+    assert.equal(JSON.stringify(r).includes('not retained'),false);assert.equal(h.subscriptionRequests(),0);assert.equal(h.calls.length,0);
+    fs.appendFileSync(file,'{"pid":123');await assert.rejects(h.api.readPerformance(),/partial_line/);
+    fs.writeFileSync(file,JSON.stringify({...rows[0],duration_ms:'wrong'})+'\n');await assert.rejects(h.api.readPerformance(),/event_invalid/);
+    fs.chmodSync(file,0o644);await assert.rejects(h.api.readPerformance(),/file_invalid/);
+  }finally{await h.api.uninstall();fs.rmSync(profile,{recursive:true});}
 });

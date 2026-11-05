@@ -8,9 +8,13 @@ import { projectNoteObservation } from '../native/note-observation.mjs';
 import { snapshotSaveFields, SAVE_UI_SCRIPT } from './save-completion.mjs';
 
 const exec = promisify(execFile);
+const liveObservers = new WeakMap();
+export const isOwnedDesktopObserver = value => liveObservers.has(value) && liveObservers.get(value) === value.readPerformance;
 /** Serialized into an owned Electron 44 MAIN inspector. It wraps only existing
  * workspace/recorder handlers and subscribes to the existing renderer event APIs.
- * It never calls either product request API. Electron's internal handler Map is
+ * Passive methods never call either product request API. The separately named
+ * readCurrentRecording method issues only the public recorder's read command.
+ * Electron's internal handler Map is
  * version-specific: absence, replacement, or another owner fails closed. */
 export async function installDesktopMainObserver(owner, projectNoteObservation = null, saveFields = null, saveUIScript = null) {
   const requireModule = typeof require === 'function' ? require : process.mainModule?.require.bind(process.mainModule);
@@ -388,6 +392,78 @@ export async function installDesktopMainObserver(owner, projectNoteObservation =
       const age = authObservation && Date.now() - authObservation.browserTimeOriginMs - authObservation.observedAtMonotonicMs;
       return authObservation && authMutationsPending === 0 && age >= 0 && age <= 15000 ? { ...authObservation } : null;
     },
+    async readCurrentRecording() {
+      await refreshEvents();
+      const auth = await api.readAuth(), retained = recording && { ...recording };
+      if (!auth || !admission || !retained || !uuid(recorderId) || mutationPending || pending !== 0
+          || !current || !boundVisit || current.workspaceId !== boundVisit.workspaceId
+          || current.appointmentRef !== boundVisit.appointmentRef || retained.sessionId !== admission.sessionId)
+        throw Error('desktop_current_read_scope_unconfirmed');
+      const selected = { recorderId, generation, recordingGeneration, authEpoch, admission: JSON.stringify(admission) };
+      const requestId = requireModule('node:crypto').randomUUID(), invokedAtMonotonicMs = performance.now();
+      // Public IPC kind=read only returns the current getter; it performs no
+      // recorder operation. The installed normal wrapper observes its real
+      // reply and timestamps that reply, never re-dates the retained event.
+      const reply = await target.executeJavaScript(`(async()=>{const r=await window.scribeRecorder.request(${JSON.stringify({ kind: 'read', requestId, recorderId })});return {requestId:r?.requestId,ok:r?.ok,recorderId:r?.state?.recorderId,revision:r?.state?.revision,sessionId:r?.state?.snapshot?.sessionId};})()`);
+      await refreshEvents();
+      const afterAuth = await api.readAuth();
+      if (!reply || reply.requestId !== requestId || reply.ok !== true || reply.recorderId !== selected.recorderId
+          || reply.sessionId !== admission?.sessionId || reply.revision !== recording?.nativeRevision
+          || recorderId !== selected.recorderId || generation !== selected.generation
+          || recordingGeneration !== selected.recordingGeneration || authEpoch !== selected.authEpoch
+          || JSON.stringify(admission) !== selected.admission || mutationPending || pending !== 0
+          || !afterAuth || afterAuth.revision !== auth.revision || afterAuth.identitySHA256 !== auth.identitySHA256
+          || !recording || recording.observedAtMonotonicMs < invokedAtMonotonicMs || recording.pendingMutation !== false)
+        throw Error('desktop_current_read_identity_changed');
+      return { source: 'explicit-public-desktop-recorder-read', requestId, runId: owner.runId,
+        invokedAtMonotonicMs, observedAtMonotonicMs: performance.now(), browserTimeOriginMs: performance.timeOrigin,
+        retainedEvent: retained, recording: { ...recording }, admission: { ...admission }, auth: { ...afterAuth },
+        command: 'read', productMutation: false };
+    },
+    async readPerformance() {
+      // Read only the actual host's bounded metadata file. No diagnostic event
+      // is created, and no recorder request or audio sample is issued/read.
+      await refreshEvents();
+      const fs = requireModule('node:fs'), path = requireModule('node:path'), crypto = requireModule('node:crypto');
+      const profile = electron.app.getPath('userData'), file = path.join(profile, 'runtime-diagnostics-v1.jsonl');
+      if (fs.realpathSync(profile) !== profile) throw Error('desktop_timing_profile_changed');
+      const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      let diagnostics;
+      try {
+        const info = fs.fstatSync(fd);
+        if (!info.isFile() || info.nlink !== 1 || info.uid !== process.getuid() || (info.mode & 0o077)
+            || info.size > 65536) throw Error('desktop_timing_file_invalid');
+        const bytes = Buffer.alloc(info.size), count = fs.readSync(fd, bytes, 0, bytes.length, 0);
+        const after = fs.fstatSync(fd);
+        if (count !== bytes.length || after.ino !== info.ino || after.dev !== info.dev || after.size < info.size)
+          throw Error('desktop_timing_read_changed');
+        const text = bytes.toString('utf8');
+        if (text && !text.endsWith('\n')) throw Error('desktop_timing_partial_line');
+        const events = [];
+        for (const line of text.split('\n').filter(Boolean)) {
+          const value = JSON.parse(line);
+          if (value?.pid !== process.pid) continue;
+          if (!['host_open', 'window_ready', 'audio_start_pending', 'audio_ready', 'audio_start_timeout',
+            'audio_failed', 'audio_packet_invalid', 'audio_chunk_commit_failed', 'audio_stop_confirmed',
+            'audio_permission_required', 'audio_device_changed', 'audio_session_locked', 'audio_clock_discontinuity', 'audio_overflow',
+            'provider_record_to_native_ready', 'provider_consent_to_ready', 'provider_recorder_prepare'].includes(value.event)) continue;
+          const keys = Object.keys(value).sort().join();
+          if (![ 'capture_attempt,event,monotonic_ns,pid,utc', 'capture_attempt,duration_ms,event,monotonic_ns,pid,utc'].includes(keys)
+              || !/^[0-9]{1,24}$/.test(value.monotonic_ns ?? '') || !Number.isSafeInteger(value.capture_attempt)
+              || value.capture_attempt < 0 || !Number.isFinite(Date.parse(value.utc))
+              || value.duration_ms !== undefined && (!Number.isFinite(value.duration_ms) || value.duration_ms < 0 || value.duration_ms > 3600000))
+            throw Error('desktop_timing_event_invalid');
+          events.push(value);
+        }
+        diagnostics = { file: 'runtime-diagnostics-v1.jsonl', device: info.dev, inode: info.ino,
+          bytes: count, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), events };
+      } finally { fs.closeSync(fd); }
+      return { source: 'owned-desktop-performance-snapshot', runId: owner.runId, pid: process.pid,
+        executablePath: process.execPath, appPath: electron.app.getAppPath(), profile,
+        hostname: requireModule('node:os').hostname(), mainMonotonicNs: process.hrtime.bigint().toString(),
+        pendingObservedReplies: pending, admission: admission && { ...admission },
+        recording: recording && { ...recording }, auth: authObservation && { ...authObservation }, diagnostics };
+    },
     async uninstall() {
       if (pending !== 0 || [...wrappers].some(([channel, value]) => handlers.get(channel) !== value.wrapped))
         return { observerRemoved: false, observerRetainedForRecovery: true,
@@ -447,18 +523,26 @@ async function inspectorClient(url, signal) {
 /** Run on the owned Mac, with an explicitly launched `--inspect=127.0.0.1:PORT`
  * candidate. No renderer-debug port, application request, token or native action
  * is issued. Appium remains the only UI driver. Close removes only this observer. */
-export async function createDesktopObserver({ config, scenario, endpoint, pid, executablePath, appPath, signal, readOnly = false, allowMissing = false }) {
-  if (!(signal instanceof AbortSignal) || !Number.isSafeInteger(pid) || pid <= 0
+export async function createDesktopObserver({ config, scenario, endpoint, pid, executablePath, appPath, signal, readOnly = false, allowMissing = false, discoverCurrentProcess = false }) {
+  if (!(signal instanceof AbortSignal) || typeof discoverCurrentProcess !== 'boolean'
+      || (discoverCurrentProcess ? pid !== undefined : !Number.isSafeInteger(pid) || pid <= 0)
       || !['owned-macos-guest','owned-macos-lab'].includes(config.target.role)
       || allowMissing && !readOnly) throw Error('owned_desktop_inspector_required');
   signal.throwIfAborted(); const url = validateInspectorEndpoint(endpoint);
   await verifyBuild(config,scenario);
   const executable = await inside(executablePath,config.app.path), application = await inside(appPath,config.app.path);
   const listener = (await exec('lsof',['-nP',`-iTCP:${url.port}`,'-sTCP:LISTEN','-Fpn'],{timeout:10000})).stdout.trim().split('\n');
+  if (discoverCurrentProcess) {
+    const rows = listener.filter(line => line.startsWith('p'));
+    if (rows.length !== 1 || !/^p[1-9][0-9]*$/.test(rows[0])) throw Error('inspector_current_process_ambiguous');
+    pid = Number(rows[0].slice(1));
+  }
   if (listener.filter(line=>line.startsWith('p')).some(line=>line!==`p${pid}`)
       || !listener.includes(`p${pid}`) || listener.filter(line=>line.startsWith('n')).some(line=>line!==`n127.0.0.1:${url.port}`)) throw Error('inspector_listener_owner_mismatch');
   const command = (await exec('ps',['-p',String(pid),'-o','comm='],{timeout:10000})).stdout.trim();
   if (await realpath(command) !== executable) throw Error('inspector_process_path_mismatch');
+  const processRow = (await exec('ps',['-p',String(pid),'-o','pid=,lstart=,comm='],{timeout:10000})).stdout.trim();
+  if (!processRow.startsWith(`${pid} `) || !processRow.endsWith(command)) throw Error('inspector_process_identity_unconfirmed');
   const client = await inspectorClient(url,signal); let installationAttempted = false;
   try {
     const identity = await client.evaluate(`(()=>{const r=typeof require==='function'?require:process.mainModule?.require.bind(process.mainModule);const e=r?.('electron');return {pid:process.pid,executablePath:process.execPath,appPath:e?.app.getAppPath(),version:process.versions.electron,targets:e?.webContents.getAllWebContents().filter(w=>!w.isDestroyed()&&/^app:\\/\\/cosmas\\//.test(w.getURL())).map(w=>({id:w.id,url:w.getURL()}))};})()`);
@@ -475,7 +559,9 @@ export async function createDesktopObserver({ config, scenario, endpoint, pid, e
       await client.evaluate(`(${installDesktopMainObserver.toString()})(${JSON.stringify(owner)}, (${projectNoteObservation.toString()}), (${snapshotSaveFields.toString()}), ${JSON.stringify(SAVE_UI_SCRIPT)})`);
     }
     const read = kind => client.evaluate(`globalThis.__scribeLabDesktopMainObserver.read(${JSON.stringify(kind)})`);
-    return { targetId:client.targetId, observerSHA256:owner.observerSHA256, bindVisit:scope=>client.evaluate(`globalThis.__scribeLabDesktopMainObserver.bindVisit(${JSON.stringify(scope)})`), readCreated:()=>read('created'), currentVisit:()=>read('current'), readAdmission:()=>read('admission'), readRecording:()=>read('recording'), readTerminal:()=>read('terminal'),
+    const handle = { targetId:client.targetId, observerSHA256:owner.observerSHA256,
+      identity: Object.freeze({ pid, executablePath: executable, appPath: application, processRow }),
+      bindVisit:scope=>client.evaluate(`globalThis.__scribeLabDesktopMainObserver.bindVisit(${JSON.stringify(scope)})`), readCreated:()=>read('created'), currentVisit:()=>read('current'), readAdmission:()=>read('admission'), readRecording:()=>read('recording'), readTerminal:()=>read('terminal'),
       readClosed:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.readClosed()'),
       readNote:action=>client.evaluate(`globalThis.__scribeLabDesktopMainObserver.readNote(${JSON.stringify(action)})`),
       readCurrentNote:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.readCurrentNote()'),
@@ -483,13 +569,17 @@ export async function createDesktopObserver({ config, scenario, endpoint, pid, e
       readSaveFields:order=>client.evaluate(`globalThis.__scribeLabDesktopMainObserver.readSaveFields(${JSON.stringify(order)})`),
       readSaveUI:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.readSaveUI()'),
       readAuth:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.readAuth()'),
+      readCurrentRecording:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.readCurrentRecording()'),
+      readPerformance:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.readPerformance()'),
       recoverySnapshot:()=>client.evaluate('globalThis.__scribeLabDesktopMainObserver.recoverySnapshot()'),
       async close({ preserveForRecovery = false } = {}) { let result; try {
         result=await client.evaluate(preserveForRecovery
           ? 'globalThis.__scribeLabDesktopMainObserver?.retainForRecovery()'
           : 'globalThis.__scribeLabDesktopMainObserver?.uninstall()', {cleanup:true}); }
         catch { result={ownedResourcesSettled:false,observerRemoved:false}; } finally { client.close(); }
+        liveObservers.delete(handle);
         return {...result,ownedResourcesSettled:result?.ownedResourcesSettled === true && !client.uncertain(),nativeAppTerminated:false}; } };
+    liveObservers.set(handle, handle.readPerformance); return handle;
   } catch(error) {
     let removed = !installationAttempted;
     if(installationAttempted) { try { const result = await client.evaluate('globalThis.__scribeLabDesktopMainObserver?.uninstall()', {cleanup:true}); removed = result?.ownedResourcesSettled === true; } catch { removed = false; } }
