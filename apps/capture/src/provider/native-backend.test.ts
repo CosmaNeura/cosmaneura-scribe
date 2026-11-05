@@ -30,7 +30,7 @@ function deferred<T>() {
   const promise = new Promise<T>(done => { resolve = done; });
   return { promise, resolve };
 }
-function fixture() {
+function fixture(profile: NativeProviderOptions["profile"] = "core-production-personal-v1") {
   const abort = new AbortController(), removed = vi.fn(async () => undefined);
   let state: NativeState = { phase: "ready", revision: crypto.randomUUID(), providerReady: true };
   let listener: (state: NativeState) => void = () => undefined;
@@ -70,7 +70,7 @@ function fixture() {
     getToken: vi.fn(() => { throw new Error("A native token must not be requested by JavaScript"); }),
   };
   const coreOpen = vi.fn(async () => undefined);
-  const options: NativeProviderOptions = { signal: abort.signal,
+  const options: NativeProviderOptions = { signal: abort.signal, profile,
     uploadTarget: { putCompleteEnvelope: vi.fn(async () => undefined) },
     core: { createEncounter: vi.fn(async () => undefined), openEncounter: coreOpen } };
   return { options, plugin, removed, abort, reply, coreOpen, get state() { return state; },
@@ -79,6 +79,44 @@ function fixture() {
 }
 
 describe("native provider connection", () => {
+  it.each([false, true])("accepts truthful Stage visits only for the sealed Stage profile (%s)", async full => {
+    const f = fixture("core-staging-personal-v1");
+    f.plugin.providerRequest.mockImplementation(async request => f.reply(request, {
+      ...JSON.parse(f.reply(request).body), encounter_creation_v1: true,
+      existing_patient_visits_v1: true, native_visit_actions_v2: full,
+      environment: "Staging", recoveryScope: recovery,
+      account: { email: "provider@synthetic.invalid" } }));
+    const backend = await f.connect();
+    try {
+      await backend.listEncounters(backend.signal);
+      expect(backend.account?.environment).toBe("Staging");
+      expect(backend.encounterSetup?.existingPatientOnly).toBe(full ? undefined : true);
+      expect(typeof backend.encounterSetup?.matchPatient).toBe(full ? "function" : "undefined");
+      expect(f.plugin.getToken).not.toHaveBeenCalled();
+    } finally { await backend.dispose(); }
+  });
+  it.each([
+    ["core-staging-personal-v1", "Production"],
+    ["core-production-personal-v1", "Staging"],
+    ["core-production-organization-v1", "Staging"],
+  ] as const)("rejects a cross-environment catalog for %s", async (profile, environment) => {
+    const f = fixture(profile);
+    f.plugin.providerRequest.mockImplementation(async request => f.reply(request, {
+      ...JSON.parse(f.reply(request).body), encounter_creation_v1: true,
+      existing_patient_visits_v1: true, native_visit_actions_v2: true, environment,
+      recoveryScope: recovery, account: { email: "provider@synthetic.invalid" } }));
+    const backend = await f.connect();
+    try {
+      await expect(backend.listEncounters(backend.signal)).rejects.toThrow();
+      expect(backend.account).toBeUndefined();
+      expect(backend.encounterSetup).toBeUndefined();
+    } finally { await backend.dispose(); }
+  });
+  it("rejects an unknown native profile before opening a connection", async () => {
+    const f = fixture("unknown-profile" as NativeProviderOptions["profile"]);
+    await expect(f.connect()).rejects.toThrow();
+    expect(f.plugin.getProviderState).not.toHaveBeenCalled();
+  });
   it.each([false, true])("keeps the Production subset unless full v2 is explicitly confirmed (%s)", async full => {
     const f = fixture();
     f.plugin.providerRequest.mockImplementation(async request => f.reply(request, {
@@ -128,7 +166,7 @@ describe("native provider connection", () => {
   });
 
   it.each(["scope", "account"])("refuses a later mobile catalog %s change within the same native owner", async change => {
-    const f = fixture(); let changed = false;
+    const f = fixture("core-staging-personal-v1"); let changed = false;
     f.plugin.providerRequest.mockImplementation(async request => {
       const value = JSON.parse(f.reply(request).body) as Record<string, unknown>;
       return f.reply(request, { ...value, encounter_creation_v1: true, environment: "Staging",
@@ -144,7 +182,7 @@ describe("native provider connection", () => {
     } finally { await backend.dispose(); }
   });
   it.each([null, "", "not-a-uuid", 7])("rejects malformed present mobile catalog scope (%s)", async recoveryScope => {
-    const f = fixture();
+    const f = fixture("core-staging-personal-v1");
     f.plugin.providerRequest.mockImplementation(async request => f.reply(request, {
       ...JSON.parse(f.reply(request).body), encounter_creation_v1: true, environment: "Staging", recoveryScope,
       account: { email: "provider@synthetic.invalid" } }));

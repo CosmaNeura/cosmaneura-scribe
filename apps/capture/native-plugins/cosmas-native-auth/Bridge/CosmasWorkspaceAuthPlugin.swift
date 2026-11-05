@@ -558,7 +558,16 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
 #else
             return nil
 #endif
-        } else if !Set(settings.keys).isSubset(of: ["enabled", "uploadOrigins"]) { return nil }
+        } else {
+            guard Set(settings.keys).isSubset(of: ["enabled", "uploadOrigins"]) else { return nil }
+            if let auth = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any],
+               auth["identityProfile"] as? String == NativeIdentityProfile.coreStagingPersonal.rawValue,
+               auth["frontendOrigin"] as? String == "https://resolved-emu-53.clerk.accounts.dev",
+               let receiver = Bundle.main.object(forInfoDictionaryKey: "ScribeProviderReceiver") as? [String: Any],
+               receiver["profile"] as? String == "core-staging-https-v1" {
+                applicationProfile = NativeIdentityProfile.coreStagingPersonal.rawValue
+            } else if enabled { return nil }
+        }
         guard origins.count <= 1, (!enabled || origins.count == 1),
               origins.allSatisfy({ $0.range(of: "^https://[a-z0-9]{3,24}\\.blob\\.core\\.windows\\.net$",
                                               options: .regularExpression) != nil }) else { return nil }

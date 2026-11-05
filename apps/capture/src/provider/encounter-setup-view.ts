@@ -23,6 +23,6 @@ export function encounterSetupMarkup(state: EncounterSetupState, query = "", exi
     <p class="provider-start-help">A name is enough to start. You can match the patient using date of birth and other details later.</p>
     <div class="provider-create-actions"><button type="submit" class="provider-primary">Continue to recording setup</button>
       <button type="submit" data-create-only aria-describedby="provider-create-only-help">Create visit only</button>
-      <p id="provider-create-only-help" class="provider-start-help">Use another recording method? Create the visit now, then link a Zoom meeting from Schedule in Cosmas.</p>
+      <p id="provider-create-only-help" class="provider-start-help">Create the visit now and return to record it later.</p>
       <button type="button" class="provider-text-link" data-workspace-action="encounters">Cancel</button></div></form></section>`;
 }

@@ -13,7 +13,10 @@ const { JSDOM, VirtualConsole } = await import(pathToFileURL(jsdomPath));
 const html = await readFile(resolve(rendererPath, "index.html"), "utf8");
 const source = await readFile(new URL("../apps/capture/src/provider/startup.ts", import.meta.url), "utf8");
 const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
-const configuration = { enabled: true, coreOrigin: "https://staging-app.cosmaneura.com", uploadOrigins: ["https://fixture.blob.core.windows.net"] };
+const profileSource = await readFile(new URL("../apps/capture/src/provider/runtime-profile.ts", import.meta.url), "utf8");
+const profileCode = ts.transpileModule(profileSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
+const configuration = { enabled: true, profile: "core-staging-personal-v1",
+  coreOrigin: "https://staging-app.cosmaneura.com", uploadOrigins: ["https://fixture.blob.core.windows.net"] };
 const productionConfiguration = { ...configuration, coreOrigin: "https://app.cosmaneura.com", profile: "core-production-organization-v1" };
 const deferred = () => {
   let resolve, reject;
@@ -28,7 +31,12 @@ async function fixture() {
   const root = dom.window.document.getElementById("app");
   assert.ok(root.textContent.includes("Opening Scribe"));
   const module = new SourceTextModule(code, { context: dom.getInternalVMContext() });
-  await module.link(forbidden); await module.evaluate();
+  await module.link(async name => {
+    assert.equal(name, "./runtime-profile");
+    const profile = new SourceTextModule(profileCode, { context: dom.getInternalVMContext() });
+    await profile.link(forbidden); return profile;
+  });
+  await module.evaluate();
   const config = deferred(), application = deferred();
   let reads = 0, loads = 0, mounts = 0, closes = 0;
   const mount = () => { mounts++; root.textContent = "Mounted"; return async () => { closes++; }; };
@@ -63,6 +71,7 @@ for (const value of [{ ...configuration, enabled: false }, { ...configuration, c
   { ...configuration, coreOrigin: "https://app.cosmaneura.com" },
   { ...configuration, profile: "core-production-organization-v1" },
   { ...configuration, profile: "unrecognized-profile" },
+  { ...configuration, profile: undefined },
   { ...configuration, uploadOrigins: [] }, { ...configuration, uploadOrigins: ["https://wrong.invalid"] }]) {
   const f = await fixture(), close = f.start();
   f.config.resolve(value); f.application.resolve({ mount: f.mount }); await turn();

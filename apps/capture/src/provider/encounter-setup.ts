@@ -5,6 +5,7 @@ import { record, reference } from "./core-client";
 import type { ProviderEncounter } from "./workspace-contracts";
 import { createVisitFeatures, type VisitFeatures } from "./visit-features";
 import { openPatientMatchJournal, type PatientMatchJournal } from "./patient-match-journal";
+import { providerRuntimeProfile, type ProviderRuntimeProfile } from "./runtime-profile";
 
 export interface ProviderPatient { patientRef: string; name: string; dateOfBirth: string | null }
 export interface EncounterDraft {
@@ -38,18 +39,22 @@ export function parseProviderAccount(value: unknown, environment: "Staging" | "P
     || value.environment !== environment) throw fail();
   return { email: text(value.email, 320), environment };
 }
-/** Full Production is an explicit additive contract, never an environment guess. */
-export function providerVisitCapabilities(value: Record<string, unknown>): {
+/** Native environment comes from its sealed profile. The legacy desktop caller
+ * retains its existing capability-version contract until it supplies a profile. */
+export function providerVisitCapabilities(value: Record<string, unknown>, profile?: ProviderRuntimeProfile): {
   supportsCreation: boolean; existingPatientOnly: boolean; fullNativeVisits: boolean;
   environment: "Staging" | "Production";
 } {
   if ("native_visit_actions_v2" in value && typeof value.native_visit_actions_v2 !== "boolean") throw fail();
   const supportsCreation = value.encounter_creation_v1 === true;
   const fullNativeVisits = value.native_visit_actions_v2 === true;
-  if (fullNativeVisits && (!supportsCreation || value.existing_patient_visits_v1 !== true || value.environment !== "Production")) throw fail();
   const existingPatientOnly = supportsCreation && value.existing_patient_visits_v1 === true && !fullNativeVisits;
+  const environment = profile === undefined ? fullNativeVisits || existingPatientOnly ? "Production" : "Staging"
+    : providerRuntimeProfile(profile).environment;
+  if (fullNativeVisits && (!supportsCreation || value.existing_patient_visits_v1 !== true || value.environment !== environment)
+    || supportsCreation && profile !== undefined && value.environment !== environment) throw fail();
   return { supportsCreation, existingPatientOnly, fullNativeVisits,
-    environment: fullNativeVisits || existingPatientOnly ? "Production" : "Staging" };
+    environment };
 }
 export function parseSetupState(value: unknown): EncounterSetupState {
   if (!record(value) || Object.keys(value).sort().join(",") !== "account,moreResults,patients,pending"
