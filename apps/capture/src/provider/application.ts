@@ -110,8 +110,8 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     } else if (phase === "ready" && cancellationReceipt) {
       title.textContent = "Scribe access is read-only";
       message.textContent = cancellationReceipt.phase === "read-only-export"
-        ? `New recording and processing are disabled. Your read-only/export window ends ${new Date(cancellationReceipt.export_until).toLocaleDateString()}. Your Cosmaneura sign-in stays active.`
-        : "Your export window has ended. New processing remains disabled. Record destruction and its certificate have not been completed.";
+        ? `You can no longer start visits or create new notes in Scribe. Your read-only/export window ends ${new Date(cancellationReceipt.export_until).toLocaleDateString()}. Your Cosmaneura sign-in stays active.`
+        : "Your export window has ended. Starting visits and creating new notes remain disabled. Record destruction and its certificate have not been completed.";
       recovery.innerHTML = (cancellationReceipt.phase === "read-only-export" && host.openDashboard ? button("dashboard", "Open dashboard to read or export") : "")
         + button("check-cancellation", "Refresh access status");
     } else if (logoutPending) {
@@ -341,8 +341,8 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
           accessClosed = true; cancellationReceipt = receipt; cancellationCheckedRevision = state?.revision ?? null;
           recordingOpenPending = false;
           notice = receipt.phase === "read-only-export"
-            ? "Scribe cancellation is recorded. New processing is disabled. Existing records remain available during your read-only/export window."
-            : "Your export window has ended. New processing remains disabled. Record destruction has not been completed.";
+            ? "Scribe cancellation is recorded. You can no longer start visits or create new notes. Existing records remain available during your read-only/export window."
+            : "Your export window has ended. Starting visits and creating new notes remain disabled. Record destruction has not been completed.";
           render();
         }, host.openDashboard);
       } else if (action === "dashboard") {
