@@ -9,7 +9,7 @@ export function openCancellationDialog(root: HTMLElement, cancellation: ScribeCa
   const abort = new AbortController(), dialog = document.createElement("dialog");
   dialog.className = "scribe-cancellation-dialog";
   dialog.innerHTML = `<h2>Cancel Scribe access</h2><p data-cancel-status role="status"></p>
-    <div data-cancel-details><p>You can no longer start visits or create new notes in Scribe. Your Cosmaneura sign-in stays active.</p>
+    <div data-cancel-details><p>After cancellation, you won’t be able to start visits or create new notes in Scribe. Your Cosmaneura sign-in stays active.</p>
     <p>You have a read-only/export period before the account’s Scribe and Core health information is scheduled for destruction. Other practice members keep their access.</p>
     <p>Destruction requires a reviewed record inventory and a certificate. Neither is complete when you submit this request. De-identified data follows your BAA. Audit, BAA and compliance records are retained six years; financial and contract records seven years.</p>
     <label>Type CANCEL to confirm <input data-cancel-confirm autocomplete="off" spellcheck="false"></label></div>
