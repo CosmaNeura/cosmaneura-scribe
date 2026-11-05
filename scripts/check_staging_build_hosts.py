@@ -37,6 +37,7 @@ STAGING_QUALIFICATION_PATHS: tuple[str, ...] = (
     "apps/capture/standalone.vite.config.ts",
     "apps/capture/provider.vite.config.ts",
     "deployment/core-bundle.disabled.env.example",
+    "deployment/staging-worker-bindings.required.json",
 )
 
 # Filename patterns treated as staging/qualification build profiles when not on
@@ -55,7 +56,12 @@ FOUNDER_PRODUCTION_PREFIXES: tuple[str, ...] = (
     "docs/production/",
     "docs/flight-plans/",
     "docs/PRODUCTION_",
-    "deployment/",
+    # Explicit production deployment fixtures only — never a blanket deployment/.
+    "deployment/receiver.core-context.disabled.json",
+    "deployment/receiver-bindings.required.json",
+    "deployment/receiver.disabled.json",
+    "deployment/Dockerfile.core-bundle",
+    "deployment/Dockerfile.receiver",
 )
 
 # Refuse-gate / dual-path code that must mention live hosts to reject them, or
