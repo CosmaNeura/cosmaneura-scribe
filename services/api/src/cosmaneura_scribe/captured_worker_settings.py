@@ -54,7 +54,7 @@ class CapturedWorkerSettings(Settings):
             or self.database_url is not None
             or not self.database_ssl
             or self.managed_identity_client_id is None
-            or len(self.configured_capture_tenant_ids) != 1
+            or not self.configured_capture_tenant_ids
             or self.transcription_job_enabled
             or self.configured_capture_enabled
             or self.external_ingest_admission_enabled
