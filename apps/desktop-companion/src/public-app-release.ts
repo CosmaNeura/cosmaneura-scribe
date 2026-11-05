@@ -9,6 +9,12 @@ export interface PublicMacRelease {
   readonly build: string;
   readonly distribution: "Direct beta" | "Apple distribution";
   readonly environment: "Staging" | "Production";
+  readonly environmentMarker: "S" | "P";
+}
+
+function publicMacEnvironment(coreOrigin: unknown): Pick<PublicMacRelease, "environment" | "environmentMarker"> | null {
+  return coreOrigin === "https://staging-app.cosmaneura.com" ? { environment: "Staging", environmentMarker: "S" }
+    : coreOrigin === "https://app.cosmaneura.com" ? { environment: "Production", environmentMarker: "P" } : null;
 }
 
 /** Public package metadata cannot select a backend, identity, or storage path. */
@@ -20,10 +26,9 @@ export function publicMacRelease(value: unknown, coreOrigin: unknown,
     || data.schema !== 1 || data.displayName !== PUBLIC_MAC_NAME || data.distribution !== distribution
     || typeof data.marketingVersion !== "string" || !/^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$/u.test(data.marketingVersion)
     || typeof data.build !== "string" || !/^[1-9][0-9]{0,9}$/u.test(data.build)) return null;
-  const environment = coreOrigin === "https://staging-app.cosmaneura.com" ? "Staging"
-    : coreOrigin === "https://app.cosmaneura.com" ? "Production" : null;
+  const environment = publicMacEnvironment(coreOrigin);
   return environment ? Object.freeze({ displayName: PUBLIC_MAC_NAME, marketingVersion: data.marketingVersion,
-    build: data.build, distribution, environment }) : null;
+    build: data.build, distribution, ...environment }) : null;
 }
 
 type PublicAppPort = Pick<App, "getAppPath" | "setAboutPanelOptions" | "whenReady">;
@@ -38,14 +43,17 @@ function packageMetadata(root: string, file: "release-metadata.json" | "provider
 export function installPublicMacPresentation(app: PublicAppPort, menu: PublicMenuPort,
   distribution: PublicMacRelease["distribution"]): void {
   let release: PublicMacRelease | null = null;
+  let environment: ReturnType<typeof publicMacEnvironment> = null;
   try {
     const profile = packageMetadata(app.getAppPath(), "provider-profile.json") as { coreOrigin?: unknown } | null;
+    environment = publicMacEnvironment(profile?.coreOrigin);
     release = publicMacRelease(packageMetadata(app.getAppPath(), "release-metadata.json"), profile?.coreOrigin, distribution);
   } catch { /* Missing public metadata must not change capture or disclose errors. */ }
+  const marker = environment ? ` · ${environment.environment} (${environment.environmentMarker})` : "";
   try {
     app.setAboutPanelOptions({ applicationName: PUBLIC_MAC_NAME,
       ...(release ? { applicationVersion: release.marketingVersion } : {}),
-      version: release ? `Build ${release.build} · ${release.distribution} · ${release.environment}` : "Release details unavailable" });
+      version: release ? `Build ${release.build} · ${release.distribution}${marker}` : `Release details unavailable${marker}` });
   } catch { /* Public presentation cannot prevent the existing guarded startup. */ }
   void app.whenReady().then(() => {
     menu.setApplicationMenu(menu.buildFromTemplate([
