@@ -112,9 +112,7 @@ class ReceiverConfiguration(BaseModel):
     ingress_isolation_receipt: str | None = None
     profile: Literal[
         "core-staging-personal-v1", "core-production-organization-v1", "core-production-personal-v1"
-    ] = (
-        "core-staging-personal-v1"
-    )
+    ] = "core-staging-personal-v1"
     production: ProductionReceiverBinding | ProductionPersonalReceiverBinding | None = None
 
     @model_validator(mode="after")
@@ -126,14 +124,10 @@ class ReceiverConfiguration(BaseModel):
             raise ValueError("receiver_native_visit_actions_configuration_invalid")
         if self.profile == "core-staging-personal-v1" and self.production is not None:
             raise ValueError("receiver_configuration_invalid")
-        if (
-            self.profile in PRODUCTION_PROFILES
-            and self.desktop_native_session_without_origin
-        ):
+        if self.profile in PRODUCTION_PROFILES and self.desktop_native_session_without_origin:
             raise ValueError("receiver_configuration_invalid")
         if self.authority_backend == "core-provider-context-v1" and (
-            self.profile not in PRODUCTION_PROFILES
-            or any(
+            any(
                 value is not None
                 for value in (self.database_host, self.database_name, self.database_reader_role)
             )
@@ -466,7 +460,9 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
                 (
                     "core-production-personal-v1"
                     if config.profile == "core-production-personal-v1"
-                    else "clerk-organization-v1" if production else CORE_STAGING_PERSONAL
+                    else "clerk-organization-v1"
+                    if production
+                    else CORE_STAGING_PERSONAL
                 ),
             )
             receiver_type = ProviderReceiver

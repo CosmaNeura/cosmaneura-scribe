@@ -1,4 +1,4 @@
-"""Explicit production Core-authority backend; the legacy registry stays intact."""
+"""Explicit profile-bound Core-authority backend; the legacy registry stays intact."""
 
 import inspect
 import re
@@ -26,6 +26,7 @@ from fastapi.routing import APIRoute
 from receiver import (
     _LIMITS,
     _PREFIX,
+    CORE_STAGING_PERSONAL,
     AuthenticationFailed,
     ClerkTokenVerifier,
     ProviderReceiver,
@@ -53,14 +54,15 @@ class CoreContextReceiver(ProviderReceiver):
         if (
             engine is not None
             or profile.identity_profile
-            not in {"clerk-organization-v1", "core-production-personal-v1"}
+            not in {"clerk-organization-v1", CORE_STAGING_PERSONAL, "core-production-personal-v1"}
             or not isinstance(verifier, ClerkTokenVerifier)
-            or verifier.core_provider_session
+            or (profile.identity_profile == CORE_STAGING_PERSONAL)
+            != (verifier.core_provider_session is True)
             or (profile.identity_profile == "core-production-personal-v1")
             != (getattr(verifier, "production_core_personal_session", False) is True)
             or verifier._settings != settings
         ):
-            raise ValueError("core_context_requires_production_organization")
+            raise ValueError("core_context_requires_matching_identity_profile")
         # None is never a database fallback: every registry entry point below
         # is replaced or denied, and this mode never creates a SQL engine.
         super().__init__(profile, cast(Engine, None), settings, verifier, workload_token, **kwargs)
@@ -115,8 +117,13 @@ class CoreContextReceiver(ProviderReceiver):
             await transport.close()
 
     async def activation(self, authorization, body, key):
-        transport = ProviderActivationTransport(self.profile.core_origin, self._verify,
-            self.workload_token, transport=self.core_http, connections=self.core_connections)
+        transport = ProviderActivationTransport(
+            self.profile.core_origin,
+            self._verify,
+            self.workload_token,
+            transport=self.core_http,
+            connections=self.core_connections,
+        )
         try:
             return await transport.request(authorization, body, key)
         finally:
@@ -128,8 +135,13 @@ class CoreContextReceiver(ProviderReceiver):
     async def cancellation(self, authorization, body, key):
         # Cancellation is account-level. Neither a current encounter nor a
         # processing-enabled Core connection is needed to recover own status.
-        transport = ProviderCancellationTransport(self.profile.core_origin, self._verify,
-            self.workload_token, transport=self.core_http, connections=self.core_connections)
+        transport = ProviderCancellationTransport(
+            self.profile.core_origin,
+            self._verify,
+            self.workload_token,
+            transport=self.core_http,
+            connections=self.core_connections,
+        )
         try:
             return await transport.request(authorization, body, key)
         finally:
@@ -253,8 +265,11 @@ class CoreContextReceiver(ProviderReceiver):
             try:
                 revision = _uuid(request.headers.get("x-scribe-native-revision"))
                 body = await _read(request, _LIMITS["activation"])
-                result = await self.activation(request.headers.get("authorization", ""), body,
-                    request.headers.get("idempotency-key", ""))
+                result = await self.activation(
+                    request.headers.get("authorization", ""),
+                    body,
+                    request.headers.get("idempotency-key", ""),
+                )
                 return _reply(200, {"revision": str(revision), **result})
             except ProviderAccountSetupRequired as error:
                 return _reply(409, error.body(str(revision)))
@@ -263,8 +278,10 @@ class CoreContextReceiver(ProviderReceiver):
             except Exception:
                 return _reply(403, {"detail": "provider_request_denied"})
 
-        app.router.routes.insert(0, APIRoute(_PREFIX + "activation", activation,
-            methods=["POST"], include_in_schema=False))
+        app.router.routes.insert(
+            0,
+            APIRoute(_PREFIX + "activation", activation, methods=["POST"], include_in_schema=False),
+        )
 
         async def catalog(request: Request):
             try:
@@ -292,7 +309,11 @@ class CoreContextReceiver(ProviderReceiver):
                         ),
                         "account": value["account"],
                         "recoveryScope": value["recoveryScope"],
-                        "environment": "Production",
+                        "environment": (
+                            "Staging"
+                            if self.profile.identity_profile == CORE_STAGING_PERSONAL
+                            else "Production"
+                        ),
                         **(
                             {"native_visit_actions_v2": True}
                             if value.get("native_visit_actions_v2") is True
