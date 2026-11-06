@@ -226,7 +226,7 @@ def definition(data: dict[str, Any], phase: str) -> dict[str, Any]:
             "workloadProfileName": "Consumption",
             "configuration": {
                 "triggerType": "Manual",
-                "replicaTimeout": 1800,
+                "replicaTimeout": 7200 if phase == "speech" else 1800,
                 "replicaRetryLimit": 0,
                 "manualTriggerConfig": {"parallelism": 1, "replicaCompletionCount": 1},
                 "registries": [

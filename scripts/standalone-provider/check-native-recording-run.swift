@@ -150,11 +150,13 @@ private final class FinalizationWrites: @unchecked Sendable {
       captureAuthorizedUntil: lease.expiresAt, source: .ios)
     source = Source(preparation)
   }
-  func run(permission: @escaping @MainActor () async throws -> Bool = { true }) throws
+  func run(permission: @escaping @MainActor () async throws -> Bool = { true },
+           confirmListening: @escaping @MainActor () -> Void = {}) throws
     -> NativeProviderRecordingRun
   {
     try NativeProviderRecordingRun(
-      source: source, lease: lease, batch: batch, requestPermission: permission
+      source: source, lease: lease, batch: batch, requestPermission: permission,
+      confirmListening: confirmListening
     ) { validate, finalize in
       recorder.validate = validate
       recorder.finalize = finalize
@@ -414,6 +416,22 @@ private actor SourceWire: ProviderNativeWire {
       try await replacement.start()
       try await replacement.stop()
       checks += 3
+    }
+    do {
+      var confirmations = 0
+      let fixture = try Fixture()
+      let run = try fixture.run(confirmListening: { confirmations += 1 })
+      try await run.start()
+      try runRequire(run.phase == .recording && confirmations == 1)
+      try await run.stop()
+      try runRequire(confirmations == 1)
+      let failed = try Fixture()
+      failed.recorder.startFails = true
+      let rejected = try failed.run(confirmListening: { confirmations += 1 })
+      try await rejects { try await rejected.start() }
+      try runRequire(confirmations == 1)
+      try await NativeCaptureStartGate.recoverWhileIdle {}
+      checks += 2
     }
     do {
       let fixture = try Fixture()

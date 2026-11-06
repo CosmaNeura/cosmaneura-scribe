@@ -151,6 +151,13 @@ def _azure_speech_error_code(error: Exception) -> str:
     return "speech_provider_unavailable"
 
 
+# Fast transcription answers once, when the whole file is done, and azure-core does
+# not retry a timed-out POST. Its 300-second default would spend a durable job attempt
+# on every long visit. Keep this below the 7200-second speech worker replica timeout
+# so the worker records the failure instead of being killed by the platform.
+SPEECH_READ_TIMEOUT_SECONDS = 3600
+
+
 class AzureSpeechTranscriber:
     def __init__(
         self,
@@ -254,6 +261,7 @@ class AzureSpeechTranscriber:
                     result = await self._client.transcribe(
                         body,
                         logging_enable=False,
+                        read_timeout=SPEECH_READ_TIMEOUT_SECONDS,
                     )
                     # Inspect after successful provider consumption. Even a
                     # broken diagnostic seek cannot corrupt the audio sent.

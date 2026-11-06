@@ -20,6 +20,7 @@ from azure.core.exceptions import (
 from cosmaneura_scribe.schemas import CaptureChannel
 from cosmaneura_scribe.settings import Settings
 from cosmaneura_scribe.transcription import (
+    SPEECH_READ_TIMEOUT_SECONDS,
     AudioTrack,
     AzureSpeechProviderError,
     AzureSpeechTranscriber,
@@ -71,7 +72,10 @@ class FakeAzureClient:
         self.closed = False
 
     async def transcribe(self, body: TranscriptionContent, **kwargs: object) -> TranscriptionResult:
-        assert kwargs == {"logging_enable": False}
+        assert kwargs == {
+            "logging_enable": False,
+            "read_timeout": SPEECH_READ_TIMEOUT_SECONDS,
+        }
         self.requests.append(body)
         return next(self.results)
 
@@ -379,3 +383,15 @@ def test_manifest_requires_explicit_deidentification() -> None:
 def test_word_error_rate_handles_substitution_insertion_and_punctuation() -> None:
     assert word_error_rate("One two three", "one four three extra") == pytest.approx(2 / 3)
     assert word_error_rate("Hello, world!", "hello world") == 0
+
+
+def test_speech_read_timeout_leaves_workers_time_to_record_the_failure() -> None:
+    root = Path(__file__).resolve().parents[1]
+    production = (root / "infra/production_captured_workers.tf").read_text(encoding="utf-8")
+    legacy = (root / "infra/transcription_job.tf").read_text(encoding="utf-8")
+    render = (root / "scripts/render_configured_worker_release.py").read_text(encoding="utf-8")
+
+    assert SPEECH_READ_TIMEOUT_SECONDS == 3600
+    assert 'replica_timeout_in_seconds   = each.key == "speech" ? 7200 : 1800' in production
+    assert "replica_timeout_in_seconds   = 7200" in legacy
+    assert '"replicaTimeout": 7200 if phase == "speech" else 1800' in render
