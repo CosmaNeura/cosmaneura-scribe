@@ -73,3 +73,7 @@ venv = ".venv"
 [tool.ruff.lint.per-file-ignores]
 # Preserve the deployed migration bytes; its three long SQL lines are intentional.
 "alembic/versions/0023_unstarted_retirement.py" = ["E501"]
+# Pre-existing virtual-lab / MAS-variant compact style; keep F/I/UP/B/ASYNC enforcement.
+"tools/virtual-lab/**" = ["E501", "E701", "E702"]
+"scripts/prepare-desktop-mas-variant.py" = ["E501", "E701", "E702"]
+"scripts/test_desktop_mas_variant.py" = ["E501", "E701", "E702"]

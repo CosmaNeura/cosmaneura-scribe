@@ -1,7 +1,7 @@
 """Retained Azure user-token binding restricted to one exact reader exec."""
 import importlib.util
-from pathlib import Path
 import sys
+from pathlib import Path
 
 R = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('owned_live_bot_transport', R / 'live-bot-private-transport.py')
