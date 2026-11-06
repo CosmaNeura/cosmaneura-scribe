@@ -36,7 +36,7 @@ const roles = ["auth", "audio", "presentation"] as const;
 type Role = typeof roles[number];
 interface HelperDeclaration { path: string; sha256: string; hashAlgorithm?: typeof STORE_BRIDGE_HASH_ALGORITHM }
 type Declarations = Record<Role, HelperDeclaration>;
-const processDescriptors = ["mas", "execPath"].map(key => [key, Object.getOwnPropertyDescriptor(process, key)] as const);
+const processDescriptors = ["mas", "execPath", "platform"].map(key => [key, Object.getOwnPropertyDescriptor(process, key)] as const);
 const versionDescriptors = ["electron", "node"].map(key => [key, Object.getOwnPropertyDescriptor(process.versions, key)] as const);
 let temporary: string, application: string, root: string, executable: string, bridge: string;
 
@@ -72,6 +72,7 @@ beforeEach(async () => {
   await mkdir(join(application, "Contents", "MacOS"));
   await writeFile(executable, "synthetic Electron identity fixture; never executed\n", { mode: 0o755 });
   await writeFile(bridge, bytes, { mode: 0o755 });
+  setProcess("platform", "darwin");
   setProcess("mas", true); setProcess("execPath", executable);
   setVersion("electron", "44.4.3"); setVersion("node", "24.0.0");
   native.open.mockReset();

@@ -356,7 +356,16 @@ async def test_initial_source_pair_without_retained_context_reuses_exact_origina
 async def test_qualified_core_context_receiver_mutation_never_uses_registry_or_generic_api(
     monkeypatch, deny
 ):
-    from test_core_context_receiver import ACTOR, ORIGIN, TENANT, WORKSPACE, receiver
+    import os
+    import sys
+
+    sys.path.insert(
+        0, os.path.join(os.path.dirname(__file__), "..", "scripts", "standalone-provider")
+    )
+    try:
+        from test_core_context_receiver import ACTOR, ORIGIN, TENANT, WORKSPACE, receiver
+    except ModuleNotFoundError as exc:  # Core receiver packages are not in Scribe CI.
+        pytest.skip(f"Core context receiver fixtures unavailable: {exc}")
 
     client, token, paths, verifier = receiver()
     current = client.core_http.handler

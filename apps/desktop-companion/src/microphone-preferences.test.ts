@@ -2,11 +2,18 @@ import { createCipheriv, createDecipheriv, randomBytes, webcrypto } from "node:c
 import { mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DeviceProtection } from "./device-custody.js";
 import { microphonePreferenceScope, openMicrophonePreferences } from "./microphone-preferences.js";
 
 const account={email:"invented-provider@example.invalid",environment:"Staging"};
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+beforeEach(() => {
+  Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+});
+afterEach(() => {
+  if (platformDescriptor) Object.defineProperty(process, "platform", platformDescriptor);
+});
 // Real authenticated encryption behind the injected device-protection interface;
 // this does not claim to exercise the installed application's macOS Keychain.
 function protection(): DeviceProtection {
