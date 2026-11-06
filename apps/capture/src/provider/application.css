@@ -14,9 +14,12 @@
 .provider-application button[data-session-action]:focus-visible,.scribe-desktop-close:focus-visible { outline:3px solid #90b4ff; outline-offset:3px; }
 .scribe-desktop-close { flex-shrink:0; min-height:44px; padding:8px 12px; border:0; border-radius:8px; background:transparent; color:inherit; font:16px/1.4 system-ui,sans-serif; cursor:pointer; }
 .provider-session-header:has(.scribe-desktop-close) [data-session-actions] { margin-left:auto; }
-.provider-application:has(.provider-desktop-compact) .provider-session-header { padding:8px 12px; gap:8px; }
+.provider-application:has(.provider-desktop-compact) .provider-session-header { padding:6px 12px; gap:6px; }
 .provider-application:has(.provider-desktop-compact) .provider-brand { font-size:18px; }
 .provider-application:has(.provider-desktop-compact) .provider-brand-icon { width:28px; height:28px; }
+.provider-application:has(.provider-desktop-compact) .provider-session-header button[data-session-action],
+.provider-application:has(.provider-desktop-compact) .scribe-desktop-close,
+.provider-application:has(.provider-desktop-compact) .provider-account-menu summary { min-height:40px; }
 @media(max-width:600px) { .provider-session-header { padding:12px 16px; } .provider-session-status { margin:20px 16px; padding:24px 20px; } }
 
 .provider-account-menu { position:relative; font-size:1rem; }

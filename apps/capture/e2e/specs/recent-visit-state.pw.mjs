@@ -80,7 +80,7 @@ test("late events cannot change listed visits and removed catalog access drops o
   await page.evaluate(() => window.dobLab.signOut()); await expect(page.locator("#provider")).toBeEmpty();
 });
 
-test("accepted upload waits without an action and an authoritative note takes precedence", async ({ page }) => {
+test("accepted upload keeps Open visit while preparing and an authoritative note takes precedence", async ({ page }) => {
   await page.clock.install();
   await start(page);
   await page.evaluate(() => {
@@ -89,7 +89,7 @@ test("accepted upload waits without an action and an authoritative note takes pr
   });
   await list(page); await expect(status(page)).toHaveText("Preparing your visit…");
   await expect(status(page)).toHaveAttribute("data-tone", "waiting");
-  await expect(row(page).getByRole("button")).toHaveCount(0);
+  await expect(row(page).getByRole("button", { name: "Open visit", exact: true })).toBeVisible();
   await page.evaluate(() => { window.dobLab.catalog = window.dobLab.catalog.map(row => ({ ...row, status: "draft_ready" })); });
   await catalogPoll(page, 3000); await noteReady(page);
   await oneRecordingOnly(page);
