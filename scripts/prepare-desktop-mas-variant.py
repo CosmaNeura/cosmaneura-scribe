@@ -18,14 +18,14 @@ TEAM = "JVV65668U6"
 PARENT = "com.cosmaneura.scribe.beta.desktop"
 AUTH = PARENT + ".auth"
 ELECTRON_VERSION = "44.4.3"
-APP_GROUP_TOKEN = "UNAPPROVED_APP_GROUP_NOT_SIGNABLE"
+APP_GROUP_PLACEHOLDER = "UNAPPROVED_APP_GROUP_NOT_SIGNABLE"
 
 
 def draft_claims() -> dict[str, dict[str, object]]:
     def native(bundle: str) -> dict[str, object]:
         return {
             "com.apple.security.app-sandbox": True,
-            "com.apple.security.application-groups": [APP_GROUP_TOKEN],
+            "com.apple.security.application-groups": [APP_GROUP_PLACEHOLDER],
             "com.apple.application-identifier": TEAM + "." + bundle,
             "com.apple.developer.team-identifier": TEAM,
         }

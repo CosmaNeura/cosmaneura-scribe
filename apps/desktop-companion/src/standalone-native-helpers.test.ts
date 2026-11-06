@@ -12,6 +12,8 @@ const native = vi.hoisted(() => ({ open: vi.fn() }));
 vi.mock("./native-provider-client.js", () => ({ NativeProviderClient: { open: native.open } }));
 
 const unavailable = "The standalone provider is unavailable.";
+// openStandaloneProvider is a darwin/MAS package path; Linux CI cannot open it.
+const onDarwin = process.platform === "darwin";
 // Bounded Mach-O layout only; all native acquisition is mocked and these bytes
 // are never executed. The separate retained-artifact witness uses actual code.
 function fixtureBytes(): Buffer {
@@ -89,7 +91,7 @@ afterEach(async () => {
 });
 
 describe("fixed Store helper selection", () => {
-  it("the actual factory selects MacOS bytes and retains the real byte gate without opening custody", async () => {
+  it.skipIf(!onDarwin)("the actual factory selects MacOS bytes and retains the real byte gate without opening custody", async () => {
     await mkdir(join(root, "native"));
     await writeFile(join(root, "native", "ScribeStorePipeBridge"), "different old resource fixture\n");
     await profile();
@@ -113,35 +115,35 @@ describe("fixed Store helper selection", () => {
     expect(packaged.openExternal).not.toHaveBeenCalled();
   });
 
-  it.each(roles)("rejects a different %s declaration path before native acquisition", async role => {
+  it.skipIf(!onDarwin).each(roles)("rejects a different %s declaration path before native acquisition", async role => {
     const declarations = storeDeclarations(); declarations[role].path = "native/ScribeStorePipeBridge";
     await profile(declarations);
     await expect(openStandaloneProvider(runtime())).rejects.toThrow(unavailable);
     expect(native.open).not.toHaveBeenCalled();
   });
 
-  it.each(roles)("rejects a different %s SHA before native acquisition", async role => {
+  it.skipIf(!onDarwin).each(roles)("rejects a different %s SHA before native acquisition", async role => {
     const declarations = storeDeclarations(); declarations[role].sha256 = "a".repeat(64);
     await profile(declarations);
     await expect(openStandaloneProvider(runtime())).rejects.toThrow(unavailable);
     expect(native.open).not.toHaveBeenCalled();
   });
 
-  it.each(roles)("requires explicit signing-invariant admission for %s", async role => {
+  it.skipIf(!onDarwin).each(roles)("requires explicit signing-invariant admission for %s", async role => {
     const declarations = storeDeclarations(); delete declarations[role].hashAlgorithm;
     await profile(declarations);
     await expect(openStandaloneProvider(runtime())).rejects.toThrow();
     expect(native.open).not.toHaveBeenCalled();
   });
 
-  it("does not allow matching declarations to bypass the actual helper byte verifier", async () => {
+  it.skipIf(!onDarwin)("does not allow matching declarations to bypass the actual helper byte verifier", async () => {
     await writeFile(bridge, "changed synthetic bridge bytes\n"); await profile();
     native.open.mockImplementation(async (options: { helperPath: string; helperSha256: string }) => verifyNativeHelper(options));
     await expect(openStandaloneProvider(runtime())).rejects.toThrow();
     expect(native.open).toHaveBeenCalledTimes(1);
   });
 
-  it.each([["electron", "44.4.2"], ["node", "25.0.0"]] as const)("rejects unsupported %s runtime before acquisition", async (key, value) => {
+  it.skipIf(!onDarwin).each([["electron", "44.4.2"], ["node", "25.0.0"]] as const)("rejects unsupported %s runtime before acquisition", async (key, value) => {
     setVersion(key, value); await profile();
     await expect(openStandaloneProvider(runtime())).rejects.toThrow("mac_app_store_xpc_distribution_unavailable");
     expect(native.open).not.toHaveBeenCalled();
@@ -156,7 +158,7 @@ describe("fixed Store helper selection", () => {
     expect(native.open).not.toHaveBeenCalled();
   });
 
-  it.each(["symlink", "directory"] as const)("rejects a %s at the fixed bridge location before acquisition", async kind => {
+  it.skipIf(!onDarwin).each(["symlink", "directory"] as const)("rejects a %s at the fixed bridge location before acquisition", async kind => {
     await unlink(bridge);
     if (kind === "symlink") {
       const elsewhere = join(temporary, "different-helper"); await writeFile(elsewhere, bytes);
@@ -189,7 +191,7 @@ describe("retained direct helper containment", () => {
       helperHashAlgorithm: STORE_BRIDGE_HASH_ALGORITHM })).rejects.toThrow();
   });
 
-  it("keeps three distinct relative declarations and hashes in the direct factory", async () => {
+  it.skipIf(!onDarwin)("keeps three distinct relative declarations and hashes in the direct factory", async () => {
     setProcess("mas", false);
     const declarations = storeDeclarations(); await mkdir(join(root, "native"));
     for (const role of roles) {
@@ -207,6 +209,21 @@ describe("retained direct helper containment", () => {
     expect(resolved.map(value => value.helperSha256)).toEqual(roles.map(role => declarations[role].sha256));
     expect(resolved.every(value => value.helperHashAlgorithm === undefined)).toBe(true);
     await owner.dispose();
+  });
+
+  it("keeps three distinct relative declarations and hashes without opening the darwin factory", async () => {
+    setProcess("mas", false);
+    const declarations = storeDeclarations(); await mkdir(join(root, "native"));
+    for (const role of roles) {
+      const payload = Buffer.from("synthetic direct " + role);
+      declarations[role] = { path: "native/" + role, sha256: createHash("sha256").update(payload).digest("hex") };
+      await writeFile(join(root, declarations[role].path), payload, { mode: 0o755 });
+    }
+    const resolved = await resolveStandaloneNativeHelpers(root, declarations);
+    expect(resolved.map(value => value.helperPath)).toEqual(roles.map(role => join(root, declarations[role].path)));
+    expect(resolved.map(value => value.helperSha256)).toEqual(roles.map(role => declarations[role].sha256));
+    expect(resolved.every(value => value.helperHashAlgorithm === undefined)).toBe(true);
+    expect(native.open).not.toHaveBeenCalled();
   });
 
   it.each(["/absolute/helper", "native\\helper", "native//helper", "./native/helper", "native/../helper",

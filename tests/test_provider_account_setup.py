@@ -38,7 +38,7 @@ async def test_only_checked_setup_problem_survives_context_transport(fault, setu
         }
 
     async def workload():
-        return SecretStr("synthetic-workload-token")
+        return SecretStr("your-synthetic-workload-token")
 
     def reply(request):
         calls.append(True)
