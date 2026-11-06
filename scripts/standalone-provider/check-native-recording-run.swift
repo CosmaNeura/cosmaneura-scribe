@@ -79,6 +79,7 @@ private final class FinalizationWrites: @unchecked Sendable {
   var capturedAudioFrames = 0
   var starts = 0, stops = 0, readyCalls = 0
   var holdReady = false, stopFails = false, terminal = false, startFails = false
+  var skipReadyValidation = false
   var readyWait: CheckedContinuation<Void, Never>?
   var invalidations = 0
   var incomplete = false
@@ -102,7 +103,7 @@ private final class FinalizationWrites: @unchecked Sendable {
   func ready() async throws {
     readyCalls += 1
     if holdReady { await withCheckedContinuation { readyWait = $0 } }
-    try await validate?()
+    if !skipReadyValidation { try await validate?() }
   }
   func stop() async throws {
     stops += 1
@@ -150,11 +151,13 @@ private final class FinalizationWrites: @unchecked Sendable {
       captureAuthorizedUntil: lease.expiresAt, source: .ios)
     source = Source(preparation)
   }
-  func run(permission: @escaping @MainActor () async throws -> Bool = { true }) throws
+  func run(permission: @escaping @MainActor () async throws -> Bool = { true },
+           confirmListening: @escaping @MainActor () -> Void = {}) throws
     -> NativeProviderRecordingRun
   {
     try NativeProviderRecordingRun(
-      source: source, lease: lease, batch: batch, requestPermission: permission
+      source: source, lease: lease, batch: batch, requestPermission: permission,
+      confirmListening: confirmListening
     ) { validate, finalize in
       recorder.validate = validate
       recorder.finalize = finalize
@@ -414,6 +417,44 @@ private actor SourceWire: ProviderNativeWire {
       try await replacement.start()
       try await replacement.stop()
       checks += 3
+    }
+    do {
+      var confirmations = 0
+      let fixture = try Fixture()
+      let run = try fixture.run(confirmListening: { confirmations += 1 })
+      try await run.start()
+      try runRequire(run.phase == .recording && confirmations == 1)
+      try await run.stop()
+      try runRequire(confirmations == 1)
+      let failed = try Fixture()
+      failed.recorder.startFails = true
+      let rejected = try failed.run(confirmListening: { confirmations += 1 })
+      try await rejects { try await rejected.start() }
+      try runRequire(confirmations == 1)
+      try await NativeCaptureStartGate.recoverWhileIdle {}
+      checks += 2
+    }
+    for stopDuringReady in [false, true] {
+      var confirmations = 0
+      let fixture = try Fixture()
+      fixture.recorder.holdReady = true
+      fixture.recorder.skipReadyValidation = true
+      let run = try fixture.run(confirmListening: { confirmations += 1 })
+      let start = Task { @MainActor in try await run.start() }
+      try await wait { fixture.recorder.readyWait != nil }
+      try runRequire(confirmations == 0)
+      // Ready itself succeeds here, so only the checks after it can stop the pulse.
+      let stop = stopDuringReady ? Task { @MainActor in try await run.stop() } : nil
+      if !stopDuringReady { fixture.source.retireForStop() }
+      try await wait { !stopDuringReady || run.phase != .starting }
+      fixture.recorder.readyWait?.resume()
+      fixture.recorder.readyWait = nil
+      try await rejects { try await start.value }
+      if let stop { try? await stop.value }
+      try runRequire(confirmations == 0)
+      try await run.stop()
+      try await NativeCaptureStartGate.recoverWhileIdle {}
+      checks += 2
     }
     do {
       let fixture = try Fixture()

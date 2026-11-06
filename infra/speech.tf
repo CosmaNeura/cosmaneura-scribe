@@ -123,7 +123,7 @@ resource "azurerm_container_app_job" "speech_smoke" {
   location                     = local.resource_group_location
   container_app_environment_id = azurerm_container_app_environment.scribe.id
   workload_profile_name        = "Consumption"
-  replica_timeout_in_seconds   = 900
+  replica_timeout_in_seconds   = 7200
   replica_retry_limit          = 0
 
   identity {

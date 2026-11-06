@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
+from aiohttp import web
+from azure.ai.transcription.aio import TranscriptionClient
 from azure.ai.transcription.models import (
     TranscribedPhrase,
     TranscriptionContent,
     TranscriptionResult,
 )
+from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import (
     ClientAuthenticationError,
     DecodeError,
@@ -17,9 +21,12 @@ from azure.core.exceptions import (
     ServiceRequestError,
     ServiceResponseError,
 )
+from cosmaneura_scribe import transcription
 from cosmaneura_scribe.schemas import CaptureChannel
 from cosmaneura_scribe.settings import Settings
 from cosmaneura_scribe.transcription import (
+    SPEECH_DEADLINE_SECONDS,
+    SPEECH_READ_TIMEOUT_SECONDS,
     AudioTrack,
     AzureSpeechProviderError,
     AzureSpeechTranscriber,
@@ -71,7 +78,10 @@ class FakeAzureClient:
         self.closed = False
 
     async def transcribe(self, body: TranscriptionContent, **kwargs: object) -> TranscriptionResult:
-        assert kwargs == {"logging_enable": False}
+        assert kwargs == {
+            "logging_enable": False,
+            "read_timeout": SPEECH_READ_TIMEOUT_SECONDS,
+        }
         self.requests.append(body)
         return next(self.results)
 
@@ -379,3 +389,86 @@ def test_manifest_requires_explicit_deidentification() -> None:
 def test_word_error_rate_handles_substitution_insertion_and_punctuation() -> None:
     assert word_error_rate("One two three", "one four three extra") == pytest.approx(2 / 3)
     assert word_error_rate("Hello, world!", "hello world") == 0
+
+
+def test_speech_limits_leave_workers_time_to_record_the_failure() -> None:
+    root = Path(__file__).resolve().parents[1]
+    production = (root / "infra/production_captured_workers.tf").read_text(encoding="utf-8")
+    legacy = (root / "infra/transcription_job.tf").read_text(encoding="utf-8")
+    smoke = (root / "infra/speech.tf").read_text(encoding="utf-8")
+    render = (root / "scripts/render_configured_worker_release.py").read_text(encoding="utf-8")
+
+    assert SPEECH_READ_TIMEOUT_SECONDS < SPEECH_DEADLINE_SECONDS < 7200
+    assert 'replica_timeout_in_seconds   = each.key == "speech" ? 7200 : 1800' in production
+    assert "replica_timeout_in_seconds   = 7200" in legacy
+    assert "replica_timeout_in_seconds   = 7200" in smoke
+    assert '"replicaTimeout": 7200 if phase == "speech" else 1800' in render
+
+
+def _one_track_request(path: Path) -> TranscriptionRequest:
+    return TranscriptionRequest(
+        session_id=uuid4(),
+        consent_record_id=uuid4(),
+        language_code="en-US",
+        tracks=(AudioTrack(uuid4(), CaptureChannel.MICROPHONE, path),),
+    )
+
+
+def test_deadline_bounds_the_whole_provider_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"RIFF")
+
+    class HangingClient(FakeAzureClient):
+        async def transcribe(
+            self, body: TranscriptionContent, **kwargs: object
+        ) -> TranscriptionResult:
+            del body, kwargs
+            await asyncio.sleep(30)
+            raise AssertionError("deadline did not end the call")
+
+    monkeypatch.setattr(transcription, "SPEECH_DEADLINE_SECONDS", 0.01)
+    provider = AzureSpeechTranscriber(cast(Any, HangingClient([])), max_speakers=2)
+
+    with pytest.raises(AzureSpeechProviderError, match="speech_service_response_error"):
+        asyncio.run(provider.transcribe(_one_track_request(audio)))
+
+
+def test_read_timeout_reaches_the_real_sdk_transport_without_a_second_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"RIFF" + bytes(64))
+    posts: list[int] = []
+
+    async def silent(request: web.Request) -> web.Response:
+        await request.read()
+        posts.append(1)
+        await asyncio.sleep(1)
+        return web.json_response({})
+
+    async def scenario() -> None:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", silent)
+        runner = web.AppRunner(app, shutdown_timeout=0)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = cast(Any, site._server).sockets[0].getsockname()[1]
+        client = TranscriptionClient(
+            endpoint=f"http://127.0.0.1:{port}",
+            credential=AzureKeyCredential("synthetic"),
+            logging_enable=False,
+        )
+        provider = AzureSpeechTranscriber(cast(Any, client), max_speakers=2)
+        try:
+            with pytest.raises(AzureSpeechProviderError, match="speech_service_response_error"):
+                await provider.transcribe(_one_track_request(audio))
+        finally:
+            await client.close()
+            await runner.cleanup()
+
+    monkeypatch.setattr(transcription, "SPEECH_READ_TIMEOUT_SECONDS", 0.2)
+    asyncio.run(scenario())
+    assert len(posts) == 1

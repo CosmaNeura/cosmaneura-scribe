@@ -87,6 +87,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
   private let lease: NativeRecordingLease
   private let batch: NativeRecordingReservationBatch
   private let requestPermission: @MainActor () async throws -> Bool
+  private let confirmListening: @MainActor () -> Void
   private let priorAudioFrames: Int
   private var completionFailure: NativeRecordingFinalizationFailure?
   private var installed = false
@@ -103,6 +104,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
     lease: NativeRecordingLease, batch: NativeRecordingReservationBatch,
     priorAudioFrames: Int = 0,
     requestPermission: @escaping @MainActor () async throws -> Bool,
+    confirmListening: @escaping @MainActor () -> Void = {},
     makeRecorder: (@escaping @Sendable () async throws -> Void,
       @escaping NativeRecordingFinalizer) throws
       -> any NativeProviderEncryptedRecorder
@@ -122,6 +124,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
     self.lease = lease
     self.batch = batch
     self.requestPermission = requestPermission
+    self.confirmListening = confirmListening
     self.priorAudioFrames = priorAudioFrames
     recorder = try makeRecorder(
       { try await authority.validate() }, { write in try await authority.finalize(write) })
@@ -210,6 +213,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
         phase = .recording
         updateRecordingActivity("recording")
         PCMStartupDiagnostics.shared.record(.readyAccepted)
+        confirmListening()
         observeTerminalState()
       } catch {
         if failure == nil { failure = .startFailed }
