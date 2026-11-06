@@ -44,7 +44,7 @@ packages = ["services/api/src/cosmaneura_scribe"]
 [tool.pytest.ini_options]
 addopts = "-q --strict-markers"
 testpaths = ["tests"]
-pythonpath = ["services/api/src"]
+pythonpath = ["services/api/src", ".", "scripts/standalone-provider"]
 markers = [
   "postgres: requires the disposable PostgreSQL integration-test database",
 ]

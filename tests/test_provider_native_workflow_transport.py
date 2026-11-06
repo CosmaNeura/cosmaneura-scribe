@@ -356,6 +356,8 @@ async def test_initial_source_pair_without_retained_context_reuses_exact_origina
 async def test_qualified_core_context_receiver_mutation_never_uses_registry_or_generic_api(
     monkeypatch, deny
 ):
+    # Receiver fixtures need the external Cosmas package; skip in this repo's CI.
+    pytest.importorskip("cosmas_os")
     from test_core_context_receiver import ACTOR, ORIGIN, TENANT, WORKSPACE, receiver
 
     client, token, paths, verifier = receiver()

@@ -88,7 +88,7 @@ async function composedStoreEntry(f: Awaited<ReturnType<typeof fixture>>, option
   });
   const showErrorBox = vi.fn(), setPath = vi.fn();
   const electron = { ...f.runtime, app: Object.assign(f.runtime.app, { setPath, setAboutPanelOptions: vi.fn() }),
-    Menu: { buildFromTemplate: vi.fn(template => template), setApplicationMenu: vi.fn() },
+    Menu: { buildFromTemplate: vi.fn((template: unknown) => template), setApplicationMenu: vi.fn() },
     dialog: { ...f.runtime.dialog, showErrorBox } };
   const processPort = Object.create(process);
   Object.defineProperties(processPort, { mas: { value: options.mas ?? true },

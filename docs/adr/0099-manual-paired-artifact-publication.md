@@ -1,4 +1,4 @@
-# ADR 0094: Manual publication of an already-built paired artifact
+# ADR 0099: Manual publication of an already-built paired artifact
 
 Status: source route only; publication, promotion, production prerequisite changes
 and activation remain explicit founder decisions.
