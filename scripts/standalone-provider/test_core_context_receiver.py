@@ -120,7 +120,7 @@ def receiver(
     revoked = False
 
     async def workload():
-        return SecretStr("synthetic-workload-token")
+        return SecretStr("your-synthetic-workload-token")
 
     def reply(request):
         nonlocal revoked
@@ -128,7 +128,7 @@ def receiver(
         assert request.headers["authorization"] == "Bearer " + token
         assert (
             request.headers["x-cosmaneura-workload-authorization"]
-            == "Bearer synthetic-workload-token"
+            == "Bearer your-synthetic-workload-token"
         )
         if request.url.path == "/service/v1/agent/scribe/native-capture":
             body = json.loads(request.content)
@@ -298,7 +298,7 @@ async def test_qualified_existing_patient_creation_uses_native_core_and_no_regis
         assert request.headers["authorization"] == "Bearer " + token
         assert (
             request.headers["x-cosmaneura-workload-authorization"]
-            == "Bearer synthetic-workload-token"
+            == "Bearer your-synthetic-workload-token"
         )
         assert request.headers["idempotency-key"] == creation_key
         body = json.loads(request.content)
@@ -387,7 +387,7 @@ async def test_runtime_new_mode_never_constructs_engine_or_requests_pg_token(
         async def get_token(self, scope):
             assert scope == config().core_scope
             calls.append("core-token")
-            return SimpleNamespace(token="synthetic-workload-token", expires_on=10**10)
+            return SimpleNamespace(token="your-synthetic-workload-token", expires_on=10**10)
 
         async def close(self):
             calls.append("close")

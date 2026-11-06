@@ -2,14 +2,14 @@
 
 This creates no app/audio target and makes no remote performance claim.
 """
-import json
 import fcntl
+import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import time
 import uuid
+from pathlib import Path
 
 binary = Path(sys.argv[1]).absolute()
 assert binary.is_file() and binary.resolve() == binary

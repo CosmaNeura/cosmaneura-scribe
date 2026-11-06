@@ -1,13 +1,13 @@
 """Offline external-service substitutions; no live capture is qualified."""
 import base64
-from contextlib import nullcontext
-from datetime import datetime, UTC, timedelta
 import importlib.util
 import json
-from pathlib import Path
 import time
 import unittest
 import uuid
+from contextlib import nullcontext
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 spec = importlib.util.spec_from_file_location('reader_under_test', Path(__file__).with_name('live-bot-reader.py'))
 module = importlib.util.module_from_spec(spec)
@@ -64,7 +64,7 @@ class Provider:
 
 def fixture():
     reader = module.Reader.__new__(module.Reader)
-    typed = lambda prefix: prefix + '_' + '0' * 26
+    def typed(prefix): return prefix + '_' + '0' * 26
     reader.expected = {'runId': str(uuid.uuid4()), 'collectorSHA256': 'a' * 64,
         'startedAtEpochMs': time.time() * 1000 - 60000,
         'accountIdentitySHA256': module.sha('synthetic-subject'), 'doctorRef': typed('doctor'),

@@ -302,8 +302,10 @@ export class CaptureApp extends LitElement {
     const captureFinished = provider && ["processing", "complete"].includes(this.#snapshot.state);
     const nativeProvider = provider?.captureMode === "native_microphone";
     const desktopProvider = provider?.captureMode === "desktop_meeting";
+    // Native microphone capture owns the meter; do not require Capacitor platform
+    // detection so synthetic native fixtures and hosted iOS share the same gate.
     const showInputMeter = this.#snapshot.state === "recording" && !this.#stopping
-      && !this.#snapshot.desktop && this.#isNativeIPhone();
+      && nativeProvider;
     return html`
       <div class=${nativeProvider ? "shell provider-native-capture" : desktopProvider
         ? `shell provider-desktop-capture${this.#isDesktopCompact() ? " provider-desktop-compact" : ""}` : "shell"}>
@@ -592,10 +594,12 @@ export class CaptureApp extends LitElement {
   #renderProviderProgress(): TemplateResult {
     const desktopProvider = this.#provider?.captureMode === "desktop_meeting";
     const nativeProvider = this.#provider?.captureMode === "native_microphone";
+    // While the iOS input meter owns live audio feedback, hide the generic status.
+    const hideLiveStatus = nativeProvider && this.#snapshot.state === "recording" && !this.#stopping;
     const savedAudio = this.#snapshot.recordedChunks > 0 ? "Saved audio is retained." : "No saved audio has been confirmed.";
     const uploadProgress = this.#snapshot.native?.uploadProgress ?? this.#snapshot.uploadProgress;
     return html`<section class=${desktopProvider || nativeProvider ? "recording-progress" : "flow-card"} aria-label="Recording progress">
-            <p role="status" class=${this.#snapshot.state === "recording" && !this.#stopping ? "recording-live" : ""}>${this.#snapshot.reconnecting ? "Reconnecting to your call… Speech during this gap is not recorded." : this.#stopping
+            <p role="status" ?hidden=${hideLiveStatus} class=${this.#snapshot.state === "recording" && !this.#stopping ? "recording-live" : ""}>${this.#snapshot.reconnecting ? "Reconnecting to your call… Speech during this gap is not recorded." : this.#stopping
               && this.#snapshot.native?.phase !== "sealing" && !this.#uploadAfterStop()
               ? this.#isStarting() ? "Cancelling start… Waiting for recording to stop." : "Stopping recording…"
               : !this.#snapshot.desktop && (this.#snapshot.statusCode === "capture_starting"

@@ -154,7 +154,8 @@ test("locally ready note actions reject foreign, superseded and removed catalog 
   };
   await page.evaluate(() => { globalThis.noteLab.catalog = globalThis.noteLab.catalog.map(row => ({ ...row, status: "processing" })); });
   await freshCatalog();
-  await expect(row.getByRole("button")).toHaveCount(0);
+  await expect(row.getByRole("button", { name: "Open note", exact: true })).toHaveCount(0);
+  await expect(row.getByRole("button", { name: "Open visit", exact: true })).toBeVisible();
   const staleClick = () => page.evaluate(() => {
     const stale = globalThis.retainedDraftButton.cloneNode(true);
     document.querySelector("#provider").append(stale); stale.click(); stale.remove();
