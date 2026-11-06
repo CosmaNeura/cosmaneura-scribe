@@ -73,3 +73,18 @@ venv = ".venv"
 [tool.ruff.lint.per-file-ignores]
 # Preserve the deployed migration bytes; its three long SQL lines are intentional.
 "alembic/versions/0023_unstarted_retirement.py" = ["E501"]
+# Pre-existing compact packaging/lab scripts: style-only; keep F/I/UP/B/ASYNC on.
+"scripts/assemble-disabled-desktop-candidate.py" = ["E501"]
+"scripts/prepare-desktop-mas-variant.py" = ["E501", "E701", "E702"]
+"scripts/prepare-ios-provider-candidate.py" = ["E501"]
+"scripts/test_desktop_mas_variant.py" = ["E501", "E701", "E702"]
+"tools/virtual-lab/coordinator/kernel-clock-protocol.py" = ["E501"]
+"tools/virtual-lab/coordinator/live-bot-bound-cli.py" = ["E501"]
+"tools/virtual-lab/coordinator/live-bot-private-transport.py" = ["E501", "E702"]
+"tools/virtual-lab/coordinator/live-bot-reader.py" = ["E501"]
+"tools/virtual-lab/coordinator/live-bot-reader.test.py" = ["E501", "E701", "E702"]
+"tools/virtual-lab/native-auth/run.py" = ["E501"]
+"tools/virtual-lab/native/lab.py" = ["E501"]
+"tools/virtual-lab/native/test_audio_inventory.py" = ["E501"]
+"tools/virtual-lab/native/test_guards.py" = ["E501", "E701", "E702"]
+"tools/virtual-lab/native/wda_smoke.py" = ["E501", "E701"]

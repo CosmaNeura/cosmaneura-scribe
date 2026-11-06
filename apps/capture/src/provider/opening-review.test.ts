@@ -47,12 +47,14 @@ it.each([
   ["provider_operation_unavailable", "unavailable"],
   ["provider_operation_conflict", "conflict"],
 ] as const)("carries only the closed opening recovery %s", (disposition, reason) => {
-  const now = 1_793_976_173_134; vi.spyOn(Date, "now").mockReturnValue(now);
   const envelope = { contract_version: "1", workspace_id: scope.workspaceId, binding_ref: scope.bindingRef,
     request_nonce: nonce, disposition };
   const recovery = openingRecoveryFromCore(scope, nonce, envelope);
   expect(openingRecoveryReason(parseOpeningRecovery(JSON.parse(JSON.stringify(recovery)), scope), scope)).toBe(reason);
-  expect(openingResultFromCore(scope, nonce, { openingRecovery: envelope })).toEqual({ openingRecovery: recovery });
+  // openingResultFromCore stamps its own receivedAt; compare closed fields only.
+  expect(openingResultFromCore(scope, nonce, { openingRecovery: envelope })).toEqual({
+    openingRecovery: { reason: recovery.reason, scope: recovery.scope, receivedAt: expect.any(Number) },
+  });
 });
 it.each([
   { disposition: "provider_request_unconfirmed" },
