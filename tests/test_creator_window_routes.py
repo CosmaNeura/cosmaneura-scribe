@@ -170,6 +170,22 @@ async def test_same_ordinary_receipts_survive_partial_commit_and_restart(
 
 async def test_concurrent_ordinary_and_combined_claims_produce_one_window(initial):
     capture, _, _ = initial
+
+    # Concurrent requests may overlap pool checkouts; the sequential fixture
+    # assert that the pool is empty during key IO does not apply here.
+    class ConcurrentKeys(CaptureKeyProvider):
+        calls = 0
+        closes = 0
+
+        async def get_public_key(self):
+            self.calls += 1
+            return await super().get_public_key()
+
+        async def close(self):
+            self.closes += 1
+
+    keys = ConcurrentKeys()
+    app.dependency_overrides[preparation_keys] = lambda: keys
     body = intent()
     first, second, legacy = await asyncio.wait_for(
         asyncio.gather(combined(capture, body), combined(capture, body), ordinary(capture, body)),
