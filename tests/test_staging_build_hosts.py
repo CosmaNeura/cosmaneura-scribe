@@ -85,11 +85,16 @@ def test_staging_named_profile_fixture_is_scanned(tmp_path: Path) -> None:
     )
 
     violations = find_violations(tmp_path)
-    assert any(
-        item["path"] == "apps/capture/fixtures/ios-staging-profile.json"
-        and "clerk.cosmaneura.com" in cast(list[str], item["markers"])
+    matching = [
+        item
         for item in violations
-    )
+        if item["path"] == "apps/capture/fixtures/ios-staging-profile.json"
+    ]
+    assert matching, "expected the staging-named fixture to be refused"
+    assert set(cast(list[str], matching[0]["markers"])) == {
+        "app.cosmaneura.com",
+        "clerk.cosmaneura.com",
+    }
 
 
 def test_missing_required_staging_surface_fails_closed(tmp_path: Path) -> None:
