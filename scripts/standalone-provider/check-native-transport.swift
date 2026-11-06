@@ -226,7 +226,7 @@ private func checkLabNetworkConfiguration() throws {
 #endif
 
     for action in ["catalog", "mount", "recorder", "capture-operations", "catalog"] {
-      let reply = try await transport!.send(request(action), token: "offline-token-\(action)")
+      let reply = try await transport!.send(request(action), token: "your-offline-token-\(action)")
       try require(reply.status == 200 && reply.body == Data("{}".utf8), "fresh response")
     }
     let native = try ProviderNativeRequest(
@@ -315,7 +315,7 @@ private func checkLabNetworkConfiguration() throws {
       try await rejected(
         Task {
           try await wire.send(
-            request("mount", key: "offline-opening-long-legacy"), token: "offline-legacy-token")
+            request("mount", key: "offline-opening-long-legacy"), token: "your-offline-legacy-token")
         })
       checks += 1
     }
@@ -366,7 +366,7 @@ private func checkLabNetworkConfiguration() throws {
       try await Task.sleep(for: .seconds(waitSeconds))
       let requestsBeforeExpiry = Fixture.requests().count
       let wire = transport!
-      try await rejected(Task { try await wire.send(request(), token: "offline-expired-token") })
+      try await rejected(Task { try await wire.send(request(), token: "your-offline-expired-token") })
       try require(Fixture.requests().count == requestsBeforeExpiry && factory.sessions.count == 3,
                   "expiry refuses pooled requests before proxy, network or URLProtocol dispatch")
       checks += 1

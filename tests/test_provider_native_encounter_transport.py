@@ -39,7 +39,7 @@ async def fixture(fault=None):
         return replace(account, account_id="changed") if calls and fault == "revoked" else account
 
     async def workload():
-        return SecretStr("synthetic-workload-token")
+        return SecretStr("your-synthetic-workload-token")
 
     def handle(request):
         calls.append(request)
@@ -47,7 +47,7 @@ async def fixture(fault=None):
         assert request.headers["authorization"] == "Bearer synthetic-human-token"
         assert (
             request.headers["x-cosmaneura-workload-authorization"]
-            == "Bearer synthetic-workload-token"
+            == "Bearer your-synthetic-workload-token"
         )
         request_body = json.loads(request.content)
         assert (

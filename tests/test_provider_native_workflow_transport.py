@@ -61,7 +61,7 @@ def fixture(fault=None, *, cache_control="no-store"):
         )
 
     async def workload():
-        return SecretStr("synthetic-workload-token")
+        return SecretStr("your-synthetic-workload-token")
 
     def handle(request):
         calls.append(request)
@@ -69,7 +69,7 @@ def fixture(fault=None, *, cache_control="no-store"):
         assert request.headers["authorization"] == "Bearer synthetic-human-token"
         assert (
             request.headers["x-cosmaneura-workload-authorization"]
-            == "Bearer synthetic-workload-token"
+            == "Bearer your-synthetic-workload-token"
         )
         assert "cookie" not in request.headers
         wire = json.loads(request.content)
@@ -356,6 +356,8 @@ async def test_initial_source_pair_without_retained_context_reuses_exact_origina
 async def test_qualified_core_context_receiver_mutation_never_uses_registry_or_generic_api(
     monkeypatch, deny
 ):
+    # Receiver fixtures need the external Cosmas package; skip in this repo's CI.
+    pytest.importorskip("cosmas_os")
     from test_core_context_receiver import ACTOR, ORIGIN, TENANT, WORKSPACE, receiver
 
     client, token, paths, verifier = receiver()
@@ -374,7 +376,7 @@ async def test_qualified_core_context_receiver_mutation_never_uses_registry_or_g
         assert request.headers["authorization"] == "Bearer " + token
         assert (
             request.headers["x-cosmaneura-workload-authorization"]
-            == "Bearer synthetic-workload-token"
+            == "Bearer your-synthetic-workload-token"
         )
         if deny:
             return httpx.Response(403)

@@ -84,7 +84,7 @@ def _headers(
         "Idempotency-Key": key,
     }
     if bearer:
-        headers["Authorization"] = "Bearer synthetic-workload-token"
+        headers["Authorization"] = "Bearer your-synthetic-workload-token"
     return headers
 
 
