@@ -64,10 +64,7 @@ class Provider:
 
 def fixture():
     reader = module.Reader.__new__(module.Reader)
-
-    def typed(prefix):
-        return prefix + '_' + '0' * 26
-
+    def typed(prefix): return prefix + '_' + '0' * 26
     reader.expected = {'runId': str(uuid.uuid4()), 'collectorSHA256': 'a' * 64,
         'startedAtEpochMs': time.time() * 1000 - 60000,
         'accountIdentitySHA256': module.sha('synthetic-subject'), 'doctorRef': typed('doctor'),

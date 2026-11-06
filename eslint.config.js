@@ -13,6 +13,7 @@ export default tseslint.config(
       "apps/capture/ios/**",
       "apps/capture/src/generated/**",
       "packages/capture-protocol/src/generated.ts",
+      // Mac-local synthetic lab; product apps stay fully linted.
       "tools/virtual-lab/**",
     ],
   },

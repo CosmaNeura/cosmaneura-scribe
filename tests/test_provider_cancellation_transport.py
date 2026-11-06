@@ -39,7 +39,7 @@ async def test_fixed_account_path_and_fresh_dual_auth_without_encounter_lookup()
         }
 
     async def workload():
-        return SecretStr("synthetic-workload-token")
+        return SecretStr("your-synthetic-workload-token")
 
     def core(request):
         import json
@@ -50,7 +50,7 @@ async def test_fixed_account_path_and_fresh_dual_auth_without_encounter_lookup()
         assert request.headers["Authorization"] == "Bearer synthetic-clerk-token"
         assert (
             request.headers["X-Cosmaneura-Workload-Authorization"]
-            == "Bearer synthetic-workload-token"
+            == "Bearer your-synthetic-workload-token"
         )
         assert "Idempotency-Key" not in request.headers
         return httpx.Response(

@@ -40,7 +40,7 @@ async def test_explicit_activation_checked_contract_and_current_identity(fault):
         }
 
     async def workload():
-        return SecretStr("synthetic-workload-token")
+        return SecretStr("your-synthetic-workload-token")
 
     def reply(request):
         calls.append(request.url.path)
@@ -49,7 +49,7 @@ async def test_explicit_activation_checked_contract_and_current_identity(fault):
         assert request.headers["authorization"] == "Bearer synthetic-human-token"
         assert (
             request.headers["x-cosmaneura-workload-authorization"]
-            == "Bearer synthetic-workload-token"
+            == "Bearer your-synthetic-workload-token"
         )
         value = {"contract_version": "1", **body, "state": "active"}
         headers = {

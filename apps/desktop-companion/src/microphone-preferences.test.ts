@@ -2,18 +2,13 @@ import { createCipheriv, createDecipheriv, randomBytes, webcrypto } from "node:c
 import { mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { DeviceProtection } from "./device-custody.js";
 import { microphonePreferenceScope, openMicrophonePreferences } from "./microphone-preferences.js";
 
 const account={email:"invented-provider@example.invalid",environment:"Staging"};
-const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
-beforeEach(() => {
-  Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
-});
-afterEach(() => {
-  if (platformDescriptor) Object.defineProperty(process, "platform", platformDescriptor);
-});
+// Device custody is a darwin Keychain-backed path; Linux CI cannot honestly open it.
+const onDarwin = process.platform === "darwin";
 // Real authenticated encryption behind the injected device-protection interface;
 // this does not claim to exercise the installed application's macOS Keychain.
 function protection(): DeviceProtection {
@@ -25,7 +20,10 @@ function protection(): DeviceProtection {
       return Buffer.concat([cipher.update(value.subarray(28)),cipher.final()]).toString("utf8");}};
 }
 async function directory(): Promise<string> {return realpath(await mkdtemp(join(tmpdir(),"scribe-input-preference-")));}
-it("restores an actual device preference on cold launch while separating accounts and concealing UID/email from disk", async()=>{
+it("keeps preference scope identity-stable without opening custody", () => {
+  expect(microphonePreferenceScope({...account,email:account.email.toUpperCase()})).toBe(microphonePreferenceScope(account));
+});
+it.skipIf(!onDarwin)("restores an actual device preference on cold launch while separating accounts and concealing UID/email from disk", async()=>{
   const path=await directory(), device=protection();
   try {
     const initial=await openMicrophonePreferences(path,device,account,new AbortController().signal);
@@ -43,7 +41,7 @@ it("restores an actual device preference on cold launch while separating account
     expect(microphonePreferenceScope({...account,email:account.email.toUpperCase()})).toBe(microphonePreferenceScope(account));
   } finally {await rm(path,{recursive:true,force:true});}
 });
-it("cannot commit a delayed encrypted preference after backend revocation", async()=>{
+it.skipIf(!onDarwin)("cannot commit a delayed encrypted preference after backend revocation", async()=>{
   const path=await directory(), device=protection(), abort=new AbortController();
   let opened: Awaited<ReturnType<typeof openMicrophonePreferences>>|undefined;
   try {
