@@ -167,8 +167,9 @@
     }
 
     public func configureAndActivate(profile: AppleAudioSessionProfile) throws {
-      // Both profiles use the same native input graph. Only the trusted driver
-      // lifecycle differs; the legacy PCM bridge keeps foreground-only capture.
+      // Both profiles use the same native input graph. The trusted driver lifecycle
+      // differs, and only native recordings allow haptics; the legacy PCM bridge keeps
+      // foreground-only capture.
       switch profile {
       case .foregroundTwoPartySpeech, .nativeEncryptedSpeech: break
       }

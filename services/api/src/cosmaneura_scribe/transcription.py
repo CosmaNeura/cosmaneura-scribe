@@ -155,10 +155,10 @@ def _azure_speech_error_code(error: Exception) -> str:
 # Fast transcription answers once, when the whole file is done. azure-core's 300-second
 # socket read default would spend a durable job attempt on every long visit.
 SPEECH_READ_TIMEOUT_SECONDS = 3600
-# read_timeout bounds one socket wait, not the call: azure-core re-sends on some 5xx
-# responses and each track waits separately. This deadline covers all of it and must
-# leave room for assembly inside the 7200-second speech worker replica timeout, so the
-# worker records the failure instead of being killed by the platform.
+# read_timeout bounds one socket wait, and each track waits separately. This deadline
+# covers the whole call and must leave room for assembly inside the 7200-second speech
+# worker replica timeout, so the worker records the failure instead of being killed by
+# the platform.
 SPEECH_DEADLINE_SECONDS = 5400
 
 
