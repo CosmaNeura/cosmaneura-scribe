@@ -183,6 +183,10 @@
             mode: .measurement,
             options: selected == .bluetooth ? [.allowBluetoothHFP] : []
           )
+          // iOS mutes haptics while recording. Set this before activation: a session
+          // change after arming can reach the route observers, which end the capture.
+          try? audioSession.setAllowHapticsAndSystemSoundsDuringRecording(
+            profile == .nativeEncryptedSpeech)
           try audioSession.setActive(true)
           let portTypes: [AVAudioSession.Port]
           switch selected {

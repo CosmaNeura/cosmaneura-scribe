@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Callable
 from contextlib import AbstractContextManager
@@ -151,11 +152,14 @@ def _azure_speech_error_code(error: Exception) -> str:
     return "speech_provider_unavailable"
 
 
-# Fast transcription answers once, when the whole file is done, and azure-core does
-# not retry a timed-out POST. Its 300-second default would spend a durable job attempt
-# on every long visit. Keep this below the 7200-second speech worker replica timeout
-# so the worker records the failure instead of being killed by the platform.
+# Fast transcription answers once, when the whole file is done. azure-core's 300-second
+# socket read default would spend a durable job attempt on every long visit.
 SPEECH_READ_TIMEOUT_SECONDS = 3600
+# read_timeout bounds one socket wait, not the call: azure-core re-sends on some 5xx
+# responses and each track waits separately. This deadline covers all of it and must
+# leave room for assembly inside the 7200-second speech worker replica timeout, so the
+# worker records the failure instead of being killed by the platform.
+SPEECH_DEADLINE_SECONDS = 5400
 
 
 class AzureSpeechTranscriber:
@@ -222,6 +226,13 @@ class AzureSpeechTranscriber:
         )
 
     async def transcribe(self, request: TranscriptionRequest) -> SttResult:
+        try:
+            async with asyncio.timeout(SPEECH_DEADLINE_SECONDS):
+                return await self._transcribe_tracks(request)
+        except TimeoutError:
+            raise AzureSpeechProviderError("speech_service_response_error") from None
+
+    async def _transcribe_tracks(self, request: TranscriptionRequest) -> SttResult:
         segments: list[SttSegment] = []
         duration_ms = 0
         observations: list[SpeechBoundaryObservation] = []
