@@ -107,17 +107,17 @@
 .provider-workspace cosmaneura-capture .recording-source-help,.provider-workspace cosmaneura-capture .recording-source-help p { font-size:16px; }
 .provider-workspace cosmaneura-capture .recording-state-detail { display:block; font-weight:400; }
 .provider-workspace scribe-desktop-input-meter,.provider-workspace scribe-ios-input-meter { width:100%; }
-.provider-workspace:has(.provider-desktop-compact) { padding:12px; }
+.provider-workspace:has(.provider-desktop-compact) { padding:8px; }
 .provider-workspace:has(.provider-desktop-compact) .provider-account,.provider-workspace:has(.provider-desktop-compact) .provider-patient-detail { display:none; }
-.provider-workspace:has(.provider-desktop-compact) .provider-header { position:sticky; top:0; z-index:2; margin:0 0 8px; background:#f1f5f2; }
+.provider-workspace:has(.provider-desktop-compact) .provider-header { position:sticky; top:0; z-index:2; margin:0 0 6px; background:#f1f5f2; }
 .provider-workspace:has(.provider-desktop-compact) [data-provider-encounter] { font-size:18px; }
-.provider-workspace cosmaneura-capture .provider-desktop-compact main { gap:8px; }
+.provider-workspace cosmaneura-capture .provider-desktop-compact main { gap:6px; }
 .provider-workspace cosmaneura-capture .provider-desktop-compact [data-provider-review]:empty { display:none; }
-.provider-workspace cosmaneura-capture .provider-desktop-compact .recorder { padding:12px; gap:8px; box-shadow:none; }
-.provider-workspace cosmaneura-capture .provider-desktop-compact .recording-progress { grid-template-columns:minmax(0,1fr) auto; align-items:center; justify-items:start; gap:8px; text-align:left; }
+.provider-workspace cosmaneura-capture .provider-desktop-compact .recorder { padding:10px; gap:6px; box-shadow:none; }
+.provider-workspace cosmaneura-capture .provider-desktop-compact .recording-progress { grid-template-columns:minmax(0,1fr) auto; align-items:center; justify-items:start; gap:6px; text-align:left; }
 .provider-workspace cosmaneura-capture .provider-desktop-compact .recording-progress>:not([role=status]):not(.recording-duration) { grid-column:1/-1; }
 .provider-workspace cosmaneura-capture .provider-desktop-compact .recording-duration { grid-column:2; grid-row:1; }
-.provider-workspace cosmaneura-capture .provider-desktop-compact .recording-duration strong { font-size:36px; }
+.provider-workspace cosmaneura-capture .provider-desktop-compact .recording-duration strong { font-size:32px; }
 .provider-workspace cosmaneura-capture .provider-desktop-compact .record-actions { grid-template-columns:repeat(2,minmax(0,1fr)); }
 .provider-workspace cosmaneura-capture .provider-desktop-compact .record-actions button { min-height:44px; padding:8px 10px; font-size:16px; }
 .provider-workspace cosmaneura-capture .provider-desktop-compact main>h1,.provider-workspace cosmaneura-capture .provider-desktop-compact main>p,.provider-workspace cosmaneura-capture .provider-desktop-compact .recording-patient { display:none; }
@@ -126,8 +126,8 @@
 .provider-workspace:has(.provider-desktop-capture:not(.provider-desktop-compact)) .provider-header { margin-bottom:12px; }
 .provider-workspace cosmaneura-capture .provider-desktop-capture:not(.provider-desktop-compact) .recorder { padding:20px 24px; gap:16px; }
 .provider-workspace cosmaneura-capture .provider-desktop-capture:not(.provider-desktop-compact) .recording-patient strong { display:block; font-size:1.25rem; overflow-wrap:anywhere; }
-.provider-note-heading { display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:12px; margin-bottom:12px; }
-.provider-note-heading h1 { font-size:2rem; }
+.provider-note-heading { display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; margin-bottom:8px; }
+.provider-note-heading h1 { font-size:clamp(1.25rem, 2.4vh + 0.85rem, 2rem); line-height:1.15; overflow-wrap:anywhere; }
 .provider-workspace:has(.provider-note) .provider-header>div { display:none; }
 .provider-workspace:has(.provider-note) .provider-header { justify-content:flex-end; }
 .provider-draft-status { color:var(--scribe-muted); font-size:16px; }
@@ -137,7 +137,7 @@
 /* Keep the one dashboard action reachable without scrolling through editors. */
 html:has(.provider-note) { min-width:320px; }
 .provider-note { scroll-margin-top:env(safe-area-inset-top,0px); }
-.provider-note-actions { position:sticky; top:env(safe-area-inset-top,0px); z-index:3; padding:8px 0; margin-bottom:16px; background:#f1f5f2; border-bottom:1px solid var(--scribe-border); }
+.provider-note-actions { position:sticky; top:env(safe-area-inset-top,0px); z-index:3; padding:6px 0; margin-bottom:12px; background:#f1f5f2; border-bottom:1px solid var(--scribe-border); }
 .provider-note-review-help { color:var(--scribe-muted); font-size:16px; }
 .provider-note-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:24px; align-items:start; }
 .provider-note-editor { min-width:0; }
@@ -267,6 +267,19 @@ html:has(.provider-note) { min-width:320px; }
 .provider-workspace cosmaneura-capture .provider-native-capture .record-actions { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
 .provider-workspace cosmaneura-capture .provider-native-capture .record-actions button { min-height:44px; font-size:1rem; padding:10px 8px; }
 .provider-workspace cosmaneura-capture .provider-native-capture scribe-ios-input-meter { scroll-margin-top:10rem; }
+
+/* Short landscape and compact heights must keep Pause/Finish in the first paint. */
+@media(max-height:400px) {
+ .provider-workspace:has(.provider-native-capture) { padding:6px 12px 10px; }
+ .provider-workspace:has(.provider-native-capture) .provider-header { gap:4px; margin-bottom:4px; }
+ .provider-workspace:has(.provider-native-capture) .provider-patient-detail { display:none; }
+ .provider-workspace:has(.provider-native-capture) [data-provider-encounter] { font-size:1rem; line-height:1.15; }
+ .provider-workspace cosmaneura-capture .provider-native-capture .recorder { padding:8px; gap:6px; }
+ .provider-workspace cosmaneura-capture .native-recording-essential { gap:6px; padding-block:4px; }
+ .provider-workspace cosmaneura-capture .provider-native-capture .recording-duration strong { font-size:1.5rem; }
+ .provider-workspace cosmaneura-capture .provider-native-capture .record-actions { gap:6px; }
+ .provider-workspace cosmaneura-capture .provider-native-capture .record-actions button { padding:8px; }
+}
 
 /* A larger root text size must not turn the 320px layout minimum into a wider viewport. */
 html:has(.provider-native-capture) { min-width:320px; }

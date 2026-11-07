@@ -4,6 +4,7 @@ import argparse
 import json
 import time
 from pathlib import Path
+
 from lab import command, read_json, request
 
 parser = argparse.ArgumentParser()

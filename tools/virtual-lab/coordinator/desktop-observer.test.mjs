@@ -32,15 +32,15 @@ async function setup() {
     const reply={requestId:request.requestId,ok:true,result};const promise=Promise.resolve(reply);replies.set(request.requestId,promise);
     assert.equal(handlers.get(workspaceChannel)({sender:{id:41}},request),promise);assert.equal(await promise,reply);await tick();return request;
   }
-  async function open(reference=appointment) {return call('open',{encounterId,encounter:{appointmentRef:reference,patientName:'must-not-be-retained'},scope:{workspaceId,appointmentRef:reference,bindingRef}},{payload:{appointmentRef:reference}});}
+  async function open(reference=appointment) {return call('open',{encounterId,encounter:{appointmentRef:reference,patientName:'your-must-not-be-retained'},scope:{workspaceId,appointmentRef:reference,bindingRef}},{payload:{appointmentRef:reference}});}
   async function admit() {
     const nonce=randomUUID();await call('core',{status:200,body:{status:'admitted',appointment_ref:appointment,workspace_id:workspaceId,binding_ref:bindingRef,
-      request_nonce:nonce,session_id:sessionId,consent_record_id:consentRecordId,operation_ref:operationRef,privateText:'must-not-be-retained'}},
-    {encounterId,payload:{path:'/service/v1/agent/scribe/capture-admissions',body:{workspace_id:workspaceId,binding_ref:bindingRef,request_nonce:nonce,privateToken:'must-not-be-retained'}}});
+      request_nonce:nonce,session_id:sessionId,consent_record_id:consentRecordId,operation_ref:operationRef,privateText:'your-must-not-be-retained'}},
+    {encounterId,payload:{path:'/service/v1/agent/scribe/capture-admissions',body:{workspace_id:workspaceId,binding_ref:bindingRef,request_nonce:nonce,privateToken:'your-must-not-be-retained'}}});
   }
   async function connected() {await call('connect',{connectionId,revision},{connectionId:null});}
-  async function prepared() {await connected();await call('encounter_setup',{appointmentRef:appointment,patientName:'must-not-be-retained'},{payload:{action:'submit',draft:{name:'must-not-be-retained'}}});await open();await api.bindVisit({runId:owner.runId,workspaceId,appointmentRef:appointment});await admit();}
-  const snapshot=(phase='recording')=>({recorderId:randomUUID(),revision:1,snapshot:{sessionId,state:phase,desktop:{phase:phase==='paused'?'stopped':phase},elapsedSeconds:3,recordedChunks:0,queuedChunks:0,transcript:'must-not-be-retained'}});
+  async function prepared() {await connected();await call('encounter_setup',{appointmentRef:appointment,patientName:'your-must-not-be-retained'},{payload:{action:'submit',draft:{name:'your-must-not-be-retained'}}});await open();await api.bindVisit({runId:owner.runId,workspaceId,appointmentRef:appointment});await admit();}
+  const snapshot=(phase='recording')=>({recorderId:randomUUID(),revision:1,snapshot:{sessionId,state:phase,desktop:{phase:phase==='paused'?'stopped':phase},elapsedSeconds:3,recordedChunks:0,queuedChunks:0,transcript:'your-must-not-be-retained'}});
   return {api,owner,handlers,original,replies,calls,target,renderer,context,revision,connectionId,workspaceId,encounterId,sessionId,consentRecordId,call,open,admit,connected,prepared,snapshot,
     subscriptionRequests:()=>subscriptionRequests,sessionEvent:value=>sessionListener(value),recorderEvent:value=>recorderListener(value)};
 }
@@ -49,7 +49,7 @@ test('desktop observer preserves promises and retains only normal bound metadata
   const h=await setup();await h.prepared();
   const created=await h.api.read('created'),current=await h.api.read('current'),admission=await h.api.read('admission');
   assert.equal(created.workspaceId,h.workspaceId);assert.equal(current.appointmentRef,appointment);assert.equal(admission.consentRecordId,h.consentRecordId);
-  assert.equal(h.subscriptionRequests(),0);assert.ok(!JSON.stringify({created,current,admission}).includes('must-not-be-retained'));
+  assert.equal(h.subscriptionRequests(),0);assert.ok(!JSON.stringify({created,current,admission}).includes('your-must-not-be-retained'));
   assert.ok(!JSON.stringify(admission).includes('bindingRef'));assert.ok(!JSON.stringify(admission).includes('privateToken'));
   assert.equal((await h.api.uninstall()).ownedResourcesSettled,true);assert.equal(h.handlers.get(workspaceChannel),h.original);
 });
@@ -70,7 +70,7 @@ test('a new visit and late old replies cannot preserve old consent or current id
 });
 
 test('asynchronous auth change clears current visit, created visit and admission',async()=>{
-  const h=await setup();await h.prepared();h.sessionEvent({kind:'session',state:{phase:'ready',revision:randomUUID(),providerDisplayName:'must-not-be-retained'}});
+  const h=await setup();await h.prepared();h.sessionEvent({kind:'session',state:{phase:'ready',revision:randomUUID(),providerDisplayName:'your-must-not-be-retained'}});
   assert.equal(await h.api.read('current'),null);assert.equal(await h.api.read('created'),null);assert.equal(await h.api.read('admission'),null);await h.api.uninstall();
 });
 
@@ -254,11 +254,11 @@ test('normal desktop saved note response retains only the actual session/version
   await h.call('core', { status: 200, body: { contract_version: '1', binding_ref: bindingRef,
     workspace_id: h.workspaceId, request_nonce: nonce, action: 'save', receipt: { status: 'draft', session_id: h.sessionId,
       note_ref: `visit_note_${suffix}`, transcript_ref: `ai_visit_transcript_${suffix}`, schema_ref: `doctor_note_schema_${suffix}`,
-      note_sha256: 'a'.repeat(64), source_sha256: 'b'.repeat(64), field_order: ['HPI'], fields: { private: 'must-not-be-retained' } } } },
+      note_sha256: 'a'.repeat(64), source_sha256: 'b'.repeat(64), field_order: ['HPI'], fields: { private: 'your-must-not-be-retained' } } } },
   { encounterId: h.encounterId, payload: { path: '/service/v1/agent/scribe/capture-notes', body: {
     binding_ref: bindingRef, workspace_id: h.workspaceId, request_nonce: nonce, expected_session_id: h.sessionId, action: 'save' } } });
   const note = await h.api.readNote('save'); assert.equal(note.session_id, h.sessionId);
-  assert(!JSON.stringify(note).includes('must-not-be-retained')); assert(!JSON.stringify(note).includes('binding_ref'));
+  assert(!JSON.stringify(note).includes('your-must-not-be-retained')); assert(!JSON.stringify(note).includes('binding_ref'));
   await h.open(otherAppointment); assert.equal(await h.api.readNote('save'), null); await h.api.uninstall();
 });
 
@@ -270,7 +270,7 @@ async function saveHarness() {
     await h.call('core', { status: 200, body: { contract_version: '1', binding_ref: bindingRef,
       workspace_id: h.workspaceId, request_nonce: nonce, action, receipt: { status: 'draft', session_id: h.sessionId,
         note_ref: `visit_note_${suffix}`, transcript_ref: `ai_visit_transcript_${suffix}`, schema_ref: `doctor_note_schema_${suffix}`,
-        note_sha256: 'a'.repeat(64), source_sha256: 'b'.repeat(64), field_order: ['HPI'], privateText: 'must-not-be-retained' } } },
+        note_sha256: 'a'.repeat(64), source_sha256: 'b'.repeat(64), field_order: ['HPI'], privateText: 'your-must-not-be-retained' } } },
     { encounterId: h.encounterId, payload: { path: '/service/v1/agent/scribe/capture-notes', body: {
       binding_ref: bindingRef, workspace_id: h.workspaceId, request_nonce: nonce, expected_session_id: h.sessionId, action } } });
     return h.api.readCurrentNote();
@@ -294,7 +294,7 @@ test('actual NoteAutosave clean flush issues no save; normal open_core retains t
   assert.equal(observed.note.action, 'prepare'); assert.equal(observed.note.requestNonce, h.preparedNote.requestNonce);
   assert.equal(observed.accountIdentitySHA256, 'd'.repeat(64)); assert.equal(observed.pendingObservedReplies, 0);
   assert.equal((await h.api.read('current')).requestId, before.requestId);
-  assert(!JSON.stringify(observed).includes('must-not-be-retained')); assert(!JSON.stringify(observed).includes('binding_ref'));
+  assert(!JSON.stringify(observed).includes('your-must-not-be-retained')); assert(!JSON.stringify(observed).includes('binding_ref'));
   assert.equal(h.subscriptionRequests(), 0); autosave.dispose(); await h.api.uninstall();
 });
 
@@ -302,7 +302,7 @@ for (const [name, mutate] of [
   ['wrong note', r => { r.payload.noteRef = 'visit_note_01m5q661ryetaa28yxe7vbqrey'; }],
   ['foreign encounter', r => { r.encounterId = randomUUID(); }],
   ['foreign connection', r => { r.connectionId = randomUUID(); }],
-  ['extra payload key', r => { r.payload.privateText = 'must-not-be-retained'; }],
+  ['extra payload key', r => { r.payload.privateText = 'your-must-not-be-retained'; }],
   ['missing note', r => { r.payload.noteRef = null; }],
 ]) test(`open_core ${name} cannot create or retain a completion`, async () => {
   const h = await saveHarness(); await h.openCore(); assert(await h.api.readSaveHandoff());

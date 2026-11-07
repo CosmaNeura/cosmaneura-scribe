@@ -260,7 +260,7 @@ class XpcVariantTests(unittest.TestCase):
             self.assertEqual(marker.read_text(), "retained")
 
     def test_original_dormant_group_stays_unapproved(self):
-        self.assertEqual(DIRECT.APP_GROUP_TOKEN, "UNAPPROVED_APP_GROUP_NOT_SIGNABLE")
+        self.assertEqual(DIRECT.APP_GROUP_PLACEHOLDER, "UNAPPROVED_APP_GROUP_NOT_SIGNABLE")
         self.assertNotEqual(
             DIRECT.draft_claims()["parent"]["com.apple.security.application-groups"], [XPC.GROUP]
         )

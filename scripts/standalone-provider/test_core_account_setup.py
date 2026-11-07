@@ -102,7 +102,7 @@ async def test_activation_uses_same_environment_and_never_returns_visit_authorit
         assert request.headers["authorization"] == "Bearer " + token
         assert (
             request.headers["x-cosmaneura-workload-authorization"]
-            == "Bearer synthetic-workload-token"
+            == "Bearer your-synthetic-workload-token"
         )
         assert request.headers["idempotency-key"] == key
         assert json.loads(request.content) == {"action": "activate", "request_nonce": nonce}

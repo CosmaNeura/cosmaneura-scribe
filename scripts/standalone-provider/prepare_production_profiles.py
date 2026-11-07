@@ -14,6 +14,7 @@ import plistlib
 import re
 from pathlib import Path
 
+from packaging_guard import environment_marker, require_founder_unlock
 from receiver_runtime import PRODUCTION_PROFILES, ReceiverConfiguration
 
 
@@ -141,7 +142,15 @@ def project(value: dict, *, enable_clients: bool = False) -> dict:
     }
 
 
-def prepare(source: Path, output: Path, *, enable_clients: bool = False) -> None:
+def prepare(
+    source: Path,
+    output: Path,
+    *,
+    enable_clients: bool = False,
+    i_am_john_unlocking_production: bool = False,
+) -> None:
+    require_founder_unlock(i_am_john_unlocking_production)
+
     def unique(pairs):
         result = {}
         for key, value in pairs:
@@ -154,6 +163,9 @@ def prepare(source: Path, output: Path, *, enable_clients: bool = False) -> None
         raise ValueError("production_profile_input_invalid")
     profiles = project(
         json.loads(source.read_bytes(), object_pairs_hook=unique), enable_clients=enable_clients
+    )
+    profiles["ios"]["CFBundleDisplayName"] = "Scribe " + environment_marker(
+        profiles["desktop"]["coreOrigin"]
     )
     output.mkdir(mode=0o700)
     for name in ("receiver", "desktop"):
@@ -180,6 +192,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--i-am-john-unlocking-production", action="store_true")
     parser.add_argument(
         "--enable-clients",
         action="store_true",
@@ -189,4 +202,9 @@ if __name__ == "__main__":
         ),
     )
     args = parser.parse_args()
-    prepare(args.source, args.output, enable_clients=args.enable_clients)
+    prepare(
+        args.source,
+        args.output,
+        enable_clients=args.enable_clients,
+        i_am_john_unlocking_production=args.i_am_john_unlocking_production,
+    )
