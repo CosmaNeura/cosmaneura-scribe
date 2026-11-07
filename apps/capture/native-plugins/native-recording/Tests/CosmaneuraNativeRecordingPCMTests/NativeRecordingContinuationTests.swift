@@ -169,6 +169,81 @@ import XCTest
     return recorder
   }
 
+  /// Offers single frames until the opened source is live, then the held audio.
+  private func offerHeld(_ count: Int, _ system: EncryptedAudioSystem,
+    _ recorder: NativeEncryptedPCMRecorder) async throws
+  {
+    let start = ContinuousClock.now
+    while recorder.capturedAudioFrames == 0 {
+      guard start.duration(to: .now) < .seconds(4) else { throw PCMFailure(.sinkFailed) }
+      if system.tapInstalled { _ = try system.offer(1) }
+      try await Task.sleep(for: .milliseconds(1))
+    }
+    var remaining = count - 1
+    while remaining > 0 {
+      let frames = try system.offer(min(remaining, 16_000))
+      remaining -= min(remaining, 16_000)
+      while !frames.isZeroed {
+        guard start.duration(to: .now) < .seconds(8) else { throw PCMFailure(.sinkFailed) }
+        try await Task.sleep(for: .milliseconds(1))
+      }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+  }
+
+  func testAudioOpenedBeforeAuthorizationIsWrittenOnlyOnceBound() async throws {
+    let f = try ContinuationFixture(), system = EncryptedAudioSystem()
+    let recorder = try f.recorder(system: system)
+    let lease = try await f.leases.open()
+    let batch = try await f.reservations.reserve(lease: lease, first: 0, count: 30)
+    try recorder.open(lease: lease, batch: batch)
+    try await offerHeld(80_000, system, recorder)
+    XCTAssertEqual(recorder.captureState.phase, .accepting)
+    XCTAssertEqual(recorder.capturedAudioFrames, 80_000)
+    XCTAssertEqual(f.records.encryptedCount, 0)
+    try recorder.authorize(runID: UUID().uuidString.lowercased(),
+      captureExpiresAtMilliseconds: f.clock.now().epochMilliseconds + 900_000,
+      lease: lease, batch: batch)
+    XCTAssertEqual(f.records.encryptedCount, 0)
+    try await recorder.ready()
+    for _ in 0..<5 { try await offerAndWait(16_000, system, recorder) }
+    XCTAssertEqual(recorder.captureState.committedChunks, 1)
+    XCTAssertEqual(f.records.encryptedCount, 1)
+    try await recorder.stop()
+    XCTAssertTrue(recorder.isPhysicallyIdle)
+  }
+
+  func testStopBeforeAuthorizationWritesNothingAndIsNotIncomplete() async throws {
+    let f = try ContinuationFixture(), system = EncryptedAudioSystem()
+    let recorder = try f.recorder(system: system)
+    let lease = try await f.leases.open()
+    let batch = try await f.reservations.reserve(lease: lease, first: 0, count: 30)
+    try recorder.open(lease: lease, batch: batch)
+    try await offerHeld(80_000, system, recorder)
+    try await recorder.stop()
+    XCTAssertTrue(recorder.isPhysicallyIdle)
+    XCTAssertEqual(f.records.encryptedCount, 0)
+    XCTAssertEqual(system.deactivations, 1)
+    XCTAssertThrowsError(try recorder.authorize(runID: UUID().uuidString.lowercased(),
+      captureExpiresAtMilliseconds: f.clock.now().epochMilliseconds + 900_000,
+      lease: lease, batch: batch))
+  }
+
+  func testAuthorizedButUnboundRecorderStillDiscardsOnStop() async throws {
+    let f = try ContinuationFixture(), system = EncryptedAudioSystem()
+    let recorder = try f.recorder(system: system)
+    let lease = try await f.leases.open()
+    let batch = try await f.reservations.reserve(lease: lease, first: 0, count: 30)
+    try recorder.open(lease: lease, batch: batch)
+    try await offerHeld(80_000, system, recorder)
+    try recorder.authorize(runID: UUID().uuidString.lowercased(),
+      captureExpiresAtMilliseconds: f.clock.now().epochMilliseconds + 900_000,
+      lease: lease, batch: batch)
+    try await recorder.stop()
+    XCTAssertTrue(recorder.isPhysicallyIdle)
+    XCTAssertEqual(f.records.encryptedCount, 0)
+  }
+
   private func offerAndWait(_ count: Int, _ system: EncryptedAudioSystem,
     _ recorder: NativeEncryptedPCMRecorder) async throws
   {
@@ -1060,6 +1135,7 @@ private final class EncryptedAudioSystem: AppleAudioSystem, @unchecked Sendable 
   func frameHandler() throws -> @Sendable (OwnedAudioFrames) -> Void {
     try XCTUnwrap(lock.withLock { frames })
   }
+  var tapInstalled: Bool { lock.withLock { frames != nil } }
   func offer(_ count: Int) throws -> OwnedAudioFrames {
     let value = OwnedAudioFrames(
       sampleRateHz: 16_000, channels: [Array(repeating: 0.125, count: count)])

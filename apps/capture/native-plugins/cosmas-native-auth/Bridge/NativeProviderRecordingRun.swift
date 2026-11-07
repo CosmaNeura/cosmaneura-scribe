@@ -35,6 +35,11 @@ extension NativeSourceStartOwner: NativeProviderReadyMicrophoneSource {}
     runID: String, captureExpiresAtMilliseconds: Int64,
     lease: NativeRecordingLease, batch: NativeRecordingReservationBatch
   ) throws
+  func open(lease: NativeRecordingLease, batch: NativeRecordingReservationBatch) throws
+  func authorize(
+    runID: String, captureExpiresAtMilliseconds: Int64,
+    lease: NativeRecordingLease, batch: NativeRecordingReservationBatch
+  ) throws
   func ready() async throws
   func stop() async throws
   func invalidatePendingAudio()
@@ -88,6 +93,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
   private let batch: NativeRecordingReservationBatch
   private let requestPermission: @MainActor () async throws -> Bool
   private let confirmListening: @MainActor () -> Void
+  private let opensBeforeAuthorization: Bool
   private let priorAudioFrames: Int
   private var completionFailure: NativeRecordingFinalizationFailure?
   private var installed = false
@@ -105,6 +111,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
     priorAudioFrames: Int = 0,
     requestPermission: @escaping @MainActor () async throws -> Bool,
     confirmListening: @escaping @MainActor () -> Void = {},
+    opensBeforeAuthorization: Bool = false,
     makeRecorder: (@escaping @Sendable () async throws -> Void,
       @escaping NativeRecordingFinalizer) throws
       -> any NativeProviderEncryptedRecorder
@@ -125,6 +132,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
     self.batch = batch
     self.requestPermission = requestPermission
     self.confirmListening = confirmListening
+    self.opensBeforeAuthorization = opensBeforeAuthorization
     self.priorAudioFrames = priorAudioFrames
     recorder = try makeRecorder(
       { try await authority.validate() }, { write in try await authority.finalize(write) })
@@ -140,7 +148,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
     reservations: NativeRecordingReservationOwner,
     permission: any AppleMicrophonePermissionProviding,
     system: any AppleAudioSystem, foreground: any AppleApplicationForegroundProviding,
-    signal: PCMSignalMonitor
+    signal: PCMSignalMonitor, opensBeforeAuthorization: Bool = false
   ) throws {
     guard encryption.scope.sessionID == lease.sessionID,
       encryption.scope.workspaceID == source.recordingPreparation.workspaceID
@@ -151,6 +159,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
         if permission.currentPermission() == .granted { return true }
         return await permission.requestPermission() == .granted
       },
+      opensBeforeAuthorization: opensBeforeAuthorization,
       makeRecorder: { validate, finalize in
         try NativeEncryptedPCMRecorder(
           encryption: encryption, recoveryScope: recoveryScope, records: records,
@@ -192,20 +201,28 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
         guard try await requestPermission() else { throw ProviderNativeError.unavailable }
         try requireStarting()
         PCMStartupDiagnostics.shared.record(.permissionAccepted)
+        // Core's start decision is the slow step. Opening first overlaps it with
+        // microphone startup; the recorder holds that audio in memory only and
+        // erases it unless the decision binds in time (ADR 0100).
+        if opensBeforeAuthorization { try recorder.open(lease: lease, batch: batch) }
         PCMStartupDiagnostics.shared.record(.sourceReadyRequested)
         PCMStartupDiagnostics.shared.record(.sourceConsumeRequested)
         try await NativeCaptureStartGate.consume(
-          owner: authority.id, consumer: .nativeEncryptedMicrophone
+          owner: authority.id, consumer: .nativeEncryptedMicrophone,
+          sourceOpened: opensBeforeAuthorization
         ) { permit in
           try requireStarting()
           PCMStartupDiagnostics.shared.record(.sourceReadyReceived)
           PCMStartupDiagnostics.shared.record(.authorityAccepted)
           authority.runID = permit.runID
-          try recorder.start(
-            runID: permit.runID,
-            captureExpiresAtMilliseconds: Int64(
-              permit.captureExpiresAt.timeIntervalSince1970 * 1000),
-            lease: lease, batch: batch)
+          let expires = Int64(permit.captureExpiresAt.timeIntervalSince1970 * 1000)
+          if opensBeforeAuthorization {
+            try recorder.authorize(
+              runID: permit.runID, captureExpiresAtMilliseconds: expires, lease: lease, batch: batch)
+          } else {
+            try recorder.start(
+              runID: permit.runID, captureExpiresAtMilliseconds: expires, lease: lease, batch: batch)
+          }
         }
         try await recorder.ready()
         try requireStarting()

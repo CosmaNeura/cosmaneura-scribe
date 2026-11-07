@@ -1,0 +1,153 @@
+@testable import CosmaneuraIOSPCMCore
+import Foundation
+import Testing
+
+private let runID = "b0000000-0000-4000-8000-000000000001"
+
+private func liveAuthority(_ id: String = runID) throws -> PCMSourceAuthority {
+  try PCMSourceAuthority(runID: id, generation: 1,
+    expiresAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000) + 60_000,
+    hardMaximumChunks: 90)
+}
+
+private func configuration(hold: UInt64) throws -> PCMConfiguration {
+  try PCMConfiguration(targetFramesPerChunk: 160_000, maximumChunks: 90,
+    maximumInputFramesPerBuffer: 16_000, preserveInterruptedTail: true,
+    authorityHoldNanoseconds: hold)
+}
+
+private struct SyntheticConsent: MicrophonePermissionAuthorizing {
+  let allPartiesConsented = true
+  let consentRecordID = UUID()
+  func requestPermission(cancellation: StartupCancellation) async -> MicrophonePermission {
+    cancellation.isCancelled ? .unavailable : .granted
+  }
+}
+
+private final class SyntheticDriver: PCMAudioDriving, @unchecked Sendable {
+  private let lock = NSLock()
+  private var callbacks: PCMAudioCallbacks?
+  func start(sessionID: UInt64, callbacks: PCMAudioCallbacks,
+    cancellation: StartupCancellation) async throws {
+    guard !cancellation.isCancelled else { throw PCMFailure(.startupCancelled) }
+    lock.withLock { self.callbacks = callbacks }
+  }
+  /// One invented second of constant tone; returns false once input is closed.
+  @discardableResult func offerSecond() async -> Bool {
+    guard let callback = lock.withLock({ callbacks }) else { return false }
+    let frames = OwnedAudioFrames(sampleRateHz: 16_000,
+      channels: [Array(repeating: 0.125, count: 16_000)])
+    let admitted = callback.frames(frames)
+    guard admitted.accepted else { return false }
+    await admitted.waitUntilConsumed()
+    return true
+  }
+  func freezeInput(sessionID: UInt64) async throws { lock.withLock { callbacks = nil } }
+  func release(sessionID: UInt64) async throws {}
+}
+
+private struct AcceptedPacket: PCMAcknowledging {
+  func wait() async -> PCMAcknowledgementResult { .accepted }
+  func cancel() {}
+}
+
+private final class RecordingSink: PCMEmissionSink, @unchecked Sendable {
+  private let lock = NSLock()
+  private var emitted: [UInt64] = []
+  private var failures: [PCMTerminationCode] = []
+  func emit(_ packet: PCMEncodedPacket) throws -> any PCMAcknowledging {
+    lock.withLock { emitted.append(packet.sequenceNumber) }
+    return AcceptedPacket()
+  }
+  func terminated(_ code: PCMTerminationCode) { lock.withLock { failures.append(code) } }
+  func windowClosed(_ reason: PCMWindowCloseReason) {}
+  var packets: [UInt64] { lock.withLock { emitted } }
+  var terminations: [PCMTerminationCode] { lock.withLock { failures } }
+}
+
+private func waitUntil(_ condition: () -> Bool) async throws {
+  for _ in 0..<200 where !condition() { try await Task.sleep(nanoseconds: 10_000_000) }
+}
+
+@Suite(.serialized)
+struct AuthorityHoldTests {
+  @Test func heldAudioReachesTheSinkOnlyAfterBinding() async throws {
+    let driver = SyntheticDriver(), sink = RecordingSink()
+    let core = IOSPCMCore(permission: SyntheticConsent(), audio: driver, sink: sink)
+    let session = try core.start(configuration: configuration(hold: 9_000_000_000))
+    try await session.ready()
+    for _ in 0..<9 { #expect(await driver.offerSecond()) }
+    #expect(sink.packets.isEmpty)
+    try await session.bindAuthority(liveAuthority())
+    try await session.verifySource(authority: liveAuthority(), maximumChunks: 90)
+    #expect(await driver.offerSecond())
+    #expect(sink.packets == [0])
+    let stopped = try await session.stop(.drain)
+    #expect(stopped.finalPacket == nil)
+    #expect(sink.terminations.isEmpty)
+  }
+
+  @Test func unboundHoldExpiryErasesTheAudio() async throws {
+    let driver = SyntheticDriver(), sink = RecordingSink()
+    let core = IOSPCMCore(permission: SyntheticConsent(), audio: driver, sink: sink)
+    let session = try core.start(configuration: configuration(hold: 50_000_000))
+    try await session.ready()
+    for _ in 0..<3 { await driver.offerSecond() }
+    try await waitUntil { !sink.terminations.isEmpty }
+    #expect(sink.terminations == [.authorityHoldExpired])
+    await #expect(throws: PCMFailure.self) { try await session.bindAuthority(liveAuthority()) }
+    let stopped = try await session.stop(.drain)
+    #expect(stopped.finalPacket == nil)
+    #expect(sink.packets.isEmpty)
+  }
+
+  @Test func stopBeforeBindingDiscardsEvenWhenDrainIsRequested() async throws {
+    let driver = SyntheticDriver(), sink = RecordingSink()
+    let core = IOSPCMCore(permission: SyntheticConsent(), audio: driver, sink: sink)
+    let session = try core.start(configuration: configuration(hold: 9_000_000_000))
+    try await session.ready()
+    for _ in 0..<3 { await driver.offerSecond() }
+    let stopped = try await session.stop(.drain)
+    #expect(stopped.finalPacket == nil)
+    #expect(sink.packets.isEmpty)
+    await #expect(throws: PCMFailure.self) { try await session.bindAuthority(liveAuthority()) }
+  }
+
+  @Test func aFullChunkCannotBeWrittenWithoutAuthority() async throws {
+    let driver = SyntheticDriver(), sink = RecordingSink()
+    let core = IOSPCMCore(permission: SyntheticConsent(), audio: driver, sink: sink)
+    let session = try core.start(configuration: configuration(hold: 9_900_000_000))
+    try await session.ready()
+    for _ in 0..<11 { await driver.offerSecond() }
+    try await waitUntil { !sink.terminations.isEmpty }
+    #expect(sink.packets.isEmpty)
+    #expect(sink.terminations == [.bufferOverflow])
+    _ = try? await session.stop(.discard)
+  }
+
+  @Test func bindingIsOneUseAndRunIDsAreNotReused() async throws {
+    let driver = SyntheticDriver(), sink = RecordingSink()
+    let core = IOSPCMCore(permission: SyntheticConsent(), audio: driver, sink: sink)
+    let first = try core.start(configuration: configuration(hold: 9_000_000_000))
+    try await first.ready()
+    try await first.bindAuthority(liveAuthority())
+    await #expect(throws: PCMFailure.self) { try await first.bindAuthority(liveAuthority()) }
+    _ = try await first.stop(.discard)
+
+    let second = try core.start(configuration: configuration(hold: 9_000_000_000))
+    try await second.ready()
+    await #expect(throws: PCMFailure.self) { try await second.bindAuthority(liveAuthority()) }
+    _ = try? await second.stop(.discard)
+  }
+
+  @Test func holdMustBeShorterThanOneChunkAndExcludesAnAuthority() throws {
+    #expect(throws: PCMFailure.self) { try configuration(hold: 10_000_000_000) }
+    #expect(throws: PCMFailure.self) { try configuration(hold: 0) }
+    #expect(throws: PCMFailure.self) {
+      try PCMConfiguration(targetFramesPerChunk: 160_000, maximumChunks: 90,
+        authority: liveAuthority(), preserveInterruptedTail: true,
+        authorityHoldNanoseconds: 1_000_000_000)
+    }
+    _ = try configuration(hold: 9_999_000_000)
+  }
+}

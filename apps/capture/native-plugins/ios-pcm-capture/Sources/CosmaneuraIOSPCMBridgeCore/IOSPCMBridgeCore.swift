@@ -727,7 +727,7 @@ public final class IOSPCMBridgeCore: @unchecked Sendable {
       case .permissionRevoked:
         try events.publish(.terminal(token, .microphonePermissionRevoked))
       case .captureFailed, .invalidPCM, .bufferOverflow, .outputLimitExceeded,
-        .sinkFailed:
+        .sinkFailed, .authorityHoldExpired:
         try events.publish(.terminal(token, .captureFailed))
       }
     } catch {
