@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Callable
 from contextlib import AbstractContextManager
@@ -151,6 +152,16 @@ def _azure_speech_error_code(error: Exception) -> str:
     return "speech_provider_unavailable"
 
 
+# Fast transcription answers once, when the whole file is done. azure-core's 300-second
+# socket read default would spend a durable job attempt on every long visit.
+SPEECH_READ_TIMEOUT_SECONDS = 3600
+# read_timeout bounds one socket wait, and each track waits separately. This deadline
+# covers the whole call and must leave room for assembly inside the 7200-second speech
+# worker replica timeout, so the worker records the failure instead of being killed by
+# the platform.
+SPEECH_DEADLINE_SECONDS = 5400
+
+
 class AzureSpeechTranscriber:
     def __init__(
         self,
@@ -215,6 +226,13 @@ class AzureSpeechTranscriber:
         )
 
     async def transcribe(self, request: TranscriptionRequest) -> SttResult:
+        try:
+            async with asyncio.timeout(SPEECH_DEADLINE_SECONDS):
+                return await self._transcribe_tracks(request)
+        except TimeoutError:
+            raise AzureSpeechProviderError("speech_service_response_error") from None
+
+    async def _transcribe_tracks(self, request: TranscriptionRequest) -> SttResult:
         segments: list[SttSegment] = []
         duration_ms = 0
         observations: list[SpeechBoundaryObservation] = []
@@ -254,6 +272,7 @@ class AzureSpeechTranscriber:
                     result = await self._client.transcribe(
                         body,
                         logging_enable=False,
+                        read_timeout=SPEECH_READ_TIMEOUT_SECONDS,
                     )
                     # Inspect after successful provider consumption. Even a
                     # broken diagnostic seek cannot corrupt the audio sent.

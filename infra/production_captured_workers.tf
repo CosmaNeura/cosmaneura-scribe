@@ -241,7 +241,7 @@ resource "azurerm_container_app_job" "production_captured" {
   location                     = local.resource_group_location
   container_app_environment_id = azurerm_container_app_environment.scribe.id
   workload_profile_name        = "Consumption"
-  replica_timeout_in_seconds   = 1800
+  replica_timeout_in_seconds   = each.key == "speech" ? 7200 : 1800
   replica_retry_limit          = 0
   identity {
     type         = "UserAssigned"

@@ -189,6 +189,7 @@ def main() -> None:
                     "-typecheck",
                     *map(str, BRIDGE),
                     str(AUTH / "Bridge/NativeProviderPassage.swift"),
+                    str(AUTH / "Bridge/NativeProviderRecordingFactory.swift"),
                 ],
             )
         else:
