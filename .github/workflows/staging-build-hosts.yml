@@ -1,0 +1,44 @@
+name: Staging build hosts
+
+# Fail-closed gate: staging/qualification packaging config must not name live
+# Cosmas API or live Clerk. Not marked required in branch rules — founder turns
+# that on at https://github.com/CosmaNeura/cosmaneura-scribe/rules/21000654
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  staging-build-hosts:
+    name: staging-build-hosts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout pull request head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Refuse live hosts in staging/qualification build config
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f scripts/check_staging_build_hosts.py ]]; then
+            echo '::error::staging build host checker missing — fail closed'
+            exit 1
+          fi
+          python scripts/check_staging_build_hosts.py --json | tee "${GITHUB_STEP_SUMMARY}"
+          python scripts/check_staging_build_hosts.py
