@@ -3,6 +3,7 @@
 /* global document, window */
 const platform = new URL(window.location.href).searchParams.get("platform");
 const layout = new URL(window.location.href).searchParams.has("layout");
+const draftConsent = new URL(window.location.href).searchParams.has("draft-consent");
 if (platform === "ios") {
   window.CapacitorCustomPlatform = { name: "ios" };
   window.Capacitor = {
@@ -44,6 +45,8 @@ if (layout) {
 const plugin = await encryptedFixturePlugin(scope.workspaceId);
 const forbidden = () => { throw new Error("Outside the synthetic DOB fixture"); };
 const fixture = window.dobLab = { creates: [], starts: 0, admissions: 0, admissionRequests: [], dobUpdates: [], openedRefs: [], closes: 0 };
+const createGate = new Promise(resolve => { fixture.releaseCreate = resolve; });
+const openGate = new Promise(resolve => { fixture.releaseOpen = resolve; });
 // Model another window settling/replacing the encrypted creation intent after
 // this window has displayed its pending screen. No live account is involved.
 fixture.replacePendingCreation = async () => {
@@ -74,8 +77,10 @@ const setup = createEncounterSetup({
       { patient_ref: "patient_01j00000000000000000000001", name: "Synthetic walk-in", date_of_birth: "1985-03-04" },
     ] : [], more_results: false };
     fixture.creates.push(body);
+    if (draftConsent && new URL(window.location.href).searchParams.has("gate-create")) await createGate;
     if (fixture.failCreate) throw new Error("Synthetic lost creation response");
     encounter.patientRef = body.patient.kind === "existing" ? body.patient.patient_ref : encounter.patientRef;
+    if (draftConsent && body.patient.kind === "new") encounter.patientName = body.patient.name;
     return { ...base, creation_key: body.creation_key, encounter: { workspace_id: scope.workspaceId,
       appointment_ref: scope.appointmentRef, patient_ref: encounter.patientRef,
       patient_name: body.patient.kind === "new" ? body.patient.name : "Synthetic walk-in",
@@ -104,6 +109,7 @@ fixture.signOut = () => abort.abort();
 fixture.ready = () => fixture.emit({ state: "ready", statusCode: "capture_ready",
   desktop: { ...snapshot.desktop, phase: "ready" } });
 mountProviderWorkspace(document.querySelector("#provider"), {
+  ...(draftConsent ? { draftConsentPreparation: true } : {}),
   ...(layout ? {
     consentPreparation: { enabled: true, owner: "John Clemente", cohort: "internal", expires: "2026-11-01" },
     audioPreflight: async () => ({
@@ -135,7 +141,9 @@ mountProviderWorkspace(document.querySelector("#provider"), {
   }, createEncounter: forbidden,
   openEncounter: async ref => {
     fixture.openedRefs.push(ref);
-    if (layout && fixture.failOpen) throw new Error("Synthetic private connection detail");
+    if (draftConsent && new URL(window.location.href).searchParams.has("gate-open")) await openGate;
+    if (fixture.renameDuringOpen) encounter.patientName = "Different synthetic patient name";
+    if ((layout || draftConsent) && fixture.failOpen) throw new Error("Synthetic private connection detail");
     return ({ encounter, scope, signal: abort.signal, openInCore: forbidden,
     journal: { load: async () => saved, save: async (_prior, progress) => {
       if (new URL(window.location.href).searchParams.has("gate-journal") && saved.progress === null) await journalGate;

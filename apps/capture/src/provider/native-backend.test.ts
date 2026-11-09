@@ -584,6 +584,24 @@ it("keeps older native builds on their existing recorder", async () => {
   } finally { await backend.dispose(); }
 });
 
+it.each([undefined, 1] as const)("negotiates fresh-start preparation without breaking older builds: %s", async version => {
+  const f = fixture(); f.setState({ ...f.state, nativeRecordingVersion: 2,
+    ...(version ? { recordingInitialStartVersion: version } : {}) }, false);
+  const backend = await f.connect();
+  try {
+    await backend.listEncounters(backend.signal);
+    const mount = await backend.openEncounter(appointment, backend.signal);
+    await mount.reauthorizeRecorder(session, backend.signal);
+    const prepared = JSON.parse(f.plugin.providerRequest.mock.calls.at(-1)![0].body) as { request_nonce: string };
+    const requestId = crypto.randomUUID();
+    await mount.nativeRecording!.open(session, requestId, { initialStart: true });
+    expect(f.plugin.openProviderRecording).toHaveBeenCalledWith({ requestId, revision: f.state.revision,
+      workspaceId: workspace, bindingRef: binding, sessionId: session, authorizationId: prepared.request_nonce,
+      ...(version ? { initialStart: true } : {}) });
+    expect(() => mount.nativeRecording!.open(session, crypto.randomUUID(), { initialStart: true })).toThrow();
+  } finally { await backend.dispose(); }
+});
+
 it("reuses one acknowledged native context once after recorder reauthorization", async () => {
   const f = fixture(); f.setState({ ...f.state, nativeRecordingVersion: 2 }, false);
   const backend = await f.connect();

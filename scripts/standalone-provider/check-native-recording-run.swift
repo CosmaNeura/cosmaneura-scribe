@@ -333,11 +333,12 @@ private actor SourceWire: ProviderNativeWire {
       connection: connection, revision: auth.state().revision,
       preparation: fixture.preparation, identity: auth.state().identity!, journal: journal)
   }
-  func run(permission: @escaping @MainActor () async throws -> Bool = { true }) throws
+  func run(permission: @escaping @MainActor () async throws -> Bool = { true }, opensFirst: Bool = false) throws
     -> NativeProviderRecordingRun
   {
     try NativeProviderRecordingRun(
-      source: source, lease: fixture.lease, batch: fixture.batch, requestPermission: permission
+      source: source, lease: fixture.lease, batch: fixture.batch, requestPermission: permission,
+      opensBeforeAuthorization: opensFirst
     ) { validate, finalize in
       fixture.recorder.validate = validate
       fixture.recorder.finalize = finalize
@@ -772,6 +773,9 @@ private actor SourceWire: ProviderNativeWire {
     checks += try await checkSourceSequence()
     checks += try await checkActualEncryptedRun()
     checks += try await checkActualEncryptedRun(opensFirst: true)
+    for refusal in ["cancel", "denied", "expired"] {
+      checks += try await checkActualEncryptedRun(opensFirst: true, refusal: refusal)
+    }
     checks += try NativePassageSelectionChecks.run()
     checks += try await CheckNativeRecordingHost.run()
     print("native recording run checks passed: \(checks)")
@@ -779,6 +783,41 @@ private actor SourceWire: ProviderNativeWire {
 
   @MainActor static func checkSourceSequence() async throws -> Int {
     var checks = 0
+    for cancel in [false, true] {
+      let f = try BoundSource()
+      await f.wire.configure(hold: true)
+      let run = try f.run(opensFirst: true), start = Task { try await run.start() }
+      await f.wire.waitUntilHeld()
+      try runRequire(f.fixture.recorder.opens == 1 && f.fixture.recorder.authorizations == 0)
+      try runRequire(run.phase == .starting && f.journal.pending.count == 1)
+      if cancel {
+        try await rejects { try await run.stop() }
+        try runRequire(run.isPhysicallyIdle && f.fixture.recorder.stops > 0)
+      }
+      await f.wire.release()
+      if cancel { try await rejects { try await start.value } }
+      else { try await start.value }
+      let starts = await f.wire.requests.filter { $0.action == .sourceStartReady }
+      try runRequire(starts.count == 1)
+      try runRequire(f.fixture.recorder.authorizations == (cancel ? 0 : 1))
+      try await run.stop()
+      try runRequire(f.journal.pending.isEmpty && run.isPhysicallyIdle)
+      try await NativeCaptureStartGate.recoverWhileIdle {}; checks += 5
+    }
+    for fault in ["denied", "lost", "prepare-expired", "authorize-consent", "authorize-secret"] {
+      let f = try BoundSource()
+      await f.wire.configure(status: fault == "denied" ? 403 : 200,
+        fault: fault == "denied" ? "none" : fault)
+      await f.wire.loseNextStop()
+      let run = try f.run(opensFirst: true)
+      try await rejects { try await run.start() }
+      try runRequire(f.fixture.recorder.opens == 1 && f.fixture.recorder.authorizations == 0)
+      try runRequire(run.isPhysicallyIdle && f.fixture.recorder.stops > 0)
+      try runRequire(f.journal.pending.count == 1)
+      try await run.stop()
+      try runRequire(f.journal.pending.isEmpty)
+      try await NativeCaptureStartGate.recoverWhileIdle {}; checks += 4
+    }
     do {
       let f = try BoundSource()
       try await f.source.prepareRecordingReady()
@@ -1064,7 +1103,7 @@ private final class RunAudio: AppleAudioSystem, @unchecked Sendable {
   }
 }
 
-@MainActor private func checkActualEncryptedRun(opensFirst: Bool = false) async throws -> Int {
+@MainActor private func checkActualEncryptedRun(opensFirst: Bool = false, refusal: String? = nil) async throws -> Int {
   let fixture = try Fixture()
   let driver = Driver()
   let wire = SourceWire(fixture.preparation)
@@ -1110,6 +1149,27 @@ private final class RunAudio: AppleAudioSystem, @unchecked Sendable {
     reservations: reservations, permission: RunPermission(), system: system,
     foreground: RunForeground(), signal: PCMSignalMonitor(), opensBeforeAuthorization: opensFirst)
   try runRequire(journal.pending.count == 1 && records.captured().isEmpty)
+  if let refusal {
+    await wire.configure(status: refusal == "denied" ? 403 : 200,
+      fault: refusal == "expired" ? "prepare-expired" : "none", hold: true)
+    let start = Task { try await run.start() }
+    await wire.waitUntilHeld()
+    let packet = try system.emit(16_000)
+    try await CheckNativeRecordingRun.wait { packet.isZeroed }
+    try runRequire(run.phase == .starting && records.captured().isEmpty)
+    if refusal == "cancel" {
+      try await CheckNativeRecordingRun.rejects { try await run.stop() }
+      try runRequire(run.isPhysicallyIdle && journal.pending.count == 1)
+    } else { await wire.loseNextStop() }
+    await wire.release()
+    try await CheckNativeRecordingRun.rejects { try await start.value }
+    try runRequire(run.isPhysicallyIdle && records.captured().isEmpty)
+    try runRequire(run.captureState.committedChunks == 0 && run.captureState.committedPlaintextBytes == 0)
+    try await run.stop()
+    try runRequire(journal.pending.isEmpty && system.lock.withLock { system.closures } == 1)
+    try await NativeCaptureStartGate.recoverWhileIdle {}
+    return 5
+  }
   try await run.start()
   try runRequire(run.phase == .recording && !run.isPhysicallyIdle)
   try runRequire(system.lock.withLock { system.selected == .nativeEncryptedSpeech })

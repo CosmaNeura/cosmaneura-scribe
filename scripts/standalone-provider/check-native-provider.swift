@@ -296,6 +296,18 @@ struct CheckNativeProvider {
             try require(rows[0]["core_nonadditive"] as? Bool == true
                 && rows[0]["core_response_start_only"] as? Bool == true)
             try require(rows[1]["server_ms"] == nil && rows[1]["core_ms"] == nil)
+            journal.recordEntry(.patientToConsent, milliseconds: 42.4)
+            for invalid in [Double.nan, Double.infinity, -1, 600_001] {
+                journal.recordEntry(.patientToConsent, milliseconds: invalid)
+            }
+            await journal.flush()
+            let entryRows = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [[String: Any]]
+            try require(entryRows.count == 3)
+            let entry = entryRows[2]
+            try require(Set(entry.keys).isSubset(of: allowed)
+                && entry["action"] as? String == "ui.patient-to-consent"
+                && entry["total_ms"] as? Int == 42 && entry["token_ms"] as? Int == 0
+                && entry["server_ms"] == nil && entry["core_ms"] == nil)
             let permissions = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as! NSNumber
             try require(permissions.intValue == 0o600)
             let first = timings[0]

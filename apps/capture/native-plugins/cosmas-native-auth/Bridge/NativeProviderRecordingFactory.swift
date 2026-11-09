@@ -14,7 +14,7 @@
     static func make(
       connection: NativeProviderConnection, auth: NativeWorkspaceAuth,
       recovery: NativeSourceRecovery, workspaceID: UUID, bindingRef: String,
-      sessionID: UUID, revision: String, authorizationID: UUID? = nil
+      sessionID: UUID, revision: String, authorizationID: UUID? = nil, initialStart: Bool = false
     ) async throws -> NativeProviderRecordingHost {
       let mount = try connection.recordingMount(
         workspaceID: workspaceID, bindingRef: bindingRef, revision: revision)
@@ -89,7 +89,7 @@
                   }
                 })
             })
-        })
+        }, deferInitialSourcePreparation: initialStart)
     }
   }
 #endif

@@ -118,6 +118,43 @@ async def test_existing_patient_visit_uses_dual_auth_fixed_path_and_retained_key
         await transport.close()
 
 
+@pytest.mark.parametrize("supplied", [False, True])
+@pytest.mark.parametrize("fault", [None, "workload", "response"])
+async def test_request_owned_account_removes_only_adjacent_read_and_keeps_both_fences(
+    supplied, fault
+):
+    transport, calls, account = await fixture()
+    events = []
+
+    async def fresh():
+        events.append("account")
+        changed = (fault == "workload" and "workload" in events) or (
+            fault == "response" and bool(calls)
+        )
+        return replace(account, account_id="changed") if changed else account
+
+    async def workload():
+        events.append("workload")
+        return SecretStr("your-synthetic-workload-token")
+
+    transport.account, transport.workload = fresh, workload
+    key = str(uuid4())
+    try:
+        if fault:
+            with pytest.raises(ProviderCoreUnavailable):
+                await transport.request(body(key), key, before=account if supplied else None)
+        else:
+            assert (await transport.request(body(key), key, before=account if supplied else None))[
+                "creation_key"
+            ] == key
+        assert len(calls) == (0 if fault == "workload" else 1)
+        assert events == ([] if supplied else ["account"]) + ["workload", "account"] + (
+            [] if fault == "workload" else ["account"]
+        )
+    finally:
+        await transport.close()
+
+
 @pytest.mark.parametrize(
     "fault",
     [

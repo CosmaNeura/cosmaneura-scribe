@@ -40,6 +40,7 @@ import { NoteAutosave } from "./note-autosave";
 import { PatientListObserver } from "./patient-list-observer";
 import { providerPreferences } from "./provider-preferences";
 import { recordingPreparationMarkup } from "./recording-preparation-view";
+import { draftConsentMarkup } from "./draft-consent-view";
 import { bindPreparationControls } from "./preparation-controls";
 import { configureConsentedRecorder, consentPreparationEnabled, type ConsentedSourceChoice } from "./consent-preparation";
 import { adjacentVisitDay, bindDaySwipe, visitDay, visitIsOnDay, visitRow } from "./visit-list-view";
@@ -99,6 +100,15 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let stopSaveCheck: (() => void) | null = null;
   let step = "request";
   let setupState: EncounterSetupState | null = null;
+  type EntryVisitTiming = { startedAt: number; consentAt?: number };
+  let patientCreation: { abort: AbortController; key: string; timing: EntryVisitTiming } | null = null;
+  let entryVisitTiming: EntryVisitTiming | undefined;
+  let entryReadyDiagnostic: (() => void) | undefined;
+  let entryListMeasured = false;
+  const recordEntry = (phase: Parameters<NonNullable<ProviderWorkspaceHost["entryTiming"]>>[0], duration: number): void => {
+    if (!Number.isFinite(duration) || duration < 0 || duration > 600_000) return;
+    try { host.entryTiming?.(phase, duration); } catch { /* Diagnostics are isolated from workflow. */ }
+  };
   const recentStates = new Map<string, { sessionId: string; status: "paused" | "processing" | "recording_saved" | "draft_ready" }>();
   const listedDraftRefs = new Set<string>();
   const hiddenVisits = new Set<string>();
@@ -182,6 +192,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
 
   const clearEncounter = async (): Promise<void> => {
     generation += 1;
+    patientCreation?.abort.abort(); patientCreation = null;
+    entryVisitTiming = undefined; entryReadyDiagnostic = undefined;
     separateVisitPatientRef = null; separateVisitChoice = false;
     queuedRecordReadyTiming?.cancel(); queuedRecordReadyTiming = undefined;
     preparationSignIn?.close(); preparationSignIn = null;
@@ -417,8 +429,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     document.addEventListener("visibilitychange", visibility);
     disposeContent = () => { observer.dispose(); controller.abort(); stopSwipe(); document.removeEventListener("visibilitychange", visibility); searchInput?.removeEventListener("input", filterVisits); showHidden?.removeEventListener("change", filterVisits); content.removeEventListener("click", dayClick); content.removeEventListener("keydown", dayKeys); };
     observer.schedule();
+    if (!entryListMeasured && host.entryStartedAt !== undefined) {
+      entryListMeasured = true; recordEntry("app-to-patients", performance.now() - host.entryStartedAt);
+    }
   };
   const setup = async (checkPending = false, existingPatientRef?: string): Promise<void> => {
+    const began = performance.now();
     requireValue(host.encounterSetup);
     await clearEncounter(); header.hidden = true; step = "encounter setup";
     const n = generation;
@@ -431,7 +447,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     // Ordinary New encounter navigation still stops at the pending-request screen.
     if (checkPending && state.pending) await create(null);
     else if (existingPatientRef && !state.pending) await create({ kind: "existing", patientRef: existingPatientRef });
-    else showSetup();
+    else { showSetup(); recordEntry("patient-form", performance.now() - began); }
   };
   const create = async (patient: EncounterDraft["patient"] | null, openAfterCreation = true): Promise<void> => {
     requireValue(host.encounterSetup && setupState);
@@ -447,12 +463,31 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const shouldOpen = draft.openAfterCreation !== false;
     show(shouldOpen ? '<h1>Opening your visit…</h1><p>Saving the patient’s name. Recording starts after you confirm consent.</p>'
       : '<h1>Creating your visit…</h1><p>Saving the patient’s name.</p>');
-    const created = await host.encounterSetup.submit(draft, host.signal);
+    const pending = new AbortController();
+    const timing: EntryVisitTiming = { startedAt: performance.now() };
+    patientCreation = { abort: pending, key: draft.creationKey, timing };
+    const creationSignal = AbortSignal.any([host.signal, pending.signal]);
+    const canShowDraftConsent = host.draftConsentPreparation === true && shouldOpen && draft.patient.kind === "new";
+    const presentDraftConsent = (retained: EncounterDraft): void => {
+      if (canShowDraftConsent && current(n) && !creationSignal.aborted
+        && patientCreation?.key === retained.creationKey && retained.patient.kind === "new") {
+        show(draftConsentMarkup(retained.patient.name, preferredLanguage !== "en-US"));
+        recordEntry("patient-to-consent", performance.now() - timing.startedAt);
+      }
+    };
+    const created = await (canShowDraftConsent
+      ? host.encounterSetup.submit(draft, creationSignal, presentDraftConsent)
+      : host.encounterSetup.submit(draft, creationSignal));
     if (!current(n)) return;
     if (draft) requireValue(draft.patient.kind === "existing"
       ? created.patientRef === draft.patient.patientRef : created.patientName === draft.patient.name);
     setupState = null;
-    if (shouldOpen) await open(created.appointmentRef);
+    const confirmed = canShowDraftConsent && !creationSignal.aborted
+      && content.querySelector<HTMLInputElement>('[name="draft-consent"]')?.checked === true;
+    patientCreation = null;
+    if (shouldOpen) await open(created.appointmentRef, undefined,
+      canShowDraftConsent && created.patientRef && draft.patient.kind === "new"
+        ? { patientRef: created.patientRef, name: draft.patient.name, checked: confirmed, timing } : undefined);
     else show(`<h1>Visit created</h1><p>${escape(created.patientName ?? created.title)}</p>
       <p>To use a Zoom meeting bot, open Schedule in Cosmas, select your meeting, and enable its bot for this visit.</p>
       <p>Creating this visit does not enable a bot or open Scribe recording setup.</p>
@@ -536,7 +571,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     });
     dialog.showModal();
   };
-  const preparation = (): void => {
+  const preparation = (consentConfirmed = false, timing?: EntryVisitTiming): void => {
     requireValue(context);
     const prepareOnConsent = consentPreparationEnabled(host.consentPreparation);
     show(recordingPreparationMarkup({ isIOS, language: preferredLanguage, modality: preferredModality, audio: preferredDesktopAudio, consentPreparation: prepareOnConsent }));
@@ -544,16 +579,31 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const warm = setupSignInPreparation(context.signInPreparation,
       () => authorized(n) && journal.progress === null && document.visibilityState === "visible");
     preparationSignIn = warm;
+    entryVisitTiming = timing;
+    if (!consentConfirmed && timing) delete timing.consentAt;
+    let visitMeasured = false, consentMeasured = false;
+    const reportReady = (): void => {
+      if (!timing || !authorized(n) || !preparationControls?.ready()) return;
+      if (!visitMeasured) { visitMeasured = true; recordEntry("patient-to-visit-ready", performance.now() - timing.startedAt); }
+      if (!consentMeasured && timing.consentAt !== undefined && content.querySelector<HTMLInputElement>('[name="consent"]')?.checked) {
+        consentMeasured = true; recordEntry("consent-to-record-ready", performance.now() - timing.consentAt);
+      }
+    };
+    entryReadyDiagnostic = reportReady;
     const controls = bindPreparationControls(content, { isIOS, signal: client!.signal,
-      onSetupReady: () => warm.ready(), onSetupInvalidated: () => warm.invalidate(),
+      onSetupReady: () => { warm.ready(); reportReady(); }, onSetupInvalidated: () => warm.invalidate(),
       ...(host.audioPreflight ? { open: host.audioPreflight } : {}), remember: value => { savedPreferences?.save(value); },
       ...(prepareOnConsent ? { onConsent: () => {
         if (consentPreparationEnabled(host.consentPreparation)) void run(() => initialConsentPreparation(false), "prepare");
       } } : {}) });
     preparationControls = controls;
-    if (controls.ready()) warm.ready();
+    if (controls.ready()) { warm.ready(); reportReady(); }
     disposeContent = () => { warm.close(); if (preparationSignIn === warm) preparationSignIn = null; void controls.close().catch(() => { notice.textContent = "Microphone check could not close. Reopen this visit before recording."; }); };
     consentAction = content.querySelector<HTMLButtonElement>('[data-workspace-action="prepare"]');
+    if (consentConfirmed) {
+      const checkbox = content.querySelector<HTMLInputElement>('[name="consent"]');
+      if (checkbox) { checkbox.checked = true; checkbox.dispatchEvent(new Event("change", { bubbles: true })); }
+    }
   };
   const initialPreparationStatus = (): void => {
     const status = content.querySelector<HTMLElement>("[data-recording-preparation-status]");
@@ -673,7 +723,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const recordingProgress = progress();
     requireValue(!recordingProgress.uploaded && recordingProgress.admission);
     step = "device recording access";
-    const acquisition = activeContext.recorder(id, activeClient.signal);
+    const acquisition = startRequested
+      ? activeContext.recorder(id, activeClient.signal, { initialStart: true })
+      : activeContext.recorder(id, activeClient.signal);
     acquiringRecorder = acquisition;
     let resources: ProviderRecorderResources | PreparedProviderRecorder;
     try { resources = await acquisition; }
@@ -876,11 +928,19 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     preferredModality = next.admission.attestation.modality;
     await admit("initial", startRequested, recordRequested ? undefined : sourceChoice);
   };
-  const open = async (ref: string, initialAction?: "open-draft"): Promise<void> => {
+  const open = async (ref: string, initialAction?: "open-draft",
+    draftConsent?: { patientRef: string; name: string; checked: boolean; timing: EntryVisitTiming }): Promise<void> => {
+    const draftCard = draftConsent ? content.querySelector<HTMLElement>("[data-draft-consent]") : null;
     await clearEncounter(); const n = generation;
-    header.hidden = false;
+    header.hidden = draftConsent !== undefined;
     openingRef = ref; step = "encounter connection";
-    show('<h1>Opening visit</h1><p>Checking access and restoring your saved work…</p><button data-workspace-action="cancel-opening">Cancel opening</button>');
+    if (draftConsent) {
+      entryVisitTiming = draftConsent.timing;
+      if (draftCard) content.replaceChildren(draftCard);
+      else show(draftConsentMarkup(draftConsent.name, preferredLanguage !== "en-US"));
+      const checkbox = content.querySelector<HTMLInputElement>('[name="draft-consent"]');
+      if (checkbox) checkbox.checked = draftConsent.checked;
+    } else show('<h1>Opening visit</h1><p>Checking access and restoring your saved work…</p><button data-workspace-action="cancel-opening">Cancel opening</button>');
     const opening = new AbortController();
     let cancelled = false;
     const cancel = (): void => { cancelled = true; opening.abort(); };
@@ -906,6 +966,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       step = "saved encounter recovery";
       const loaded = await interruptibleRead(opened.journal.load(), opening.signal);
       if (!authorized(n)) return;
+      header.hidden = false;
       journal = loaded;
       if (recentStates.get(ref)?.sessionId !== loaded.progress?.sessionId) recentStates.delete(ref);
       const first = openingReviewView(opened.openingReview, opened.scope);
@@ -935,7 +996,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         endOpening();
         if (recovered === null) {
           if (initialAction) show('<h1>Draft not available</h1><p>This visit has no draft available yet. Return to today’s patients and reopen it to check again.</p>');
-          else preparation();
+          else preparation(draftConsent !== undefined && content.querySelector<HTMLInputElement>('[name="draft-consent"]')?.checked === true
+            && opened.encounter.patientRef === draftConsent.patientRef
+            && (opened.encounter.identity?.name ?? opened.encounter.patientName) === draftConsent.name, draftConsent?.timing);
         }
         else {
           if (recovered.status === "created" || recovered.status === "capturing") {
@@ -952,7 +1015,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       if (current(n)) openingRef = null;
     } catch (error) {
       if (!current(n)) return;
-      if (!cancelled) throw error;
+      if (!cancelled) { header.hidden = false; throw error; }
       await list();
       if (!disposed && !host.signal.aborted) notice.textContent = "Opening cancelled. Your saved work is retained.";
     } finally { if (cancelOpening === cancel) endOpening(); }
@@ -1550,6 +1613,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const click = (event: MouseEvent): void => {
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button[data-workspace-action]") : null;
     if (!button || !root.contains(button)) return;
+    if (button.dataset.workspaceAction === "cancel-patient-creation") {
+      if (button.disabled || button !== content.querySelector('[data-workspace-action="cancel-patient-creation"]')) return;
+      if (patientCreation) patientCreation.abort.abort();
+      else cancelOpening?.();
+      return;
+    }
     if (button.dataset.workspaceAction === "prepare" && consentPreparationPending) {
       // Only this explicit, current Record click may join the owned consent
       // flight. Readiness, consent and recovered journals never create intent.
@@ -1803,6 +1872,14 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     return content.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`[name="${name}"]`)?.value ?? "";
   }
   const consentChanged = (event: Event): void => {
+    const early = content.querySelector<HTMLInputElement>('[name="draft-consent"]');
+    const normal = content.querySelector<HTMLInputElement>('[name="consent"]');
+    const timing = patientCreation?.timing ?? entryVisitTiming;
+    if (timing && (event.target === early || event.target === normal)) {
+      if ((event.target as HTMLInputElement).checked) timing.consentAt ??= performance.now();
+      else delete timing.consentAt;
+      entryReadyDiagnostic?.();
+    }
     if (event.target === content.querySelector('[name="consent"]')
       && !content.querySelector<HTMLInputElement>('[name="consent"]')?.checked) preparationSignIn?.invalidate();
     if (consentPreparationPending && event.target === content.querySelector('[name="consent"]')

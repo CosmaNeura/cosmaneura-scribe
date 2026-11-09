@@ -43,6 +43,8 @@ jobs:
       - run: uv run ruff check .
       - run: uv run pyright
       - run: uv run pytest --cov=cosmaneura_scribe --cov-branch --cov-config=pyproject.toml
+      - name: Verify native receiver patient opening
+        run: uv run pytest scripts/standalone-provider/test_core_context_receiver.py tests/test_provider_native_encounter_transport.py tests/test_provider_native_core_transport.py
       - run: uv run python scripts/check_phi_logs.py
       - run: uv run python scripts/check_secrets.py
       - run: uv run python scripts/check_adr_numbers.py
@@ -249,6 +251,8 @@ jobs:
       DEPLOY_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Verify native patient opening and recording bindings
+        run: python3 scripts/check-native-recording-run.py "${RUNNER_TEMP}/scribe-native-patient-ready" --platform both
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24.5.0'

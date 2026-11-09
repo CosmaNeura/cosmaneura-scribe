@@ -30,6 +30,26 @@ private actor BindingWire: ProviderNativeWire {
     try require(token.split(separator: ".").count == 3)
     requests.append(request)
     let body = try JSONSerialization.jsonObject(with: request.body) as! [String: Any]
+    if request.action == .encounters {
+      let appointment = "appointment_01j00000000000000000000000"
+      let patient = "patient_01j00000000000000000000000"
+      let opening: [String: Any] = [
+        "revision": fault == "created_revision" ? UUID().uuidString.lowercased() : request.revision,
+        "workspaceId": workspace.uuidString.lowercased(), "recoveryScope": recovery.uuidString.lowercased(),
+        "appointmentRef": appointment, "bindingRef": binding,
+        "encounter": ["appointmentRef": appointment, "patientRef": fault == "created_patient" ? "other" : patient,
+          "native_recording_preparation_v1": true, "admission_native_preparation_v1": true],
+        "openingRecovery": ["contract_version": "1", "workspace_id": workspace.uuidString.lowercased(),
+          "binding_ref": binding, "request_nonce": fault == "created_nonce" ? UUID().uuidString.lowercased() : body["opening_nonce"]!,
+          "disposition": "provider_operation_unavailable"],
+      ]
+      return ProviderNativeReply(status: 200, body: try JSONSerialization.data(withJSONObject: [
+        "revision": request.revision, "version": "2", "action": "create", "request_nonce": body["request_nonce"]!,
+        "creation_key": body["creation_key"]!, "recoveryScope": recovery.uuidString.lowercased(),
+        "account": ["email": "provider@synthetic.invalid"], "opening": opening,
+        "encounter": ["workspace_id": workspace.uuidString.lowercased(), "appointment_ref": appointment, "patient_ref": patient],
+      ]))
+    }
     if request.action == .mount {
       let appointment = "appointment_01j00000000000000000000000"
       return ProviderNativeReply(
@@ -550,6 +570,42 @@ private final class BindingRecords: NativeRecordingFlowStore,
     let receipt = NativeRecordingKeyReceipt(
       keyVersion: "synthetic-v1", wrappedDEK: String(repeating: "A", count: 512))
     var checks = 0
+    do {
+      let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+      defer { try? FileManager.default.removeItem(at: directory) }
+      let file = directory.appendingPathComponent("entry-timing.json")
+      let journal = ProviderNativeTimingJournal(destination: file)
+      journal.recordEntry(.patientToConsent, milliseconds: 42.4)
+      for invalid in [Double.nan, Double.infinity, -1, 600_001] {
+        journal.recordEntry(.patientToConsent, milliseconds: invalid)
+      }
+      await journal.flush()
+      let rows = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [[String: Any]]
+      let allowed: Set<String> = ["version", "clock", "monotonic_ns", "utc", "action", "token_ms", "total_ms", "completed", "dropped_events"]
+      try require(rows.count == 1 && Set(rows[0].keys).isSubset(of: allowed)
+        && rows[0]["action"] as? String == "ui.patient-to-consent" && rows[0]["total_ms"] as? Int == 42)
+      checks += 1
+    }
+    for fault in ["none", "created_revision", "created_patient", "created_nonce"] {
+      let (auth, _, wire, connection, _) = try await make(modulus)
+      await wire.setFault(fault)
+      let creation = UUID().uuidString.lowercased()
+      let body: [String: Any] = ["action": "create", "request_nonce": UUID().uuidString.lowercased(),
+        "creation_key": creation, "opening_nonce": creation,
+        "patient": ["kind": "new", "name": "Synthetic patient", "date_of_birth": NSNull()],
+        "appointment_at": "2026-11-09T12:00:00Z", "title": "Visit"]
+      _ = try await connection.send(ProviderNativeRequest(id: UUID().uuidString.lowercased(),
+        revision: auth.state().revision, action: "encounters", key: creation,
+        body: String(decoding: JSONSerialization.data(withJSONObject: body), as: UTF8.self)))
+      do {
+        let mount = try connection.recordingMount(workspaceID: wire.workspace, bindingRef: wire.binding, revision: auth.state().revision)
+        try require(fault == "none" && mount.recordingPreparationSupported && mount.admissionPreparationSupported)
+      } catch is CheckFailure { throw CheckFailure.failed }
+      catch { try require(fault != "none") }
+      try require(await wire.requests.filter { $0.action == .mount }.isEmpty)
+      connection.close(); checks += 1
+    }
     // Real owner-created flow/key/window proof drives the only ticket-aware
     // native operation. No bridge boolean or fabricated proof is supplied.
     for fault in ["none", "none2", "none3", "deadline", "before_deadline", "clock_back",
