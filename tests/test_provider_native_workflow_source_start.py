@@ -135,13 +135,13 @@ def source_fixture(action, *, source="desktop_companion", fault=None, revoked_bo
 
 @pytest.mark.parametrize("action", ["prepare", "authorize"])
 @pytest.mark.parametrize("source", ["desktop_companion", "ios_microphone"])
-async def test_ready_native_source_uses_existing_workflow_and_all_four_fresh_fences(action, source):
+async def test_ready_native_source_uses_existing_workflow_and_three_fresh_fences(action, source):
     transport, mount, payload, calls, fences = source_fixture(action, source=source)
     try:
         result = await transport.workflow(
             "source-start", payload, "native-ready-source-key", mount=mount
         )
-        assert len(calls) == 1 and len(fences) == 4
+        assert len(calls) == 1 and len(fences) == 3
         assert result["operation"] == "source_start"
         if action == "prepare":
             assert result["receipt"]["state"] == "prepared"
@@ -156,7 +156,7 @@ async def test_ready_native_source_uses_existing_workflow_and_all_four_fresh_fen
 
 
 @pytest.mark.parametrize("action", ["prepare", "authorize"])
-@pytest.mark.parametrize("boundary", [1, 2, 3, 4])
+@pytest.mark.parametrize("boundary", [1, 2, 3])
 async def test_ready_native_source_revocation_at_each_fence_never_retries(action, boundary):
     transport, mount, payload, calls, _ = source_fixture(action, revoked_boundary=boundary)
     try:
@@ -165,6 +165,44 @@ async def test_ready_native_source_revocation_at_each_fence_never_retries(action
                 "source-start", payload, "native-ready-source-key", mount=mount
             )
         assert len(calls) == (0 if boundary <= 2 else 1)
+    finally:
+        await transport.close()
+
+
+@pytest.mark.parametrize("action", ["prepare", "authorize"])
+async def test_ready_native_source_reuses_the_caller_snapshot_and_keeps_both_later_fences(action):
+    transport, mount, payload, calls, fences = source_fixture(action)
+    try:
+        await transport.workflow(
+            "source-start", payload, "native-ready-source-key", mount=mount, before=ACCOUNT
+        )
+        assert len(calls) == 1 and len(fences) == 2
+    finally:
+        await transport.close()
+    for boundary, dispatched in ((1, 0), (2, 1)):
+        transport, mount, payload, calls, _ = source_fixture(action, revoked_boundary=boundary)
+        try:
+            with pytest.raises(ProviderCoreUnavailable):
+                await transport.workflow(
+                    "source-start", payload, "native-ready-source-key", mount=mount, before=ACCOUNT
+                )
+            assert len(calls) == dispatched
+        finally:
+            await transport.close()
+
+
+async def test_ready_native_source_rejects_a_caller_snapshot_for_another_mount():
+    transport, mount, payload, calls, fences = source_fixture("authorize")
+    try:
+        with pytest.raises(ProviderCoreUnavailable):
+            await transport.workflow(
+                "source-start",
+                payload,
+                "native-ready-source-key",
+                mount=mount,
+                before=replace(ACCOUNT, actor_ref="another-actor"),
+            )
+        assert not calls and not fences
     finally:
         await transport.close()
 

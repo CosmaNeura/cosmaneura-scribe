@@ -451,7 +451,10 @@ class ProviderNativeCoreTransport:
         *,
         handoff: PreparationHandoff | None = None,
         revision: UUID | None = None,
+        before: ProviderEncounterAccount | None = None,
     ) -> tuple[ProviderEncounterAccount, dict[str, object]]:
+        """`before` is the caller's account snapshot when no I/O separates it
+        from this call; the dispatch and publication checks still follow."""
         _require(action in {"mount", "capture-operations", "recorder"})
         payload = _snapshot(body, 4_194_304)
         workspace = _uuid(payload.get("workspace_id"))
@@ -501,7 +504,8 @@ class ProviderNativeCoreTransport:
                 request["operation"] = operation
         try:
             async with asyncio.timeout(60):
-                before = await self.fresh()
+                if before is None:
+                    before = await self.fresh()
                 issued_at = handoff.now() if handoff is not None else 0.0
                 request.update(
                     expected_actor_ref=before.actor_ref,
