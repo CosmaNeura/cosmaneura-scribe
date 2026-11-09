@@ -174,7 +174,7 @@ class Wire:
             headers={"Cache-Control": "no-store", "X-Cosmaneura-Native-Capture-Version": "1"},
         )
 
-    async def call(self, action, body):
+    async def call(self, action, body, before=None):
         client = ProviderNativeCoreTransport(
             "https://core.synthetic.invalid",
             self.fresh,
@@ -182,7 +182,7 @@ class Wire:
             transport=httpx.MockTransport(self.handle),
         )
         try:
-            return await client.request(action, body, "original-retained-key")
+            return await client.request(action, body, "original-retained-key", before=before)
         finally:
             await client.close()
 
@@ -670,6 +670,34 @@ async def test_public_key_read_uses_one_core_call_and_three_fresh_account_checks
     assert account == ACCOUNT and len(wire.calls) == 1 and wire.checks == 3
     assert wire.calls[0]["operation"] == {"kind": "encryption_key"}
     assert result["operation"] == "encryption_key"
+
+
+async def test_caller_snapshot_replaces_only_the_first_account_check():
+    wire = Wire()
+    account, _ = await wire.call(
+        "capture-operations", body("capture-operations", "preparation_metadata"), before=ACCOUNT
+    )
+    assert account == ACCOUNT and len(wire.calls) == 1 and wire.checks == 2
+
+
+@pytest.mark.parametrize("phase", ["workload", "response"])
+async def test_caller_snapshot_still_rechecks_around_core_io(phase):
+    wire = Wire()
+    if phase == "workload":
+
+        async def workload():
+            wire.revoked = True
+            return SecretStr("invented-workload-token")
+
+        wire.workload = workload
+    else:
+        wire.after = lambda: setattr(wire, "revoked", True)
+    with pytest.raises(ProviderCoreUnavailable) as error:
+        await wire.call(
+            "capture-operations", body("capture-operations", "preparation_metadata"), before=ACCOUNT
+        )
+    assert error.value.status == 403
+    assert len(wire.calls) == (0 if phase == "workload" else 1)
 
 
 @pytest.mark.parametrize("extra", ["payload", "profile_receipt_id", "private_key"])

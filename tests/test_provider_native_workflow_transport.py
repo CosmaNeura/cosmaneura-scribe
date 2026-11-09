@@ -144,7 +144,7 @@ async def test_closed_native_workflow_preserves_original_retained_key_and_wire(a
     try:
         result = await transport.workflow(action, value, key)
         assert result["request_nonce"] == value["request_nonce"]
-        assert calls[0].headers["idempotency-key"] == key and len(fences) == 4
+        assert calls[0].headers["idempotency-key"] == key and len(fences) == 3
         retry = value | {"request_nonce": str(uuid4())}
         await transport.workflow(action, retry, key)
         assert len(calls) == 2 and calls[1].headers["idempotency-key"] == key
@@ -170,7 +170,7 @@ async def test_admission_accepts_core_cache_policy_with_no_store_directive(cache
         result = await transport.workflow("capture-admissions", value, str(uuid4()))
         assert result["status"] == "admitted"
         assert result["configured_capture"] == value["configured_capture"]
-        assert len(calls) == 1 and len(fences) == 4
+        assert len(calls) == 1 and len(fences) == 3
     finally:
         await transport.close()
 

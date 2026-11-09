@@ -33,6 +33,7 @@ from .provider_core_transport import (
 from .provider_core_transport import (
     core_wire_uuid as uuid,
 )
+from .provider_encounter_transport import ProviderEncounterAccount
 from .provider_native_core_transport import (
     PATH,
     ProviderNativeCoreTransport,
@@ -72,7 +73,10 @@ class ProviderNativeWorkflowTransport(ProviderNativeCoreTransport):
         key: str,
         *,
         mount: CoreProviderMount | None = None,
+        before: ProviderEncounterAccount | None = None,
     ) -> dict[str, object]:
+        """`before` is the caller's account snapshot when no I/O separates it
+        from this call; the dispatch and publication checks still follow."""
         require(
             action
             in {
@@ -158,7 +162,8 @@ class ProviderNativeWorkflowTransport(ProviderNativeCoreTransport):
             async with asyncio.timeout(
                 100 if action in {"capture-notes", "capture-admissions"} else 60
             ):
-                before = await self.fresh()
+                if before is None:
+                    before = await self.fresh()
                 if mount is not None:
                     require(
                         (before.actor_ref, before.tenant_ref, before.recovery_scope)
@@ -333,14 +338,13 @@ class ProviderNativeWorkflowTransport(ProviderNativeCoreTransport):
                         )
                         if isinstance(checked_source, SourceStartRetirementReceipt):
                             require(checked_source.owner_proof_sha256 == source_intent.proof_digest)
-                if await self.fresh() != before:
-                    raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
                 if sequence is not None:
                     assert mount is not None and intent is not None and authorize_nonce is not None
                     result = source_start_reply(
                         mount, sequence, result, intent, authorize_nonce, datetime.now(UTC)
                     )
-                # Publication is separately fenced after parsing/pair validation.
+                # One publication check after parsing and pair validation. Both are
+                # local, so a second adjacent check could observe nothing new.
                 if await self.fresh() != before:
                     raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
                 return result

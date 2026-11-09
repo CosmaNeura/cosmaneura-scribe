@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -56,6 +56,143 @@ def staging_config(**changes):
             **changes,
         )
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route,source_action",
+    [("source-start", "prepare"), ("source-start", "authorize"), ("source-start-ready", "prepare")],
+)
+@pytest.mark.parametrize("revocation", [None, "catalog", "workload", "response"])
+async def test_native_source_routes_keep_current_authority_and_four_context_reads(
+    route, source_action, revocation, monkeypatch
+):
+    monkeypatch.setattr(
+        "receiver.Session", lambda *_args, **_kwargs: pytest.fail("Registry forbidden")
+    )
+    client, token, _paths, verifier = receiver(staging=True)
+    context_handler = client.core_http.handler
+    context_actions, native_calls = [], []
+    revoked = catalog_done = False
+    original_workload = client.workload_token
+    key = str(uuid4())
+    payload = {
+        "workspace_id": WORKSPACE,
+        "binding_ref": "scribe_capture_binding_00000000000000000000000003",
+        "request_nonce": str(uuid4()),
+        "operation": {
+            "kind": "source_start",
+            "action": source_action,
+            "payload": {
+                "schema_version": "1.0",
+                "attempt_id": str(uuid4()),
+                "source": "ios_microphone",
+                "owner_proof": "a" * 64,
+                "lease_id": str(uuid4()),
+                "lease_receipt_id": str(uuid4()),
+                "lease_generation": 1,
+                "capture_authorized_until": (datetime.now(UTC) + timedelta(minutes=10)).isoformat(),
+            },
+        },
+    }
+    if route == "source-start-ready":
+        payload.update(authorize_idempotency_key=str(uuid4()), authorize_request_nonce=str(uuid4()))
+
+    async def workload():
+        nonlocal revoked
+        if revocation == "workload" and catalog_done:
+            revoked = True
+        return await original_workload()
+
+    def handle(request):
+        nonlocal revoked, catalog_done
+        assert str(request.url).startswith(client.profile.core_origin + "/")
+        data = json.loads(request.content)
+        if request.url.path == "/service/v1/agent/scribe/provider-context":
+            context_actions.append(data["action"])
+            if revoked:
+                return httpx.Response(403)
+            response = context_handler(request)
+            if data["action"] == "catalog":
+                catalog_done = True
+                if revocation == "catalog":
+                    revoked = True
+            return response
+        assert request.url.path == "/service/v1/agent/scribe/native-capture"
+        assert data["action"] == "workflow_operation"
+        assert request.headers["authorization"] == "Bearer " + token
+        assert request.headers["idempotency-key"] == key
+        assert data["expected_actor_ref"] == ACTOR and data["expected_tenant_ref"] == TENANT
+        native_calls.append(request)
+        if revocation == "response":
+            revoked = True
+        now = datetime.now(UTC)
+        common = {
+            **{k: v for k, v in data["operation"]["payload"].items() if k != "owner_proof"},
+            "session_id": str(uuid4()),
+            "source_start_id": str(uuid4()),
+            "creator_actor_id": ACTOR,
+            "consent_record_id": str(uuid4()),
+            "capability_id": str(uuid4()),
+            "preparation_expires_at": (now + timedelta(seconds=30)).isoformat(),
+        }
+        prepared = {**common, "state": "prepared", "issued_at": None, "expires_at": None}
+        issued = {
+            **common,
+            "state": "issued",
+            "issued_at": now.isoformat(),
+            "expires_at": (now + timedelta(seconds=15)).isoformat(),
+        }
+        authorization = {"receipt": issued, "secret": "a" * 64}
+        receipt = authorization if source_action == "authorize" else prepared
+        operation = "source_start"
+        if route == "source-start-ready":
+            operation = "source_start_sequence"
+            receipt = {"preparation": prepared, "authorization": authorization}
+        return httpx.Response(
+            200,
+            json={
+                "version": "1",
+                "action": "workflow_operation",
+                "actor_ref": ACTOR,
+                "tenant_ref": TENANT,
+                "result": {
+                    **{k: data[k] for k in ("workspace_id", "binding_ref", "request_nonce")},
+                    "contract_version": "1",
+                    "checked_at": now.isoformat(),
+                    "operation": operation,
+                    "receipt": receipt,
+                },
+            },
+            headers={"Cache-Control": "no-store", "X-Cosmaneura-Native-Capture-Version": "1"},
+        )
+
+    client.workload_token = workload
+    client.core_http = httpx.MockTransport(handle)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=client.app()), base_url=client.profile.origin
+        ) as http:
+            response = await http.post(
+                "/provider/v1/" + route,
+                json=payload,
+                headers={
+                    "Origin": "app://cosmas",
+                    "Authorization": "Bearer " + token,
+                    "X-Scribe-Native-Revision": str(uuid4()),
+                    "Idempotency-Key": key,
+                },
+            )
+        assert response.status_code == (403 if revocation else 200)
+        if revocation:
+            assert response.json() == {"detail": "core_provider_access_unavailable"}
+        before_dispatch = revocation in {"catalog", "workload"}
+        assert len(native_calls) == (0 if before_dispatch else 1)
+        assert context_actions == ["connection", "catalog", "connection"] + (
+            [] if before_dispatch else ["connection"]
+        )
+    finally:
+        verifier.close()
 
 
 def test_new_mode_is_default_off_and_cannot_mix_registry_configuration():
@@ -273,7 +410,7 @@ async def test_catalog_and_selection_revalidate_core_without_any_registry(
             assert response.headers["cache-control"] == "no-store"
         selected, _ = await client.selected_current("Bearer " + token, uuid4(), UUID(WORKSPACE))
         assert selected.selection.actor_ref == ACTOR and selected.selection.tenant_ref == TENANT
-        assert len(calls) >= 6 and client.engine is None
+        assert len(calls) == 3 and client.engine is None
         with pytest.raises(ProviderCoreUnavailable):
             await client.encounters("Bearer " + token, {"action": "create"}, str(uuid4()))
     finally:

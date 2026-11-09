@@ -205,11 +205,7 @@ class CoreContextReceiver(ProviderReceiver):
         if body["action"] == "lookup":
             _uuid(body.get("workspace_id"))
         account, value = await self._context(authorization, "catalog")
-        rows = [self.core_entry(row) for row in value["encounters"]]
-        if len({row["workspaceId"] for row in rows}) != len(rows) or len(
-            {row["appointmentRef"] for row in rows}
-        ) != len(rows):
-            raise ProviderCoreUnavailable("core_provider_context_unconfirmed")
+        rows = self._catalog_rows(value)
         current = await self.encounter_account(authorization, bind=None)
         if account != current:
             raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
@@ -221,28 +217,40 @@ class CoreContextReceiver(ProviderReceiver):
             **({"native_visit_actions_v2": True} if account.native_visit_actions_v2 else {}),
         }
         if body["action"] == "lookup":
-            wanted = str(_uuid(body.get("workspace_id")))
-            matches = [
-                raw
-                for raw, row in zip(value["encounters"], rows, strict=True)
-                if row["workspaceId"] == wanted
-            ]
-            if len(matches) != 1:
-                raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
             result.pop("encounters")
-            result["encounter"] = matches[0]
+            result["encounter"] = self._catalog_match(value, rows, body.get("workspace_id"))
         return result
 
-    async def _selected_current(self, authorization, revision, workspace_id):
-        account = await self.encounter_account(authorization, bind=None)
-        value = await self.encounters(
-            authorization,
-            {"action": "lookup", "workspace_id": str(workspace_id), "request_nonce": str(uuid4())},
-            str(uuid4()),
-        )
-        row = self.core_entry(value["encounter"])
-        if await self.encounter_account(authorization, bind=None) != account:
+    def _catalog_rows(self, value):
+        rows = [self.core_entry(row) for row in value["encounters"]]
+        if len({row["workspaceId"] for row in rows}) != len(rows) or len(
+            {row["appointmentRef"] for row in rows}
+        ) != len(rows):
+            raise ProviderCoreUnavailable("core_provider_context_unconfirmed")
+        return rows
+
+    @staticmethod
+    def _catalog_match(value, rows, workspace_id):
+        wanted = str(_uuid(workspace_id))
+        matches = [
+            raw
+            for raw, row in zip(value["encounters"], rows, strict=True)
+            if row["workspaceId"] == wanted
+        ]
+        if len(matches) != 1:
             raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+        return matches[0]
+
+    async def _selected_current(self, authorization, revision, workspace_id, account=None):
+        # Core derives the account again while answering the catalog read, so
+        # that reply is itself the current-account check for the selection.
+        current, value = await self._context(authorization, "catalog")
+        if account is not None and current != account:
+            raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+        account = current
+        row = self.core_entry(
+            self._catalog_match(value, self._catalog_rows(value), str(workspace_id))
+        )
         selection = CoreProviderSelection(
             recovery_scope=account.recovery_scope,
             authorization_revision=uuid5(account.recovery_scope, str(revision)),
@@ -362,7 +370,7 @@ class CoreContextReceiver(ProviderReceiver):
                     mount = None
                     if action in {"source-start", "source-start-ready"}:
                         context, _ = await self._selected_current(
-                            authorization, revision, _uuid(body.get("workspace_id"))
+                            authorization, revision, _uuid(body.get("workspace_id")), initial
                         )
                         mount = CoreProviderMount(context.selection, body.get("binding_ref"))
                     transport = ProviderNativeWorkflowTransport(
@@ -379,7 +387,13 @@ class CoreContextReceiver(ProviderReceiver):
                                 if field in body:
                                     _require(requested is None and body.pop(field) is True)
                                     requested = field
-                        result = await transport.workflow(action, body, key, mount=mount)
+                        # `initial` is the latest check: only local work or the
+                        # selection's catalog read, which was compared with it,
+                        # comes between. Each transport still re-checks after
+                        # its own I/O and before publishing.
+                        result = await transport.workflow(
+                            action, body, key, mount=mount, before=initial
+                        )
                     finally:
                         await transport.close()
                     if requested:
@@ -400,6 +414,7 @@ class CoreContextReceiver(ProviderReceiver):
                                     "operation": {"kind": requested},
                                 },
                                 str(uuid4()),
+                                before=initial,
                             )
                             receipt = metadata["receipt"]
                             session = (
@@ -411,7 +426,6 @@ class CoreContextReceiver(ProviderReceiver):
                             result[requested] = receipt
                         finally:
                             await native.close()
-                    await fresh()
                     return _reply(200, result)
                 except ProviderCoreUnavailable as error:
                     return _reply(error.status, {"detail": error.code})
