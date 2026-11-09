@@ -248,7 +248,9 @@ class CoreContextReceiver(ProviderReceiver):
         if account is not None and current != account:
             raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
         account = current
-        row = self.core_entry(self._catalog_match(value, self._catalog_rows(value), workspace_id))
+        row = self.core_entry(
+            self._catalog_match(value, self._catalog_rows(value), str(workspace_id))
+        )
         selection = CoreProviderSelection(
             recovery_scope=account.recovery_scope,
             authorization_revision=uuid5(account.recovery_scope, str(revision)),
