@@ -70,6 +70,8 @@
               if permission.currentPermission() == .granted { return true }
               return await permission.requestPermission() == .granted
             },
+            confirmListening: { ScribeRecordingHaptic.confirmListening() },
+            opensBeforeAuthorization: true,
             makeRecorder: { validate, finalize in
               try NativeEncryptedPCMRecorder(
                 encryption: encryption, recoveryScope: mount.recoveryScope, records: records,

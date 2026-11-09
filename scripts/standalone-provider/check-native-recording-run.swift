@@ -77,8 +77,11 @@ private final class FinalizationWrites: @unchecked Sendable {
 @MainActor private final class Recorder: NativeProviderEncryptedRecorder {
   var isPhysicallyIdle = true
   var capturedAudioFrames = 0
-  var starts = 0, stops = 0, readyCalls = 0
+  var starts = 0, stops = 0, readyCalls = 0, opens = 0, authorizations = 0
+  var issuedAtOpen: Int?
+  var issued: () -> Int = { 0 }
   var holdReady = false, stopFails = false, terminal = false, startFails = false
+  var skipReadyValidation = false
   var readyWait: CheckedContinuation<Void, Never>?
   var invalidations = 0
   var incomplete = false
@@ -99,10 +102,22 @@ private final class FinalizationWrites: @unchecked Sendable {
     isPhysicallyIdle = false
     if startFails { throw ProviderNativeError.unavailable }
   }
+  func open(lease: NativeRecordingLease, batch: NativeRecordingReservationBatch) throws {
+    opens += 1
+    issuedAtOpen = issued()
+    isPhysicallyIdle = false
+  }
+  func authorize(
+    runID: String, captureExpiresAtMilliseconds: Int64,
+    lease: NativeRecordingLease, batch: NativeRecordingReservationBatch
+  ) throws {
+    authorizations += 1
+    if startFails { throw ProviderNativeError.unavailable }
+  }
   func ready() async throws {
     readyCalls += 1
     if holdReady { await withCheckedContinuation { readyWait = $0 } }
-    try await validate?()
+    if !skipReadyValidation { try await validate?() }
   }
   func stop() async throws {
     stops += 1
@@ -149,12 +164,16 @@ private final class FinalizationWrites: @unchecked Sendable {
       leaseID: lease.leaseID, leaseReceiptID: lease.receiptID, leaseGeneration: 1,
       captureAuthorizedUntil: lease.expiresAt, source: .ios)
     source = Source(preparation)
+    recorder.issued = { [source] in source.issued }
   }
-  func run(permission: @escaping @MainActor () async throws -> Bool = { true }) throws
+  func run(permission: @escaping @MainActor () async throws -> Bool = { true },
+           confirmListening: @escaping @MainActor () -> Void = {},
+           opensFirst: Bool = false) throws
     -> NativeProviderRecordingRun
   {
     try NativeProviderRecordingRun(
-      source: source, lease: lease, batch: batch, requestPermission: permission
+      source: source, lease: lease, batch: batch, requestPermission: permission,
+      confirmListening: confirmListening, opensBeforeAuthorization: opensFirst
     ) { validate, finalize in
       recorder.validate = validate
       recorder.finalize = finalize
@@ -416,6 +435,44 @@ private actor SourceWire: ProviderNativeWire {
       checks += 3
     }
     do {
+      var confirmations = 0
+      let fixture = try Fixture()
+      let run = try fixture.run(confirmListening: { confirmations += 1 })
+      try await run.start()
+      try runRequire(run.phase == .recording && confirmations == 1)
+      try await run.stop()
+      try runRequire(confirmations == 1)
+      let failed = try Fixture()
+      failed.recorder.startFails = true
+      let rejected = try failed.run(confirmListening: { confirmations += 1 })
+      try await rejects { try await rejected.start() }
+      try runRequire(confirmations == 1)
+      try await NativeCaptureStartGate.recoverWhileIdle {}
+      checks += 2
+    }
+    for stopDuringReady in [false, true] {
+      var confirmations = 0
+      let fixture = try Fixture()
+      fixture.recorder.holdReady = true
+      fixture.recorder.skipReadyValidation = true
+      let run = try fixture.run(confirmListening: { confirmations += 1 })
+      let start = Task { @MainActor in try await run.start() }
+      try await wait { fixture.recorder.readyWait != nil }
+      try runRequire(confirmations == 0)
+      // Ready itself succeeds here, so only the checks after it can stop the pulse.
+      let stop = stopDuringReady ? Task { @MainActor in try await run.stop() } : nil
+      if !stopDuringReady { fixture.source.retireForStop() }
+      try await wait { !stopDuringReady || run.phase != .starting }
+      fixture.recorder.readyWait?.resume()
+      fixture.recorder.readyWait = nil
+      try await rejects { try await start.value }
+      if let stop { try? await stop.value }
+      try runRequire(confirmations == 0)
+      try await run.stop()
+      try await NativeCaptureStartGate.recoverWhileIdle {}
+      checks += 2
+    }
+    do {
       let fixture = try Fixture()
       let run = try fixture.run()
       try await run.start()
@@ -642,8 +699,79 @@ private actor SourceWire: ProviderNativeWire {
       try runRequire(journal.pending.count == 1)
       checks += 2
     }
+    do {
+      // The microphone opens before Core issues the start; the pulse waits for it.
+      var confirmations = 0
+      let fixture = try Fixture()
+      fixture.source.holdAuthorize = true
+      let run = try fixture.run(confirmListening: { confirmations += 1 }, opensFirst: true)
+      let start = Task { @MainActor in try await run.start() }
+      try await wait { fixture.source.authorizeWait != nil }
+      try runRequire(fixture.recorder.opens == 1 && fixture.recorder.issuedAtOpen == 0)
+      try runRequire(!run.isPhysicallyIdle && run.phase == .starting && confirmations == 0)
+      fixture.source.authorizeWait?.resume()
+      fixture.source.authorizeWait = nil
+      try await start.value
+      try runRequire(run.phase == .recording && confirmations == 1)
+      try runRequire(fixture.recorder.authorizations == 1 && fixture.recorder.starts == 0)
+      try await run.stop()
+      try await NativeCaptureStartGate.recoverWhileIdle {}
+      checks += 3
+    }
+    do {
+      // Stop while Core decides: no authorization, no pulse, and the gate fences
+      // the late permit even though this owner's own source was open.
+      var confirmations = 0
+      let fixture = try Fixture()
+      fixture.source.holdAuthorize = true
+      let run = try fixture.run(confirmListening: { confirmations += 1 }, opensFirst: true)
+      let start = Task { @MainActor in try await run.start() }
+      try await wait { fixture.source.authorizeWait != nil }
+      let stop = Task { @MainActor in try await run.stop() }
+      try await wait { run.isPhysicallyIdle }
+      fixture.source.authorizeWait?.resume()
+      fixture.source.authorizeWait = nil
+      try await rejects { try await start.value }
+      try? await stop.value
+      try await run.stop()
+      try runRequire(fixture.recorder.authorizations == 0 && confirmations == 0)
+      try runRequire(run.phase == .stopped && fixture.recorder.stops >= 1)
+      try await NativeCaptureStartGate.recoverWhileIdle {}
+      checks += 2
+    }
+    do {
+      // Only the encrypted owner may consume with its own source open, and every
+      // other source must still be idle.
+      let owner = UUID()
+      var issued = 0
+      let source = Idle()
+      try NativeCaptureStartGate.installEncrypted(owner: owner, idle: { source.value }) {
+        issued += 1
+        return try NativeCapturePermit(
+          runID: UUID().uuidString.lowercased(), startExpiresAt: Date().addingTimeInterval(10),
+          captureExpiresAt: Date().addingTimeInterval(900))
+      }
+      source.value = false
+      try await rejects {
+        try await NativeCaptureStartGate.consume(owner: owner, sourceOpened: true) { _ in }
+      }
+      legacy.value = false
+      try await rejects {
+        try await NativeCaptureStartGate.consume(
+          owner: owner, consumer: .nativeEncryptedMicrophone, sourceOpened: true) { _ in }
+      }
+      try runRequire(issued == 0)
+      legacy.value = true
+      source.value = true
+      NativeCaptureStartGate.retire(owner: owner)
+      try NativeCaptureStartGate.confirmStopped(owner: owner)
+      NativeCaptureStartGate.clear(owner: owner)
+      try await NativeCaptureStartGate.recoverWhileIdle {}
+      checks += 2
+    }
     checks += try await checkSourceSequence()
     checks += try await checkActualEncryptedRun()
+    checks += try await checkActualEncryptedRun(opensFirst: true)
     checks += try NativePassageSelectionChecks.run()
     checks += try await CheckNativeRecordingHost.run()
     print("native recording run checks passed: \(checks)")
@@ -936,7 +1064,7 @@ private final class RunAudio: AppleAudioSystem, @unchecked Sendable {
   }
 }
 
-@MainActor private func checkActualEncryptedRun() async throws -> Int {
+@MainActor private func checkActualEncryptedRun(opensFirst: Bool = false) async throws -> Int {
   let fixture = try Fixture()
   let driver = Driver()
   let wire = SourceWire(fixture.preparation)
@@ -980,7 +1108,7 @@ private final class RunAudio: AppleAudioSystem, @unchecked Sendable {
     source: source, encryption: cipher, recoveryScope: recovery,
     records: records, priorPlaintextBytes: 0, lease: lease, batch: batch, leases: leases,
     reservations: reservations, permission: RunPermission(), system: system,
-    foreground: RunForeground(), signal: PCMSignalMonitor())
+    foreground: RunForeground(), signal: PCMSignalMonitor(), opensBeforeAuthorization: opensFirst)
   try runRequire(journal.pending.count == 1 && records.captured().isEmpty)
   try await run.start()
   try runRequire(run.phase == .recording && !run.isPhysicallyIdle)

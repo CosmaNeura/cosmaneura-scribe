@@ -16,6 +16,7 @@ public enum PCMStartupEvent: String, Codable, Sendable {
   case inputAdmissionOverflow, firstPacketPersistenceStarted, firstPacketPersistenceCompleted, packetPersistenceFailed
   case driverAdmissionOverflow
   case pcmHeartbeatExpired, pcmInvalidInput, pcmBufferOverflow, pcmOutputLimit, pcmSinkFailed
+  case pcmAuthorityHoldExpired
   case windowAuthorityExpired, windowFrameLimit, windowInterrupted, windowRouteChanged
   case continuationAuthorityExpired, continuationSourceRetired, continuationRenewalRejected
   case continuationCaptureFailed, continuationStorageFailed, continuationClosureUnconfirmed
@@ -96,6 +97,7 @@ public final class PCMStartupDiagnostics: @unchecked Sendable {
     case .bufferOverflow: event = .pcmBufferOverflow
     case .outputLimitExceeded: event = .pcmOutputLimit
     case .sinkFailed: event = .pcmSinkFailed
+    case .authorityHoldExpired: event = .pcmAuthorityHoldExpired
     }
     record(event)
   }
