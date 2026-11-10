@@ -43,12 +43,12 @@ def assemble(args: argparse.Namespace) -> None:
     runtime = args.electron_app.resolve()
     runtime_info = plistlib.loads(ordinary(runtime / "Contents/Info.plist").read_bytes())
     runtime_receipt = json.loads(ordinary(args.runtime_receipt).read_bytes())
-    if runtime_info.get("CFBundleShortVersionString") != "44.4.3" or (
-        runtime_receipt.get("electron_version") != "44.4.3"
+    if runtime_info.get("CFBundleShortVersionString") != "44.9.1" or (
+        runtime_receipt.get("electron_version") != "44.9.1"
         or runtime_receipt.get("official_checksum_matches") is not True
         or runtime_receipt.get("archive_paths_validated") is not True
     ):
-        raise ValueError("The verified repository-pinned Electron 44.4.3 is required")
+        raise ValueError("The verified repository-pinned Electron 44.9.1 is required")
     host = args.desktop_host.resolve()
     host_receipt = json.loads(ordinary(host / "host-build.json").read_bytes())
     if any(host_receipt.get(flag) is not False for flag in ("installed", "signed", "launch_ready")):
@@ -174,7 +174,7 @@ def assemble(args: argparse.Namespace) -> None:
         "schema": 1,
         "app": app.relative_to(output).as_posix(),
         "files_sha256": files,
-        "electron_version": "44.4.3",
+        "electron_version": "44.9.1",
         "electron_archive_sha256": runtime_receipt["archive_sha256"],
         "host_build_sha256": digest(host / "host-build.json"),
         "host_source_sha256": host_receipt["source_sha256"],

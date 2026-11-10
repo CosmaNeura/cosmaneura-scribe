@@ -435,7 +435,7 @@ def test_disabled_desktop_candidate_preflights_synthetic_verified_inputs(poison)
         (runtime / "Contents/Info.plist").write_bytes(
             plistlib.dumps(
                 {
-                    "CFBundleShortVersionString": "44.4.3",
+                    "CFBundleShortVersionString": "44.9.1",
                 }
             )
         )
@@ -443,7 +443,7 @@ def test_disabled_desktop_candidate_preflights_synthetic_verified_inputs(poison)
         runtime_receipt.write_text(
             json.dumps(
                 {
-                    "electron_version": "44.4.3",
+                    "electron_version": "44.9.1",
                     "official_checksum_matches": True,
                     "archive_paths_validated": True,
                     "archive_sha256": "0" * 64,

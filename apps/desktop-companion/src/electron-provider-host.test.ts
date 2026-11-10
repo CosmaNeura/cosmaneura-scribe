@@ -92,7 +92,7 @@ async function composedStoreEntry(f: Awaited<ReturnType<typeof fixture>>, option
     dialog: { ...f.runtime.dialog, showErrorBox } };
   const processPort = Object.create(process);
   Object.defineProperties(processPort, { mas: { value: options.mas ?? true },
-    versions: { value: { ...process.versions, electron: "44.4.3", node: "24.10.0" } },
+    versions: { value: { ...process.versions, electron: "44.9.1", node: "24.10.0" } },
     env: { value: { ...process.env, ...(options.inheritedOverride ? { MAC_CHROMIUM_TMPDIR: "/invented/inherited-temp" } : {}) } },
     stderr: { value: Object.assign(Object.create(process.stderr), { write: vi.fn(() => true) }) } });
   vi.stubGlobal("process", processPort);

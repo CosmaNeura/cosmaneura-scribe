@@ -75,7 +75,7 @@ beforeEach(async () => {
   await writeFile(executable, "synthetic Electron identity fixture; never executed\n", { mode: 0o755 });
   await writeFile(bridge, bytes, { mode: 0o755 });
   setProcess("mas", true); setProcess("execPath", executable);
-  setVersion("electron", "44.4.3"); setVersion("node", "24.0.0");
+  setVersion("electron", "44.9.1"); setVersion("node", "24.0.0");
   native.open.mockReset();
 });
 afterEach(async () => {

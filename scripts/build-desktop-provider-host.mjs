@@ -48,7 +48,7 @@ const artifacts = {};
 for (const name of ["main.cjs", "preload.cjs", "provider-host.mjs", "package.json", "release-metadata.json", "Scribe.icns", "renderer/renderer-manifest.json", ...Object.keys(files).map(name => "renderer/" + name)]) {
   artifacts[name] = hash(await readFile(join(output, name)));
 }
-await writeFile(join(output, "host-build.json"), JSON.stringify({ schema: 1, proposed_electron_version: "44.4.3", source_sha256: sourceSha256,
+await writeFile(join(output, "host-build.json"), JSON.stringify({ schema: 1, proposed_electron_version: "44.9.1", source_sha256: sourceSha256,
   ...(store ? { distribution: storeXpc ? "mac-app-store-xpc-unqualified" : "mac-app-store-dormant", electron_platform: "mas", approved_application_group: storeXpc ? "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store" : null } : {}),
   ...(storeXpc ? { parent_bundle_identifier: "com.cosmaneura.scribe.beta.desktop.store" } : {}),
   artifacts_sha256: artifacts, preload_external_imports: ["electron"], installed: false, signed: false, launch_ready: false,
