@@ -153,8 +153,9 @@ checks. Never replace, clear or rebind retained recording custody to switch path
    for unsuccessful starts and retained exact stop custody. Do not inject these
    faults into the deployed receiver.
 
-Release remains blocked on the latency target, a fresh v98 phone run, hosted CI
-and independent review after the last substantive push. Further request reduction
+Release acceptance requires the latency target, a fresh v98 phone run, green
+hosted CI and independent review after the last substantive push. The latency
+target and fresh phone acceptance remain unmet. Further request reduction
 needs a separately reviewed follow-up to the deferred work below; do not inflate
 the RAM hold or weaken authority checks to claim a faster start.
 
@@ -197,9 +198,13 @@ waits (600 ms original, 300 ms combined) while retaining elapsed timings as
 diagnostics; runner scheduling is not physical-phone acceptance. No production
 code or authority/custody check changes in this follow-up. The full local native
 checker rerun passes 285 run checks, 239 binding checks and all iOS typechecks.
-Fresh exact-head hosted checks are required after this fix; Swift analysis is
-still running at this evidence update. Independent review is pending and no other
-chat/agent has been contacted.
+Fresh exact-head hosted checks are required after this fix. At this evidence
+update, head `10389bf` has passed web, browser flow, build, infrastructure, change
+budget and four CodeQL language/workflow checks; quality, Android, iOS and Swift
+analysis are running. John explicitly authorized a fresh independent review agent
+for PR #550. Its read-only review of `10389bf`, after the last substantive push,
+found no actionable code or documentation issues. This is not GitHub approval
+or production authorization. No prior chat was contacted.
 
 App regressions cover explicit acquisition, consent cancellation, withdrawal,
 recovery, late handles and older-build negotiation. Native regressions cover
@@ -225,7 +230,8 @@ report the exact command; do not retry by renaming, splitting or encoding it.
 A later phone comparison must measure patient-to-ready, consent-to-Record,
 full Record-to-first-input/indicator and HTTP counts using fresh synthetic visits.
 Preserve existing app data, use manual recording only and confirm pause/stop.
-Independent review follows the last substantive push; no deployment is authorized.
+The independent review above follows the last substantive push; any further
+substantive change requires another review. No deployment is authorized.
 
 ## Deferred work
 
