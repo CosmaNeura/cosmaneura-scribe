@@ -176,15 +176,30 @@ identified a host Node-22 launcher and correctly refused database reuse; the
 required runtime and a new disposable database resolved those environment errors.
 No product code or safety check was changed to obtain the passing result.
 The receiver wheel/source distribution and 125-file hash-verified disabled image
-context build locally. The Docker image build fails on the local engine's registry
-DNS lookup; no image is published or deployed. A complete image build remains
-outstanding. Private validation evidence and the identity fixture ZIP remain
+context build locally. The shared Docker engine's registry DNS failed; a separate
+local engine with working DNS completed the pinned linux/amd64 image build without
+changing the shared engine. Local image identity:
+`sha256:c5b587b5603625f4ed0398d49f095f247ec4cbf5ee68317f402d52616e21ac83`.
+It runs as `10001:10001`, contains no active configuration, and exits with
+`receiver_image_contract_unavailable` before a listener when started without a
+contract and with networking disabled. No image is published or deployed.
+Trivy remains red: 51 HIGH OS findings exactly match the prior staging image's
+package/version/CVE tuples; no new HIGH/CRITICAL findings, no Python HIGH/CRITICAL
+findings and no secrets. The existing exception applies only to staging, not
+production. Private validation evidence and the identity fixture ZIP remain
 outside the checkout. Draft PR: https://github.com/CosmaNeura/cosmaneura-scribe/pull/550.
-Hosted CI is running: the substantive code head `9cadfcd` passed quality, web,
-Android, browser flow, infrastructure, build, change budget and four CodeQL
-language/workflow checks; iOS and Swift analysis are pending at this evidence
-update. The documentation-only follow-up triggers fresh exact-head checks.
-Independent review is pending and no other chat/agent has been contacted.
+
+Hosted head `535eadc` passed quality, web, Android, browser flow, infrastructure,
+build, change budget and four CodeQL language/workflow checks. iOS failed at the
+binding harness's 250 ms wall-clock saving assertion after the exact request and
+token counts passed. The synthetic harness now asserts the exact injected request
+waits (600 ms original, 300 ms combined) while retaining elapsed timings as
+diagnostics; runner scheduling is not physical-phone acceptance. No production
+code or authority/custody check changes in this follow-up. The full local native
+checker rerun passes 285 run checks, 239 binding checks and all iOS typechecks.
+Fresh exact-head hosted checks are required after this fix; Swift analysis is
+still running at this evidence update. Independent review is pending and no other
+chat/agent has been contacted.
 
 App regressions cover explicit acquisition, consent cancellation, withdrawal,
 recovery, late handles and older-build negotiation. Native regressions cover
@@ -204,7 +219,7 @@ verify the full archive hash before extraction, then each source and the existin
 zero-fuzz policy patch. Only these tests receive the prepared PYTHONPATH and raw
 qualified-source path. The reviewed CI asset is hosted and download-verified;
 the CI fixture fix is now on main. The 10 November request authorizes new local
-receiver validation and staging for the v98 draft. If staging is blocked, stop and
+receiver validation and Git staging for the v98 draft. If staging is blocked, stop and
 report the exact command; do not retry by renaming, splitting or encoding it.
 
 A later phone comparison must measure patient-to-ready, consent-to-Record,

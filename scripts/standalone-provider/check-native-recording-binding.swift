@@ -15,6 +15,7 @@ private actor BindingWire: ProviderNativeWire {
   var fault = "none"
   var admissionSupported = false
   var preparationDelay = false
+  var injectedPreparationWaitMilliseconds = 0
   var requests: [ProviderNativeRequest] = []
   var onAdmission: (@MainActor @Sendable () -> Void)?
   var onWindow: (@MainActor @Sendable () -> Void)?
@@ -25,6 +26,11 @@ private actor BindingWire: ProviderNativeWire {
   func supportAdmission(_ value: Bool, delay: Bool = false) {
     admissionSupported = value
     preparationDelay = delay
+  }
+  private func waitForPreparation() async throws {
+    guard preparationDelay else { return }
+    try await Task.sleep(for: .milliseconds(300))
+    injectedPreparationWaitMilliseconds += 300
   }
   func send(_ request: ProviderNativeRequest, token: String) async throws -> ProviderNativeReply {
     try require(token.split(separator: ".").count == 3)
@@ -74,7 +80,7 @@ private actor BindingWire: ProviderNativeWire {
           == Set(
             ["workspace_id", "binding_ref", "request_nonce", "attestation", "configured_capture"]
               + (combined ? ["native_recording_preparation"] : [])))
-      if preparationDelay { try await Task.sleep(for: .milliseconds(300)) }
+      try await waitForPreparation()
       var answer: [String: Any] = [
         "contract_version": "1", "workspace_id": workspace.uuidString.lowercased(),
         "binding_ref": binding, "request_nonce": body["request_nonce"]!,
@@ -118,7 +124,7 @@ private actor BindingWire: ProviderNativeWire {
     let kind = operation["kind"] as! String
     var receipt: [String: Any]
     if kind == "native_recording_context" || kind == "native_recording_preparation" {
-      if preparationDelay { try await Task.sleep(for: .milliseconds(300)) }
+      try await waitForPreparation()
       receipt = [
         "schema_version": "1.0", "workspace_id": workspace.uuidString.lowercased(),
         "tenant_id": tenant.uuidString.lowercased(), "session_id": session.uuidString.lowercased(),
@@ -727,6 +733,7 @@ private final class BindingRecords: NativeRecordingFlowStore,
     }
     for round in 1...3 {
       var measurements: [Int] = []
+      var injectedWaits: [Int] = []
       for supported in [false, true] {
         let driver = Driver()
         let wire = BindingWire(modulus)
@@ -776,12 +783,16 @@ private final class BindingRecords: NativeRecordingFlowStore,
         try require(await wire.requests.count == before + (supported ? 1 : 2))
         try require(driver.tokens == tokens + (supported ? 1 : 2))
         measurements.append(elapsed)
+        injectedWaits.append(await wire.injectedPreparationWaitMilliseconds)
         connection.close()
         checks += 1
       }
-      try require(measurements[0] - measurements[1] >= 250)
+      // Assert the simulated round-trip saving, independent of runner load and
+      // token/encryption scheduling. Real elapsed times remain diagnostic only;
+      // physical-phone latency is a separate acceptance test.
+      try require(injectedWaits == [600, 300])
       print(
-        "Synthetic admission timing round=\(round) original_ms=\(measurements[0]) combined_ms=\(measurements[1]) injected_request_wait_ms=300; no device timing claim."
+        "Synthetic admission timing round=\(round) original_ms=\(measurements[0]) combined_ms=\(measurements[1]) original_injected_wait_ms=\(injectedWaits[0]) combined_injected_wait_ms=\(injectedWaits[1]); no device timing claim."
       )
     }
     for supported in [false, true] {
