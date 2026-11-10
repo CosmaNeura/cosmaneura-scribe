@@ -262,7 +262,10 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                 value["nativeRecordingVersion"] = 2
                 value["nativePassagePlaybackVersion"] = 1
                 value["recordingSignInPreparationVersion"] = 1
-                if self.initialRecordingStartAvailable { value["recordingInitialStartVersion"] = 1 }
+                if self.initialRecordingStartAvailable {
+                    value["recordingInitialStartVersion"] = 1
+                    value["patientReadyStartVersion"] = 1
+                }
             }
             call.resolve(value)
         }
@@ -340,11 +343,10 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
     }
 
     // Preparation scheduling only; Core consent/lease/source decisions remain
-    // unchanged. Keep this phone experiment in the signed staging application.
+    // unchanged. Enable deliberately in a signed candidate after receiver validation.
     private var initialRecordingStartAvailable: Bool {
-        let settings = Bundle.main.object(forInfoDictionaryKey: "ScribeProviderReceiver") as? [String: Any]
         return nativeRecordingAvailable && NativeProviderRecordingSelection.permitsEarlyMicrophone(
-            bundleIdentifier: Bundle.main.bundleIdentifier, receiverProfile: settings?["profile"] as? String)
+            releaseFlag: Bundle.main.object(forInfoDictionaryKey: "ScribePatientReadyStartEnabled"))
     }
 
     @objc nonisolated public func openProviderRecording(_ call: CAPPluginCall) {

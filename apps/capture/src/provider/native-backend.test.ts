@@ -584,11 +584,16 @@ it("keeps older native builds on their existing recorder", async () => {
   } finally { await backend.dispose(); }
 });
 
-it.each([undefined, 1] as const)("negotiates fresh-start preparation without breaking older builds: %s", async version => {
+it.each([
+  [undefined, undefined, false], [1, undefined, false], [undefined, 1, false], [1, 1, true],
+  [1, true, false], [1, "1", false], [1, 2, false],
+] as const)("negotiates fresh-start preparation with capability %s and release %s", async (version, release, enabled) => {
   const f = fixture(); f.setState({ ...f.state, nativeRecordingVersion: 2,
-    ...(version ? { recordingInitialStartVersion: version } : {}) }, false);
+    ...(version ? { recordingInitialStartVersion: version } : {}),
+    ...(release !== undefined ? { patientReadyStartVersion: release } : {}) } as NativeState, false);
   const backend = await f.connect();
   try {
+    expect(backend.patientReadyStartEnabled).toBe(enabled);
     await backend.listEncounters(backend.signal);
     const mount = await backend.openEncounter(appointment, backend.signal);
     await mount.reauthorizeRecorder(session, backend.signal);
@@ -597,9 +602,10 @@ it.each([undefined, 1] as const)("negotiates fresh-start preparation without bre
     await mount.nativeRecording!.open(session, requestId, { initialStart: true });
     expect(f.plugin.openProviderRecording).toHaveBeenCalledWith({ requestId, revision: f.state.revision,
       workspaceId: workspace, bindingRef: binding, sessionId: session, authorizationId: prepared.request_nonce,
-      ...(version ? { initialStart: true } : {}) });
+      ...(enabled ? { initialStart: true } : {}) });
     expect(() => mount.nativeRecording!.open(session, crypto.randomUUID(), { initialStart: true })).toThrow();
   } finally { await backend.dispose(); }
+  expect(backend.patientReadyStartEnabled).toBe(false);
 });
 
 it("reuses one acknowledged native context once after recorder reauthorization", async () => {

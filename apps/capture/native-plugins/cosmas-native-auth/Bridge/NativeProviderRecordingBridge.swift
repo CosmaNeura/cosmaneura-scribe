@@ -6,8 +6,12 @@ import Foundation
 import CoreFoundation
 
 struct NativeProviderRecordingSelection {
-  static func permitsEarlyMicrophone(bundleIdentifier: String?, receiverProfile: String?) -> Bool {
-    bundleIdentifier == "com.cosmaneura.scribe.beta" && receiverProfile == "core-staging-https-v1"
+  // Signed bundle release control, never renderer input or persisted account state.
+  // Missing, string and numeric values fail closed. Core authority is unchanged.
+  static func permitsEarlyMicrophone(releaseFlag: Any?) -> Bool {
+    guard let boolean = releaseFlag as? NSNumber,
+      CFGetTypeID(boolean) == CFBooleanGetTypeID() else { return false }
+    return boolean.boolValue
   }
   let requestID: UUID, revision: String, workspaceID: UUID, bindingRef: String, sessionID: UUID
   let authorizationID: UUID?

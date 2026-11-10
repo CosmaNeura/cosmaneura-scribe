@@ -44,10 +44,9 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
       try {
         // Classify setup before mounting a workspace that could own a recorder.
         const initialCatalog = await backend.listEncounters(signal);
-        // John Clemente's internal staging comparison, through 16 November.
-        // Production and expired candidates retain the existing consent flow.
-        const draftConsent = options.profile === "core-staging-personal-v1"
-          && Date.now() < Date.parse("2026-11-17T00:00:00Z");
+        // The native signed-bundle flag controls both local consent and acquisition.
+        // Older builds and default-off candidates retain the original consent flow.
+        const draftConsent = backend.patientReadyStartEnabled;
         return { workspace: createProviderIOSHost(backend, consentPreparation, initialCatalog, entryStartedAt, draftConsent), dispose: () => backend.dispose() };
       }
       catch (error) { await backend.dispose(); throw error; }
