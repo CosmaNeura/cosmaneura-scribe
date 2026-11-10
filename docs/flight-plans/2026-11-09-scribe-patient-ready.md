@@ -31,29 +31,6 @@ Core code and authentication/token policy are unchanged. Synthetic tests only.
 - Add bounded numeric timing phases to the existing private native journal.
   Never log names, patient references, text, tokens or recording content.
 
-## Evidence from installed build 6
-
-The early screens felt faster/cleaner to John; the recording indicator was late.
-The phone test ended paused, with input frozen and the native driver released.
-The earlier 561–634 ms result measured only native Start to input, excluding
-admission/window/source waits after the renderer Record tap.
-
-| Measurement | Build 6 |
-| --- | ---: |
-| Local patient form / consent display | 29 / 42 ms |
-| Creation / mount | 4,343 / 3,157 ms |
-| Patient action to visit ready | 7,633 ms |
-| Consent to Record enabled | 4,890 ms |
-| Record to indicator | 20,858 ms |
-| Approximate Record to first input, across clocks | 16,901 ms |
-| Native Start to first input | 693 ms |
-| Admission / window / source prepare / source authorize | 5,026 / 3,685 / 4,468 / 4,328 ms |
-
-The four post-tap requests total 17,507 ms: 3,915 ms token acquisition and
-13,550 ms receiver time. Core timing phases overlap and must not be added as
-exclusive durations. Full historical measurements remain in private validation
-artifacts outside the source tree; no recording content is included in the PR.
-
 ## Items 1 and 2
 
 1. **Avoid eager source preparation on a fresh explicit Record action.** Pass an
@@ -73,14 +50,9 @@ artifacts outside the source tree; no recording content is included in the PR.
    Keep fresh checks after workload-token acquisition and after native response
    before publication. No account cache, token cache or extended expiry is added.
 
-Nominal HTTP request counts, excluding retry and legacy fallback:
-
-| Path | Build 6 | Items 1 and 2 |
-| --- | ---: | ---: |
-| Fresh Record phone to receiver | 4 | 3 |
-| Fresh Record receiver to Core | 21 | 15 |
-| Creation receiver to Core | 5 | 4 |
-| Context reads per source operation | 4 | 3 |
+Nominal request counts, excluding retry/legacy fallback: fresh Record phone to
+receiver 4 → 3; receiver to Core 21 → 15; creation to Core 5 → 4; context reads
+per source operation 4 → 3.
 
 Both Core source decisions still execute in the combined request. The 4,468 ms
 preparation stage can overlap microphone startup; it is not a promised 4,468 ms
@@ -89,6 +61,7 @@ patient-to-ready 6,927 ms, consent-to-Record 4,375 ms and Record-to-indicator
 16,117 ms. John felt earlier steps faster but the indicator wait slightly longer;
 the flow remains too slow. The combined route ran and pause froze input/released
 the driver. The staging receiver is unchanged, so item 2 is not yet active.
+The 693 ms native Start-to-input excluded the full post-tap request chain.
 
 ## Validation and recovery
 
@@ -101,12 +74,15 @@ held synthetic audio to recording storage. Log/secret scanners must pass.
 Before the final staging guard: 320 app cases, 277 native run cases (including 18 passage
 selection cases), 239 binding cases, iOS typechecks/full unsigned build,
 TypeScript, ESLint, Python lint, web build, log/secret scans and diff whitespace.
+Hosted 201b6c8 passed the native checker (including five guard cases), 121 browser
+cases and seven secure-queue tests plus the full iOS build.
 
-Receiver regressions assert reduced request order and retained revocation and
-account-change fences before dispatch and publication. Their execution remains
-blocked in hosted CI: the verified cosmas_os identity fixture is absent. Supply
-that exact fixture and its manifest before these regressions can collect. Do not
-retry the blocked local receiver command or bypass the Git staging rejection.
+Receiver regressions retain revocation/account-change fences and assert request
+order. CI prepares twelve frozen identity files from a dedicated fixture asset:
+verify the full archive hash before extraction, then each source and the existing
+zero-fuzz policy patch. Only these tests receive the prepared PYTHONPATH and raw
+qualified-source path. The reviewed CI asset is hosted and download-verified;
+push this CI fix next. Do not retry blocked local receiver tests or Git staging.
 
 A later phone comparison must measure patient-to-ready, consent-to-Record,
 full Record-to-first-input/indicator and HTTP counts using fresh synthetic visits.

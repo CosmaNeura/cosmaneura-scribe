@@ -45,8 +45,24 @@ jobs:
       - run: uv run ruff check .
       - run: uv run pyright
       - run: uv run pytest --cov=cosmaneura_scribe --cov-branch --cov-config=pyproject.toml
+      - name: Prepare qualified receiver identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture_root="${RUNNER_TEMP}/scribe-receiver-identity-v1"
+          mkdir -m 700 "${fixture_root}"
+          gh release download ci-fixture-qualified-native-identity-v1 --repo "${GITHUB_REPOSITORY}" --pattern qualified-native-identity-v1.zip --dir "${fixture_root}"
+          printf '%s  %s\n' '09b0533f42506651c78ba247a3ffc8472ca07f67a814b566d1e4a377295a59df' "${fixture_root}/qualified-native-identity-v1.zip" | sha256sum --check --strict
+          mkdir "${fixture_root}/qualified" "${fixture_root}/prepared"
+          unzip -q "${fixture_root}/qualified-native-identity-v1.zip" -d "${fixture_root}/qualified"
+          uv run python scripts/standalone-provider/prepare_sources.py --root "${fixture_root}/prepared" --qualified-receiver "${fixture_root}/qualified" --production-native-policy
       - name: Verify native receiver patient opening
-        run: uv run pytest scripts/standalone-provider/test_core_context_receiver.py tests/test_provider_native_encounter_transport.py tests/test_provider_native_core_transport.py
+        env:
+          PYTHONPATH: ${{ runner.temp }}/scribe-receiver-identity-v1/prepared/identity-source
+          SCRIBE_QUALIFIED_IDENTITY_SOURCE: ${{ runner.temp }}/scribe-receiver-identity-v1/qualified/server-source
+        run: uv run pytest scripts/standalone-provider/test_core_context_receiver.py tests/test_provider_native_encounter_transport.py tests/test_provider_native_core_transport.py scripts/standalone-provider/test_production_native_policy.py
       - run: uv run python scripts/check_phi_logs.py
       - run: uv run python scripts/check_secrets.py
       - run: uv run python scripts/check_adr_numbers.py
@@ -255,6 +271,16 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Verify native patient opening and recording bindings
         run: python3 scripts/check-native-recording-run.py "${RUNNER_TEMP}/scribe-native-patient-ready" --platform both
+      - name: Retain synthetic native check evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-patient-ready-checks
+          path: |
+            ${{ runner.temp }}/scribe-native-patient-ready/CHECKS.json
+            ${{ runner.temp }}/scribe-native-patient-ready/*.log
+          if-no-files-found: error
+          retention-days: 14
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24.5.0'
