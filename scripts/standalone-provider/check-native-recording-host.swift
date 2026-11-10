@@ -347,15 +347,13 @@ import Security
 
   static func run() async throws -> Int {
     var checks = 0
-    let microphoneCases: [(String?, String?, Bool)] = [
-      ("com.cosmaneura.scribe.beta", "core-staging-https-v1", true),
-      ("com.cosmaneura.scribe", "core-staging-https-v1", false),
-      ("com.cosmaneura.scribe.beta", "core-production-https-v1", false),
-      (nil, "core-staging-https-v1", false), ("com.cosmaneura.scribe.beta", nil, false),
+    let microphoneCases: [(Any?, Bool)] = [
+      (nil, false), (true, true), (false, false), ("true", false),
+      ("YES", false), (1, false), (0, false), (NSNull(), false),
     ]
-    for (bundle, profile, allowed) in microphoneCases {
+    for (flag, allowed) in microphoneCases {
       try check(NativeProviderRecordingSelection.permitsEarlyMicrophone(
-        bundleIdentifier: bundle, receiverProfile: profile) == allowed)
+        releaseFlag: flag) == allowed)
       checks += 1
     }
     do {

@@ -35,7 +35,10 @@ export interface NativeProviderOptions {
     openEncounter(appointmentRef: string, noteRef: string | null, signal: AbortSignal): Promise<void>;
   };
 }
-export interface NativeProviderBackend extends ProviderIOSBackend { dispose(): Promise<void> }
+export interface NativeProviderBackend extends ProviderIOSBackend {
+  readonly patientReadyStartEnabled: boolean;
+  dispose(): Promise<void>;
+}
 
 /** Bind the existing signed-in iOS session to the fixed provider receiver.
  * The plugin obtains a fresh SDK token natively for every operation. This module
@@ -129,7 +132,8 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     nativePassage = state.nativePassagePlaybackVersion === 1 && typeof plugin.playProviderPassage === "function"
       && typeof plugin.readProviderPassage === "function" && typeof plugin.stopProviderPassage === "function";
     nativeContextReuse = nativeRecording && state.nativeRecordingVersion === 2;
-    initialStartSupported = nativeContextReuse && state.recordingInitialStartVersion === 1;
+    initialStartSupported = nativeContextReuse && state.recordingInitialStartVersion === 1
+      && state.patientReadyStartVersion === 1;
     signInPreparationSupported = state.recordingSignInPreparationVersion === 1
       && typeof plugin.prepareProviderSignIn === "function" && typeof plugin.abandonProviderSignIn === "function";
     document.addEventListener("visibilitychange", resume);
@@ -270,6 +274,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     return { appointmentRef: matches[0]!.encounter.appointmentRef, sessionId: selected.sessionId };
   };
   return {
+    get patientReadyStartEnabled() { return !abort.signal.aborted && initialStartSupported; },
     entryTiming: (phase, durationMs) => {
       if (!revision || abort.signal.aborted || options.signal.aborted || !plugin.recordProviderEntryTiming
         || !Number.isFinite(durationMs) || durationMs < 0 || durationMs > 600_000) return;

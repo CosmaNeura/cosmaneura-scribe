@@ -16,9 +16,8 @@
       recovery: NativeSourceRecovery, workspaceID: UUID, bindingRef: String,
       sessionID: UUID, revision: String, authorizationID: UUID? = nil, initialStart: Bool = false
     ) async throws -> NativeProviderRecordingHost {
-      let settings = Bundle.main.object(forInfoDictionaryKey: "ScribeProviderReceiver") as? [String: Any]
       let earlyMicrophone = NativeProviderRecordingSelection.permitsEarlyMicrophone(
-        bundleIdentifier: Bundle.main.bundleIdentifier, receiverProfile: settings?["profile"] as? String)
+        releaseFlag: Bundle.main.object(forInfoDictionaryKey: "ScribePatientReadyStartEnabled"))
       let mount = try connection.recordingMount(
         workspaceID: workspaceID, bindingRef: bindingRef, revision: revision)
       let prepared = try authorizationID.flatMap {

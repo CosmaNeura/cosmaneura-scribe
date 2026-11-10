@@ -24,6 +24,9 @@ export interface NativeProviderState {
   readonly phase: string; readonly revision: string; readonly providerReady?: boolean; readonly nativeRecordingVersion?: number; readonly nativePassagePlaybackVersion?: number;
   readonly providerDisplayName?: string;
   readonly recordingSignInPreparationVersion?: 1;
+  readonly recordingInitialStartVersion?: 1;
+  /** Native signed-bundle release flag; absent on older builds and when off. */
+  readonly patientReadyStartVersion?: 1;
 }
 export interface ProviderNativePlugin {
   recordProviderEntryTiming?(request: { revision: string; phase: "app-to-patients" | "patient-form"
