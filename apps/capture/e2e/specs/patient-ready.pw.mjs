@@ -87,7 +87,7 @@ for (const width of [320, 390]) {
     await expect(page.locator(".provider-header")).toBeHidden();
     await expect(page.locator('[name="draft-consent"]')).toBeChecked();
     await separated();
-    if (width === 390) await page.screenshot({ path: "/Users/jw/Desktop/Cosmas/Scribe-patient-ready-validation-20261109/draft-consent-layout.png", fullPage: true });
+    if (width === 390) await page.screenshot({ path: test.info().outputPath("draft-consent-layout.png"), fullPage: true });
     await page.evaluate(() => window.dobLab.releaseOpen());
     await expect(page.locator('[name="consent"]')).toBeChecked();
     await expect(page.getByRole("button", { name: "Start recording", exact: true })).toBeEnabled();

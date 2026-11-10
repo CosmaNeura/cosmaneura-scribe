@@ -7,9 +7,8 @@ Owner: John Clemente. Local implementation approved on 9 November 2026.
 
 Improve opening Scribe, entering a patient, confirming consent and starting
 recording. Upload and post-visit processing are outside this iteration.
-Release is on hold: local work and a future draft PR with hosted CI only.
-No merge, deployment or TestFlight. Git staging/push remain on hold.
-No phone interaction occurred during the items 1 and 2 implementation.
+Release is on hold: local staging work, draft PR #547 and hosted CI only.
+No merge, deployment or TestFlight. The manual build-7 comparison ended paused.
 Core code and authentication/token policy are unchanged. Synthetic tests only.
 
 ## Earlier patient-ready work retained
@@ -99,15 +98,15 @@ fresh/recovered scheduling, lease expiry, checkpoint/constructor failure,
 denied/lost/malformed combined replies, delayed cancellation and stop custody.
 Real encrypted PCM checks ensure cancelled, denied or expired starts never write
 held synthetic audio to recording storage. Log/secret scanners must pass.
-Current checks passed: 320 app cases, 277 native run cases (including 18 passage
+Before the final staging guard: 320 app cases, 277 native run cases (including 18 passage
 selection cases), 239 binding cases, iOS typechecks/full unsigned build,
 TypeScript, ESLint, Python lint, web build, log/secret scans and diff whitespace.
 
 Receiver regressions assert reduced request order and retained revocation and
 account-change fences before dispatch and publication. Their execution remains
-pending hosted CI under the earlier automatic approval restriction. Do not retry
-that blocked local receiver command or work around the Git staging rejection.
-The iOS review build is disabled and unsigned; it does not install or start audio.
+blocked in hosted CI: the verified cosmas_os identity fixture is absent. Supply
+that exact fixture and its manifest before these regressions can collect. Do not
+retry the blocked local receiver command or bypass the Git staging rejection.
 
 A later phone comparison must measure patient-to-ready, consent-to-Record,
 full Record-to-first-input/indicator and HTTP counts using fresh synthetic visits.

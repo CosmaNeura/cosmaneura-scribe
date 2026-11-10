@@ -343,8 +343,8 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
     // unchanged. Keep this phone experiment in the signed staging application.
     private var initialRecordingStartAvailable: Bool {
         let settings = Bundle.main.object(forInfoDictionaryKey: "ScribeProviderReceiver") as? [String: Any]
-        return nativeRecordingAvailable && Bundle.main.bundleIdentifier == "com.cosmaneura.scribe.beta"
-            && settings?["profile"] as? String == "core-staging-https-v1"
+        return nativeRecordingAvailable && NativeProviderRecordingSelection.permitsEarlyMicrophone(
+            bundleIdentifier: Bundle.main.bundleIdentifier, receiverProfile: settings?["profile"] as? String)
     }
 
     @objc nonisolated public func openProviderRecording(_ call: CAPPluginCall) {

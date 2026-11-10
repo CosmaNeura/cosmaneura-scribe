@@ -6,6 +6,9 @@ import Foundation
 import CoreFoundation
 
 struct NativeProviderRecordingSelection {
+  static func permitsEarlyMicrophone(bundleIdentifier: String?, receiverProfile: String?) -> Bool {
+    bundleIdentifier == "com.cosmaneura.scribe.beta" && receiverProfile == "core-staging-https-v1"
+  }
   let requestID: UUID, revision: String, workspaceID: UUID, bindingRef: String, sessionID: UUID
   let authorizationID: UUID?
   let initialStart: Bool

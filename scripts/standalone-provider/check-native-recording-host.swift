@@ -347,6 +347,17 @@ import Security
 
   static func run() async throws -> Int {
     var checks = 0
+    let microphoneCases: [(String?, String?, Bool)] = [
+      ("com.cosmaneura.scribe.beta", "core-staging-https-v1", true),
+      ("com.cosmaneura.scribe", "core-staging-https-v1", false),
+      ("com.cosmaneura.scribe.beta", "core-production-https-v1", false),
+      (nil, "core-staging-https-v1", false), ("com.cosmaneura.scribe.beta", nil, false),
+    ]
+    for (bundle, profile, allowed) in microphoneCases {
+      try check(NativeProviderRecordingSelection.permitsEarlyMicrophone(
+        bundleIdentifier: bundle, receiverProfile: profile) == allowed)
+      checks += 1
+    }
     do {
       let f = try Fixture(), host = f.host(initialStart: true)
       try await host.open()

@@ -28,8 +28,9 @@ while it consumes. Every other source must still be idle, and retirement still
 fences a late permit. Binding gives the source its first authority window and a
 one-use run ID. Frames held before binding count toward its frame limit.
 
-A run opts in through `opensBeforeAuthorization`. The iOS factory sets it, and
-the previous order remains the default everywhere else.
+A run opts in through `opensBeforeAuthorization`. The iOS factory sets it only
+for the beta bundle with the staging receiver profile; other builds use the
+previous order.
 
 Consequences: a refused or failed start discards a few seconds of audio the
 clinician spoke, and they must be told nothing was recorded. A permit slower than
