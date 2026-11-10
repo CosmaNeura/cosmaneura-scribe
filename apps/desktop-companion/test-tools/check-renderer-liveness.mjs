@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 
 const require = createRequire(import.meta.url);
-if (require("electron/package.json").version !== "44.4.3") throw new Error("Pinned Electron 44.4.3 is required.");
+if (require("electron/package.json").version !== "44.9.1") throw new Error("Pinned Electron 44.9.1 is required.");
 const directory = await mkdtemp(join(tmpdir(), "scribe-renderer-liveness-"));
 const source = fileURLToPath(new URL("renderer-liveness.electron.mjs", import.meta.url));
 try {

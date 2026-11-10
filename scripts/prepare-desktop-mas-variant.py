@@ -17,7 +17,7 @@ from pathlib import Path
 TEAM = "JVV65668U6"
 PARENT = "com.cosmaneura.scribe.beta.desktop"
 AUTH = PARENT + ".auth"
-ELECTRON_VERSION = "44.4.3"
+ELECTRON_VERSION = "44.9.1"
 APP_GROUP_PLACEHOLDER = "UNAPPROVED_APP_GROUP_NOT_SIGNABLE"
 
 

@@ -24,7 +24,7 @@ async function setup() {
   const target={id:41,getURL:()=> 'app://cosmas/index.html',isDestroyed:()=>false,executeJavaScript:async script=>vm.runInContext(script,renderer)};
   const owner={runId:randomUUID(),observerSHA256:createHash('sha256').update(installDesktopMainObserver.toString()).digest('hex'),pid:123,executablePath:'/owned/App/Contents/MacOS/Scribe',appPath:'/owned/App/Contents/Resources/app',webContentsId:41};
   const electron={app:{getAppPath:()=>owner.appPath},webContents:{getAllWebContents:()=>[target]},ipcMain:{_invokeHandlers:handlers}};
-  const context=vm.createContext({Map,performance,Date,process:{pid:owner.pid,execPath:owner.executablePath,versions:{electron:'44.4.3'}},require:()=>electron});
+  const context=vm.createContext({Map,performance,Date,process:{pid:owner.pid,execPath:owner.executablePath,versions:{electron:'44.9.1'}},require:()=>electron});
   await vm.runInContext(`(${installDesktopMainObserver.toString()})`,context)(owner, projectNoteObservation, snapshotSaveFields, SAVE_UI_SCRIPT);
   const api=context.__scribeLabDesktopMainObserver,revision=randomUUID(),connectionId=randomUUID(),workspaceId=randomUUID(),encounterId=randomUUID(),sessionId=randomUUID(),consentRecordId=randomUUID();
   async function call(method,result,options={}) {

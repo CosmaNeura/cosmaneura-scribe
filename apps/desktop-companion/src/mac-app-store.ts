@@ -3,6 +3,6 @@
 export const APPROVED_STORE_APPLICATION_GROUP: string | null = null;
 
 export function requireMacAppStoreRuntime(runtime: { readonly mas?: boolean; readonly electron?: string; readonly node: string }): void {
-  if (runtime.mas !== true || runtime.electron !== "44.4.3" || !runtime.node.startsWith("24.")
+  if (runtime.mas !== true || runtime.electron !== "44.9.1" || !runtime.node.startsWith("24.")
     || APPROVED_STORE_APPLICATION_GROUP === null) throw new Error("mac_app_store_distribution_unavailable");
 }
