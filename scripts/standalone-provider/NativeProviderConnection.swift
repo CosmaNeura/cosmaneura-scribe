@@ -876,6 +876,10 @@ protocol ProviderNativeWire: Sendable {
     }
 
     private func rememberRecordingMount(_ request: ProviderNativeRequest, _ reply: ProviderNativeReply) {
+        if request.action == .encounters {
+            rememberCreatedRecordingMount(request, reply)
+            return
+        }
         guard request.action == .mount,
               let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
               let workspace = body["workspace_id"] as? String, let id = UUID(uuidString: workspace),
@@ -944,6 +948,37 @@ protocol ProviderNativeWire: Sendable {
             admissionPreparationSupported: admissionSupported,
             appointmentRef: desktopInitialWindowEnabled ? appointment : nil,
             desktopAdmissionMetadataSupported: desktopSupported))
+    }
+
+    /// The receiver may compose the existing create and mount operations. Feed
+    /// only its exact correlated opening through the same mount validator; the
+    /// renderer never supplies a binding or substitutes a saved credential.
+    private func rememberCreatedRecordingMount(_ request: ProviderNativeRequest, _ reply: ProviderNativeReply) {
+        guard reply.status == 200, reply.body.count <= request.responseLimit,
+              let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+              Set(body.keys) == ["action", "request_nonce", "creation_key", "patient", "appointment_at", "title", "opening_nonce"],
+              body["action"] as? String == "create", body["creation_key"] as? String == request.key,
+              body["opening_nonce"] as? String == request.key,
+              let value = try? JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
+              Set(value.keys) == ["revision", "version", "action", "request_nonce", "account", "creation_key", "encounter", "recoveryScope", "opening"],
+              value["revision"] as? String == request.revision, value["version"] as? String == "2",
+              value["action"] as? String == "create", value["creation_key"] as? String == request.key,
+              value["request_nonce"] as? String == body["request_nonce"] as? String,
+              let created = value["encounter"] as? [String: Any],
+              let opening = value["opening"] as? [String: Any],
+              let workspace = created["workspace_id"] as? String,
+              opening["workspaceId"] as? String == workspace,
+              opening["recoveryScope"] as? String == value["recoveryScope"] as? String,
+              opening["appointmentRef"] as? String == created["appointment_ref"] as? String,
+              let encounter = opening["encounter"] as? [String: Any],
+              let patient = created["patient_ref"] as? String,
+              encounter["patientRef"] as? String == patient,
+              let data = try? JSONSerialization.data(withJSONObject: opening),
+              let mountBody = try? JSONSerialization.data(withJSONObject: ["workspace_id": workspace, "opening_nonce": request.key]),
+              let text = String(data: mountBody, encoding: .utf8),
+              let mountRequest = try? ProviderNativeRequest(id: request.id.uuidString.lowercased(),
+                revision: request.revision, action: "mount", key: request.key, body: text) else { return }
+        rememberRecordingMount(mountRequest, ProviderNativeReply(status: 200, body: data))
     }
 
     /// Opt in only for fresh consent on a mount advertised by our receiver.

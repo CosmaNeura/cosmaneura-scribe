@@ -147,6 +147,8 @@ it("starts initial Record measurement before admission when consent-only prepara
   f.start.mockImplementation(async () => { now = 6200; f.recording(); }); now = 4200; admission.resolve();
   await vi.waitFor(() => expect(f.recordReadyDiagnostic).toHaveBeenCalledOnce());
   expect(f.recordReadyDiagnostic.mock.calls).toEqual([[6000]]);
+  expect(f.recorder.mock.calls[0]).toHaveLength(3);
+  expect(f.recorder).toHaveBeenCalledWith(sid, expect.any(AbortSignal), { initialStart: true });
 });
 it("never exports a queued Record cancelled before delayed admission finishes", async () => {
   const admission = gate<void>(), f = fixture({ admission: admission.promise, timing: true }); await f.opened();
@@ -160,6 +162,7 @@ it("checkbox alone prepares exactly once and never invokes any recording continu
   f.consent(true); await vi.waitFor(() => expect(f.app.bindProvider).toHaveBeenCalledOnce());
   expect(f.request.mock.calls.filter(([p]) => p.endsWith("capture-admissions"))).toHaveLength(1);
   expect(f.recorder).toHaveBeenCalledOnce(); expect(f.start).not.toHaveBeenCalled(); expect(f.app.startFromProviderAction).not.toHaveBeenCalled();
+  expect(f.recorder.mock.calls[0]).toHaveLength(2);
   expect(f.controller.selectAudioInput).toHaveBeenCalledWith("microphone-fixture");
   await f.binding()!.controller.startRecording(); expect(f.start).toHaveBeenCalledOnce();
 });

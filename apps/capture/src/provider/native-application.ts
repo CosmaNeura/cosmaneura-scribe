@@ -14,6 +14,7 @@ import { activateNativeScribe } from "./native-activation";
  */
 export function mountNativeProviderIOSApplication(root: HTMLElement, options: Omit<NativeProviderOptions, "signal">,
   consentPreparation?: ConsentPreparationRelease): () => Promise<void> {
+  const entryStartedAt = performance.now();
   if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "ios"
     || !["CosmasWorkspaceAuth", "IOSPCM", "SecureQueue"].every(name => Capacitor.isPluginAvailable(name))) {
     throw new Error("provider_native_application_unavailable");
@@ -42,8 +43,12 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
       const backend = await connectNativeProviderIOSBackend({ ...options, signal }, native);
       try {
         // Classify setup before mounting a workspace that could own a recorder.
-        await backend.listEncounters(signal);
-        return { workspace: createProviderIOSHost(backend, consentPreparation), dispose: () => backend.dispose() };
+        const initialCatalog = await backend.listEncounters(signal);
+        // John Clemente's internal staging comparison, through 16 November.
+        // Production and expired candidates retain the existing consent flow.
+        const draftConsent = options.profile === "core-staging-personal-v1"
+          && Date.now() < Date.parse("2026-11-17T00:00:00Z");
+        return { workspace: createProviderIOSHost(backend, consentPreparation, initialCatalog, entryStartedAt, draftConsent), dispose: () => backend.dispose() };
       }
       catch (error) { await backend.dispose(); throw error; }
     },

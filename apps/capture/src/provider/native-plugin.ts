@@ -11,6 +11,7 @@ export interface ProviderSessionState {
   readonly accountIdentitySHA256?: string;
   readonly providerDisplayName?: string;
   readonly recordingSignInPreparationVersion?: 1;
+  readonly recordingInitialStartVersion?: 1;
   readonly desktopSourcePreparationVersion?: 1;
 }
 export interface NativeProviderSession {
@@ -25,6 +26,8 @@ export interface NativeProviderState {
   readonly recordingSignInPreparationVersion?: 1;
 }
 export interface ProviderNativePlugin {
+  recordProviderEntryTiming?(request: { revision: string; phase: "app-to-patients" | "patient-form"
+    | "patient-to-consent" | "patient-to-visit-ready" | "consent-to-record-ready"; durationMs: number }): Promise<void>;
   playProviderPassage?(request: { requestId: string; revision: string; workspaceId: string; bindingRef: string; sessionId: string; segmentId: string }): Promise<unknown>;
   readProviderPassage?(request: { requestId: string; revision: string }): Promise<unknown>;
   stopProviderPassage?(request: { requestId: string }): Promise<void>;
@@ -35,7 +38,7 @@ export interface ProviderNativePlugin {
   abandonProviderSignIn?(request: { preparationId: string }): Promise<void>;
   /** Read-only metadata; never starts or admits a recording. */
   getProviderActiveRecording?(request: { revision: string }): Promise<unknown>;
-  openProviderRecording?(request: { requestId: string; revision: string; workspaceId: string; bindingRef: string; sessionId: string; authorizationId?: string }): Promise<unknown>;
+  openProviderRecording?(request: { requestId: string; revision: string; workspaceId: string; bindingRef: string; sessionId: string; authorizationId?: string; initialStart?: true }): Promise<unknown>;
   providerRecordingCommand?(request: { requestId: string; revision: string; recorderId: string; kind: NativeRecordingCommand; input?: MicrophoneInput; inputId?: string }): Promise<unknown>;
   prepareProviderSource(request: { revision: string; workspaceId: string; bindingRef: string;
     sessionId: string; leaseId: string; leaseReceiptId: string; leaseGeneration: number;

@@ -68,6 +68,7 @@ public final class IOSPCMCore: @unchecked Sendable {
       signalMonitor: signalMonitor,
       diagnostics: diagnostics,
       window: window,
+      claimRunID: { [weak self] runID in self?.claimRunID(runID, sessionID) ?? false },
       markCloseFailed: { [weak self] in self?.markCloseFailed(sessionID) },
       releaseOwnership: { [weak self] in self?.release(sessionID) }
     )
@@ -76,6 +77,13 @@ public final class IOSPCMCore: @unchecked Sendable {
       active?.state = state
     }
     return IOSPCMSessionHandle(state: state)
+  }
+
+  private func claimRunID(_ runID: String, _ sessionID: UInt64) -> Bool {
+    lock.withLock {
+      guard active?.sessionID == sessionID else { return false }
+      return usedRunIDs.insert(runID).inserted
+    }
   }
 
   private func markCloseFailed(_ sessionID: UInt64) {
@@ -108,6 +116,12 @@ public final class IOSPCMSessionHandle: Sendable {
 
   public func heartbeat() async {
     await state.heartbeat()
+  }
+
+  /// Gives a source started with an authority hold its first window. Audio held
+  /// since start becomes deliverable; a late, closed or second bind is refused.
+  public func bindAuthority(_ authority: PCMSourceAuthority) async throws {
+    try await state.bindAuthority(authority)
   }
 
   public func extend(_ extensionValue: PCMSourceExtension) async throws {
@@ -220,6 +234,9 @@ private actor IOSPCMSessionState {
   private let signalMonitor: PCMSignalMonitor?
   private let diagnostics: PCMStartupDiagnostics
   private var window: PCMSourceWindow?
+  private var awaitingAuthority: Bool
+  private var holdTask: Task<Void, Never>?
+  private let claimRunID: @Sendable (String) -> Bool
   private var sourceInputFrames: Int64 = 0
   private var authorityTask: Task<Void, Never>?
   private var explicitStopRequested = false
@@ -258,6 +275,7 @@ private actor IOSPCMSessionState {
     signalMonitor: PCMSignalMonitor?,
     diagnostics: PCMStartupDiagnostics,
     window: PCMSourceWindow?,
+    claimRunID: @escaping @Sendable (String) -> Bool,
     markCloseFailed: @escaping @Sendable () -> Void,
     releaseOwnership: @escaping @Sendable () -> Void
   ) {
@@ -271,6 +289,8 @@ private actor IOSPCMSessionState {
     self.signalMonitor = signalMonitor
     self.diagnostics = diagnostics
     self.window = window
+    awaitingAuthority = configuration.authorityHoldNanoseconds != nil
+    self.claimRunID = claimRunID
     self.markCloseFailed = markCloseFailed
     self.releaseOwnership = releaseOwnership
     accumulator = PCMAccumulator(frameCapacity: configuration.targetFramesPerChunk)
@@ -283,6 +303,7 @@ private actor IOSPCMSessionState {
     }
     phase = .requestingPermission
     armAuthorityDeadline()
+    armAuthorityHold()
     let permissionResult = await racePermission()
     guard phase == .requestingPermission, case .value(let permissionValue) = permissionResult
     else {
@@ -373,6 +394,26 @@ private actor IOSPCMSessionState {
   }
 
   private var maximumChunks: Int { window?.maximumChunks ?? configuration.maximumChunks }
+
+  func bindAuthority(_ authority: PCMSourceAuthority) throws {
+    guard awaitingAuthority,
+      phase == .requestingPermission || phase == .starting || phase == .active
+    else { throw PCMFailure(.invalidConfiguration) }
+    do {
+      let bound = try PCMSourceWindow(
+        authority: authority, maximumChunks: configuration.maximumChunks, now: sourceClock.now())
+      guard claimRunID(authority.runID) else { throw PCMFailure(.invalidConfiguration) }
+      window = bound
+      awaitingAuthority = false
+      holdTask?.cancel()
+      holdTask = nil
+      armAuthorityDeadline()
+      if accumulator.isFull, inFlight == nil { try startDelivery() }
+    } catch {
+      beginTerminal(.captureFailed)
+      throw PCMFailure(.invalidConfiguration)
+    }
+  }
 
   func verifySource(authority: PCMSourceAuthority, maximumChunks: Int) throws {
     guard phase == .active, let window, window.authority == authority,
@@ -516,6 +557,8 @@ private actor IOSPCMSessionState {
           } else if admitted == timeFrames {
             windowEnd = .authorityExpired
           }
+        } else if awaitingAuthority {
+          sourceInputFrames += Int64(mono.count)
         }
         if resampler == nil {
           let maximumOutput =
@@ -620,6 +663,7 @@ private actor IOSPCMSessionState {
 
   private func startDelivery() throws {
     guard inFlight == nil, accumulator.isFull else { return }
+    guard !awaitingAuthority else { throw PCMFailure(.bufferOverflow) }
     guard nextSequence < UInt64(maximumChunks) else {
       throw PCMFailure(.outputLimitExceeded)
     }
@@ -743,6 +787,9 @@ private actor IOSPCMSessionState {
 
   private func applyStopRequest(_ mode: PCMStopMode) {
     if requestedStopMode == nil || mode == .discard { requestedStopMode = mode }
+    if awaitingAuthority { requestedStopMode = .discard }
+    holdTask?.cancel()
+    holdTask = nil
     phase = .closing
     cancellation.cancel()
     cancelWatchdog()
@@ -814,6 +861,20 @@ private actor IOSPCMSessionState {
       guard !Task.isCancelled else { return }
       await self?.watchdogExpired(generation)
     }
+  }
+
+  private func armAuthorityHold() {
+    guard awaitingAuthority, let hold = configuration.authorityHoldNanoseconds else { return }
+    holdTask = Task { [weak self, sourceClock] in
+      do { try await sourceClock.sleep(nanoseconds: hold) } catch { return }
+      guard !Task.isCancelled else { return }
+      await self?.authorityHoldExpired()
+    }
+  }
+
+  private func authorityHoldExpired() {
+    guard awaitingAuthority else { return }
+    beginTerminal(.authorityHoldExpired)
   }
 
   private func armAuthorityDeadline() {

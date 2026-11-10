@@ -1,4 +1,5 @@
 @import "./tokens.css";
+html:has(.provider-workspace) { min-width:320px; }
 .provider-workspace { box-sizing:border-box; max-width:1100px; margin:0 auto; padding:28px 24px 48px; color:var(--scribe-ink); font:18px/1.5 system-ui,sans-serif; }
 .provider-workspace *,.provider-workspace *::before,.provider-workspace *::after { box-sizing:border-box; }
 .provider-workspace [hidden] { display:none!important; }
@@ -231,6 +232,10 @@ html:has(.provider-note) { min-width:320px; }
 .provider-preparation { display:grid; gap:8px; padding:20px; }
 .provider-preparation-options,.provider-start-action { display:grid; align-content:start; gap:8px; min-width:0; }
 .provider-preparation-options>p,.provider-start-action>p { margin:0; }
+.provider-draft-consent h1 { display:block; font-size:1.25rem; }
+.provider-draft-consent .provider-draft-patient { overflow-wrap:anywhere; }
+.provider-draft-consent .provider-primary { width:100%; }
+.provider-draft-consent .provider-text-link { justify-self:start; }
 .provider-preparation>p,.provider-preparation .provider-audio-summary { margin:0; }
 .provider-preparation .provider-audio-summary { align-items:center; min-height:44px; }
 .provider-preparation .provider-audio-summary button { min-height:44px; }

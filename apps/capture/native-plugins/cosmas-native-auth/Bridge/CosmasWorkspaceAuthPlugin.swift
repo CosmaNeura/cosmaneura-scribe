@@ -23,6 +23,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         CAPPluginMethod(name: "getProviderActiveRecording", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "takeRecordingOpenRequest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "providerRequest", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "recordProviderEntryTiming", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "recordProviderReadyTiming", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "cancelProviderRequest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "prepareProviderSignIn", returnType: CAPPluginReturnPromise),
@@ -261,6 +262,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                 value["nativeRecordingVersion"] = 2
                 value["nativePassagePlaybackVersion"] = 1
                 value["recordingSignInPreparationVersion"] = 1
+                if self.initialRecordingStartAvailable { value["recordingInitialStartVersion"] = 1 }
             }
             call.resolve(value)
         }
@@ -337,12 +339,23 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         #endif
     }
 
+    // Preparation scheduling only; Core consent/lease/source decisions remain
+    // unchanged. Keep this phone experiment in the signed staging application.
+    private var initialRecordingStartAvailable: Bool {
+        let settings = Bundle.main.object(forInfoDictionaryKey: "ScribeProviderReceiver") as? [String: Any]
+        return nativeRecordingAvailable && NativeProviderRecordingSelection.permitsEarlyMicrophone(
+            bundleIdentifier: Bundle.main.bundleIdentifier, receiverProfile: settings?["profile"] as? String)
+    }
+
     @objc nonisolated public func openProviderRecording(_ call: CAPPluginCall) {
         Task { @MainActor in
             #if os(iOS)
             do {
                 guard let options = call.options as? [String: Any] else { throw ProviderNativeError.invalidRequest }
                 let selection = try NativeProviderRecordingSelection(options)
+                guard !selection.initialStart || self.initialRecordingStartAvailable else {
+                    throw ProviderNativeError.unavailable
+                }
                 self.initializeAuth()
                 guard self.nativeRecordingAvailable, let auth = self.auth,
                       let connection = self.providerConnection else { throw ProviderNativeError.unavailable }
@@ -356,13 +369,29 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                 let result = try await Self.recordingBridge.open(selection, current: current, make: {
                     try await NativeProviderRecordingHost.make(connection: connection, auth: auth,
                         recovery: recovery, workspaceID: selection.workspaceID, bindingRef: selection.bindingRef,
-                        sessionID: selection.sessionID, revision: selection.revision, authorizationID: selection.authorizationID)
+                        sessionID: selection.sessionID, revision: selection.revision, authorizationID: selection.authorizationID,
+                        initialStart: selection.initialStart)
                 }, inputMuted: { AVAudioApplication.shared.isInputMuted })
                 call.resolve(result)
             } catch { Self.rejectProvider(call) }
             #else
             Self.rejectProvider(call)
             #endif
+        }
+    }
+
+    @objc nonisolated public func recordProviderEntryTiming(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            guard let value = call.options as? [String: Any], Set(value.keys) == ["revision", "phase", "durationMs"],
+                  let revision = value["revision"] as? String,
+                  UUID(uuidString: revision)?.uuidString.lowercased() == revision,
+                  let name = value["phase"] as? String, let phase = ProviderEntryTimingPhase(rawValue: name),
+                  let number = value["durationMs"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.isFinite, (0...600_000).contains(number.doubleValue),
+                  let auth = self.auth, auth.state().phase == .ready, auth.state().revision == revision
+            else { Self.rejectProvider(call); return }
+            ProviderNativeTimingJournal.shared.recordEntry(phase, milliseconds: number.doubleValue)
+            call.resolve()
         }
     }
 

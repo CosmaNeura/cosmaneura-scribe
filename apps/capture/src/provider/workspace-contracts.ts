@@ -51,11 +51,17 @@ export interface AuthorizedProviderEncounter<R = ProviderRecorderResources | Pre
   readonly reviewJournal: (sessionId: string) => CreatorReviewJournal;
   readonly editJournal?: (sessionId: string) => CreatorEditJournal;
   /** Reauthorize and acquire the existing exclusive, creator-scoped recorder. */
-  readonly recorder: (sessionId: string, signal: AbortSignal) => Promise<R>;
+  readonly recorder: (sessionId: string, signal: AbortSignal, options?: { readonly initialStart: true }) => Promise<R>;
   readonly playPassage?: PlayPassage;
   readonly openInCore: (noteRef: string | null) => Promise<void>;
 }
 export interface ProviderWorkspaceHost<R = ProviderRecorderResources | PreparedProviderRecorder> {
+  readonly entryTiming?: (phase: "app-to-patients" | "patient-form" | "patient-to-consent"
+    | "patient-to-visit-ready" | "consent-to-record-ready", durationMs: number) => void;
+  readonly entryStartedAt?: number;
+  /** Trusted iOS host may show consent after durable local draft retention.
+   * Record remains unavailable until the exact server visit is mounted. */
+  readonly draftConsentPreparation?: true;
   /** Local content-free first Record-to-confirmed-native-Ready observation only. */
   readonly recordReadyDiagnostic?: RecordReadyDiagnostic;
   /** Trusted, reversible beta control; omitted controls retain explicit-start preparation. */

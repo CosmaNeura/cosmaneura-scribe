@@ -43,6 +43,37 @@ function fixture(capacitorProxy = false, hiding = false) {
   return { ...disk, scope, request, created, abort, openStore, newOwner, assimilated, signal: abort.signal };
 }
 describe("shared mobile/desktop encounter creation", () => {
+  it("offers consent only after retaining the exact draft, before a delayed server reply", async () => {
+    const f = fixture(), owner = f.newOwner(); await owner.state(f.signal);
+    let resolve!: (value: Record<string, unknown>) => void;
+    const response = new Promise<Record<string, unknown>>(done => { resolve = done; });
+    const original = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (body, key, signal) => body.action === "create" ? response : original(body, key, signal));
+    const retained = vi.fn((draft: EncounterDraft) => {
+      const row = [...f.data.values()].find(value => value.key.startsWith("provider-encounter-creation-v1:"));
+      expect(row).toBeDefined();
+      expect(JSON.parse(atob(row!.data)).pending).toEqual(draft);
+      expect(f.request.mock.calls.filter(([body]) => body.action === "create")).toHaveLength(0);
+      if (draft.patient.kind === "new") draft.patient.name = "Changed callback copy";
+    });
+    const pending = owner.submit(initial, f.signal, retained);
+    await vi.waitFor(() => expect(retained).toHaveBeenCalledOnce());
+    const call = f.request.mock.calls.find(([body]) => body.action === "create")!;
+    expect(call[0].patient).toMatchObject({ name: "Synthetic Patient" });
+    expect(f.created).not.toHaveBeenCalled();
+    resolve(await original(...call));
+    await pending;
+    expect(f.created).toHaveBeenCalledOnce();
+    await owner.dispose();
+  });
+  it("does not submit if cancellation arrives during local consent presentation, and retains recovery", async () => {
+    const f = fixture(), owner = f.newOwner(); await owner.state(f.signal);
+    const navigation = new AbortController();
+    await expect(owner.submit(initial, navigation.signal, () => navigation.abort())).rejects.toThrow();
+    expect(f.request.mock.calls.filter(([body]) => body.action === "create")).toHaveLength(0);
+    expect((await owner.state(f.signal)).pending?.creationKey).toBe(initial.creationKey);
+    await owner.dispose();
+  });
   it("confirms a provisional identity and retries the retained creation key after a denied first submission", async () => {
     const f = fixture(), first = f.newOwner(), encounter = { appointmentRef, patientRef, title: "Synthetic patient", detail: "Visit" };
     const draft: EncounterDraft = { ...initial, patient: { kind: "existing", patientRef } };

@@ -51,6 +51,9 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
   let nativeRecording = false;
   let nativePassage = false;
   let nativeContextReuse = false;
+  let initialStartSupported = false;
+  let combinedCreationOpening = false;
+  const creationOpenings = new Map<string, { nonce: string; value: Record<string, unknown>; expires: number }>();
   let revision: string | null = null, observed: NativeState | null = null;
   let listener: PluginListenerHandle | undefined, timer: ReturnType<typeof setInterval> | undefined;
   let checking: Promise<void> | null = null, disposal: Promise<void> | null = null;
@@ -79,6 +82,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     if (timer !== undefined) clearInterval(timer);
     options.signal.removeEventListener("abort", inheritedAbort);
     encounters.clear();
+    creationOpenings.clear();
     providerDisplayName = undefined;
     await listener?.remove();
     await owners.setup?.dispose();
@@ -125,6 +129,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     nativePassage = state.nativePassagePlaybackVersion === 1 && typeof plugin.playProviderPassage === "function"
       && typeof plugin.readProviderPassage === "function" && typeof plugin.stopProviderPassage === "function";
     nativeContextReuse = nativeRecording && state.nativeRecordingVersion === 2;
+    initialStartSupported = nativeContextReuse && state.recordingInitialStartVersion === 1;
     signInPreparationSupported = state.recordingSignInPreparationVersion === 1
       && typeof plugin.prepareProviderSignIn === "function" && typeof plugin.abandonProviderSignIn === "function";
     document.addEventListener("visibilitychange", resume);
@@ -188,9 +193,23 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
 
   const encounterSetup = owners.setup = createEncounterSetup({
     existingPatientOnly: () => existingPatientOnly,
+    combinedOpening: () => combinedCreationOpening,
     current,
     records: () => Promise.resolve({ records: SecureQueue, close: () => Promise.resolve() }),
-    created: entry => { encounters.set(entry.appointmentRef, { workspaceId: entry.workspaceId, encounter: entry }); },
+    created: (entry, opening) => {
+      if (opening) {
+        const value = opening.value;
+        if (value.revision !== revision || value.workspaceId !== entry.workspaceId
+          || value.appointmentRef !== entry.appointmentRef || !isUuid(value.recoveryScope)
+          || !reference(value.bindingRef, "scribe_capture_binding") || !record(value.encounter)) throw unavailable();
+        const displayed = encounter(value.encounter);
+        if (displayed.appointmentRef !== entry.appointmentRef || displayed.patientRef !== entry.patientRef) throw unavailable();
+        openingResultFromCore({ workspaceId: entry.workspaceId, appointmentRef: entry.appointmentRef,
+          bindingRef: value.bindingRef }, opening.nonce, value);
+        creationOpenings.set(entry.appointmentRef, { ...opening, expires: performance.now() + 5000 });
+      }
+      encounters.set(entry.appointmentRef, { workspaceId: entry.workspaceId, encounter: entry });
+    },
     request: async (body, key, signal) => {
       const response = await request("encounters", body, key, [signal]);
       if (response.status !== 200) throw unavailable();
@@ -210,6 +229,8 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       next.set(entry.appointmentRef, { workspaceId: row.workspaceId, encounter: entry });
     }
     const capabilities = providerVisitCapabilities(value, profile);
+    if ("native_create_opening_v1" in value && typeof value.native_create_opening_v1 !== "boolean") throw unavailable();
+    combinedCreationOpening = value.native_create_opening_v1 === true && capabilities.fullNativeVisits;
     const { supportsCreation, existingPatientOnly: nextExistingPatientOnly } = capabilities;
     const nextAccount = supportsCreation ? parseProviderAccount({ email: objectAccount(value.account).email, environment: value.environment }, capabilities.environment) : undefined;
     if (supportsCreation) {
@@ -249,6 +270,12 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     return { appointmentRef: matches[0]!.encounter.appointmentRef, sessionId: selected.sessionId };
   };
   return {
+    entryTiming: (phase, durationMs) => {
+      if (!revision || abort.signal.aborted || options.signal.aborted || !plugin.recordProviderEntryTiming
+        || !Number.isFinite(durationMs) || durationMs < 0 || durationMs > 600_000) return;
+      try { void plugin.recordProviderEntryTiming({ revision, phase, durationMs }).catch(() => undefined); }
+      catch { /* Numeric diagnostic failure cannot change patient or consent state. */ }
+    },
     get providerDisplayName() { return !abort.signal.aborted && !options.signal.aborted ? providerDisplayName : undefined; },
     get encounterSetup() { return creationSupported ? existingPatientOnly ? existingPatientSetup(encounterSetup) : fullNativeVisits ? fullNativeVisitSetup(encounterSetup) : encounterSetup : undefined; },
     get account() { return account; },
@@ -268,8 +295,11 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       const row = encounters.get(appointmentRef);
       if (!row) throw unavailable();
       const supportsNoteOpening = noteOpeningSupported;
-      const openingNonce = openingReviewSupported ? crypto.randomUUID() : undefined;
-      const value = await json("mount", { workspace_id: row.workspaceId,
+      const retainedOpening = creationOpenings.get(appointmentRef);
+      creationOpenings.delete(appointmentRef);
+      const freshOpening = retainedOpening && performance.now() < retainedOpening.expires ? retainedOpening : undefined;
+      const openingNonce = freshOpening?.nonce ?? (openingReviewSupported ? crypto.randomUUID() : undefined);
+      const value = freshOpening?.value ?? await json("mount", { workspace_id: row.workspaceId,
         ...(openingNonce ? { opening_nonce: openingNonce } : {}) }, signal);
       if (!isUuid(value.recoveryScope) || value.workspaceId !== row.workspaceId || value.appointmentRef !== appointmentRef
         || !reference(value.bindingRef, "scribe_capture_binding") || !record(value.encounter)) throw unavailable();
@@ -299,7 +329,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
         ...openingResult,
         uploadTarget: options.uploadTarget,
         ...(nativeRecording ? { nativeRecording: {
-          open: (sessionId: string, requestId: string) => {
+          open: (sessionId: string, requestId: string, preparation?: { readonly initialStart: true }) => {
             current(signal);
             if (!revision || !isUuid(sessionId) || !isUuid(requestId)) throw unavailable();
             const authorizationId = recordingAuthorization;
@@ -307,7 +337,8 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
             if (nativeContextReuse && !authorizationId) throw unavailable();
             // Deliver late ownership handles so workspace teardown can close them.
             return plugin.openProviderRecording!({ requestId, revision, workspaceId: scope.workspaceId,
-              bindingRef: scope.bindingRef, sessionId, ...(authorizationId ? { authorizationId } : {}) });
+              bindingRef: scope.bindingRef, sessionId, ...(authorizationId ? { authorizationId } : {}),
+              ...(initialStartSupported && preparation?.initialStart ? { initialStart: true as const } : {}) });
           },
           command: (command: Parameters<NativeRecordingPort["command"]>[0]) => {
             if (command.kind !== "close") current(signal);

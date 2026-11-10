@@ -27,7 +27,8 @@ export interface ProviderEncounterSetup extends Partial<VisitFeatures> {
   patientMatchJournal?(encounter: ProviderEncounter, signal: AbortSignal): Promise<PatientMatchJournal>;
   state(signal: AbortSignal): Promise<EncounterSetupState>;
   search(query: string, signal: AbortSignal): Promise<Omit<EncounterSetupState, "pending">>;
-  submit(draft: EncounterDraft | null, signal: AbortSignal): Promise<ProviderEncounter>;
+  submit(draft: EncounterDraft | null, signal: AbortSignal,
+    retained?: (draft: EncounterDraft) => void): Promise<ProviderEncounter>;
   hidden?(signal: AbortSignal): Promise<readonly string[]>;
   setHidden?(appointmentRef: string, hidden: boolean, signal: AbortSignal): Promise<void>;
   addDateOfBirth?(encounter: ProviderEncounter, dateOfBirth: string, key: string, signal: AbortSignal): Promise<ProviderEncounter>;
@@ -122,7 +123,9 @@ export function parseCreatedEncounter(value: unknown): ProviderEncounter & { wor
 export function createEncounterSetup(options: {
   request(body: Record<string, unknown>, key: string, signal: AbortSignal): Promise<Record<string, unknown>>;
   records(recoveryScope: string, signal: AbortSignal): Promise<{ records: CreationRecords; close(): Promise<void> }>;
-  created(encounter: ProviderEncounter & { workspaceId: string }): void;
+  created(encounter: ProviderEncounter & { workspaceId: string },
+    opening?: { nonce: string; value: Record<string, unknown> }): void;
+  combinedOpening?(): boolean;
   current(signal?: AbortSignal): void;
   canHide?(appointmentRef: string): boolean;
   existingPatientOnly?(): boolean;
@@ -240,7 +243,7 @@ export function createEncounterSetup(options: {
       return openPatientMatchJournal(records, { recoveryScope: recovery, appointmentRef: encounter.appointmentRef, patientRef: encounter.patientRef }, () => options.current(signal));
     },
     state: async signal => ({ ...(recovery && account && !options.existingPatientOnly?.() ? { account, patients: [], moreResults: false } : await search("", signal)), pending: (await load(signal)).pending }),
-    submit: async (input, signal) => {
+    submit: async (input, signal, retained) => {
       options.current(signal);
       if (busy) throw fail();
       busy = true;
@@ -250,15 +253,23 @@ export function createEncounterSetup(options: {
         if (!draft || saved.pending !== null && JSON.stringify(saved.pending) !== JSON.stringify(draft)) throw fail();
         if (options.existingPatientOnly?.() && draft.patient.kind !== "existing") throw fail();
         if (saved.pending === null) saved = await save(saved, draft, signal);
+        options.current(signal);
+        retained?.(parseEncounterDraft(draft));
+        options.current(signal);
+        const openingNonce = options.combinedOpening?.() && draft.openAfterCreation !== false
+          ? draft.creationKey : undefined;
         const patient = draft.patient.kind === "existing"
           ? { kind: "existing", patient_ref: draft.patient.patientRef }
           : { kind: "new", name: draft.patient.name, date_of_birth: draft.patient.dateOfBirth, ...(draft.patient.provisional ? { provisional: true } : {}) };
         const value = await options.request({ action: "create", creation_key: draft.creationKey,
-          patient, appointment_at: draft.appointmentAt, title: draft.title, request_nonce: crypto.randomUUID() }, draft.creationKey, signal);
+          patient, appointment_at: draft.appointmentAt, title: draft.title, request_nonce: crypto.randomUUID(),
+          ...(openingNonce ? { opening_nonce: openingNonce } : {}) }, draft.creationKey, signal);
         options.current(signal); accept(value);
         if (value.creation_key !== draft.creationKey) throw fail();
         const encounter = parseCreatedEncounter(value.encounter);
-        options.created(encounter);
+        if (openingNonce && !record(value.opening)) throw fail();
+        if (!openingNonce && Object.hasOwn(value, "opening")) throw fail();
+        options.created(encounter, openingNonce ? { nonce: openingNonce, value: value.opening as Record<string, unknown> } : undefined);
         await save(saved, null, signal);
         return parseEncounterDisplay(encounter);
       } finally { busy = false; }

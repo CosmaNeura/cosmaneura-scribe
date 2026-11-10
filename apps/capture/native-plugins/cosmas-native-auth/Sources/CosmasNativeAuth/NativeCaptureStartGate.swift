@@ -90,15 +90,22 @@ public struct NativeCapturePermit: Sendable {
 
     /// Final check and native begin execute together on MainActor, with no await
     /// between them. Retirement fences both pending authorization and later starts.
+    /// `sourceOpened` lets only the installed encrypted owner's own source be live
+    /// while Core decides (ADR 0100); every other source must still be idle.
     public static func consume<T>(owner expected: UUID, consumer: Consumer = .legacyMicrophone,
+        sourceOpened: Bool = false,
         start: @MainActor (NativeCapturePermit) throws -> T) async throws -> T {
+        guard !sourceOpened || consumer == .nativeEncryptedMicrophone else {
+            throw NativeAuthError.unavailable
+        }
+        let idle = { sourceOpened ? othersIdle() : allIdle() }
         guard owner == expected, self.consumer == consumer, !retiring, !authorizing,
-              !consumed, allIdle(), let authorize else {
+              !consumed, idle(), let authorize else {
             throw NativeAuthError.unavailable
         }
         authorizing = true; defer { authorizing = false }
         let permit = try await authorize()
-        guard owner == expected, !retiring, allIdle(), permit.startExpiresAt > Date() else {
+        guard owner == expected, !retiring, idle(), permit.startExpiresAt > Date() else {
             throw NativeAuthError.unavailable
         }
         consumed = true
@@ -138,6 +145,10 @@ public struct NativeCapturePermit: Sendable {
     }
 
     private static func allIdle() -> Bool {
-        !legacyIdle.isEmpty && legacyIdle.allSatisfy { $0() } && (encryptedIdle?() ?? true)
+        othersIdle() && (encryptedIdle?() ?? true)
+    }
+
+    private static func othersIdle() -> Bool {
+        !legacyIdle.isEmpty && legacyIdle.allSatisfy { $0() }
     }
 }

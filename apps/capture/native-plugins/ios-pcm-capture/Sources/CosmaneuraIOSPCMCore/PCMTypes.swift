@@ -34,6 +34,7 @@ public enum PCMTerminationCode: String, Sendable {
   case bufferOverflow = "ios_pcm_buffer_overflow"
   case outputLimitExceeded = "ios_pcm_output_limit_exceeded"
   case sinkFailed = "ios_pcm_sink_failed"
+  case authorityHoldExpired = "ios_capture_authority_hold_expired"
 }
 
 public enum PCMAudioEvent: Sendable {
@@ -71,6 +72,10 @@ public struct PCMConfiguration: Equatable, Sendable {
   public let authority: PCMSourceAuthority?
   /// Native encrypted owner only; the legacy/JavaScript bridge keeps discard.
   public let preserveInterruptedTail: Bool
+  /// Starts the source before its authority exists. Audio stays in the chunk
+  /// accumulator, never reaching the sink, until bound; unbound at this deadline,
+  /// it is erased. Shorter than one chunk, so no full packet can wait for a sink.
+  public let authorityHoldNanoseconds: UInt64?
 
   public init(
     targetFramesPerChunk: Int,
@@ -78,7 +83,8 @@ public struct PCMConfiguration: Equatable, Sendable {
     maximumInputFramesPerBuffer: Int = 4_096,
     heartbeatTimeoutNanoseconds: UInt64 = 15_000_000_000,
     authority: PCMSourceAuthority? = nil,
-    preserveInterruptedTail: Bool = false
+    preserveInterruptedTail: Bool = false,
+    authorityHoldNanoseconds: UInt64? = nil
   ) throws {
     guard targetFramesPerChunk > 0,
       targetFramesPerChunk <= Self.maximumTargetFramesPerChunk,
@@ -91,7 +97,11 @@ public struct PCMConfiguration: Equatable, Sendable {
       targetFramesPerChunk <= Int.max / 2,
       maximumChunks <= Int.max / targetFramesPerChunk,
       authority == nil || maximumChunks <= authority!.hardMaximumChunks,
-      !preserveInterruptedTail || authority != nil
+      !preserveInterruptedTail || authority != nil || authorityHoldNanoseconds != nil,
+      authorityHoldNanoseconds == nil
+        || (authority == nil && authorityHoldNanoseconds! > 0
+          && authorityHoldNanoseconds!
+            < UInt64(targetFramesPerChunk) * 1_000_000_000 / UInt64(Self.sampleRateHz))
     else {
       throw PCMFailure(.invalidConfiguration)
     }
@@ -101,6 +111,7 @@ public struct PCMConfiguration: Equatable, Sendable {
     self.heartbeatTimeoutNanoseconds = heartbeatTimeoutNanoseconds
     self.authority = authority
     self.preserveInterruptedTail = preserveInterruptedTail
+    self.authorityHoldNanoseconds = authorityHoldNanoseconds
   }
 }
 

@@ -44,7 +44,13 @@ class ProviderNativeEncounterTransport(ProviderEncounterTransport):
             raise ValueError("native_visit_version_invalid")
         self.workload, self.version = workload, version
 
-    async def request(self, body: dict[str, object], key: str) -> dict[str, object]:
+    async def request(
+        self,
+        body: dict[str, object],
+        key: str,
+        *,
+        before: ProviderEncounterAccount | None = None,
+    ) -> dict[str, object]:
         try:
             async with asyncio.timeout(30):
                 private_save = self.version == "2" and body.get("action") == "private_note_save"
@@ -99,7 +105,11 @@ class ProviderNativeEncounterTransport(ProviderEncounterTransport):
                                 cast(str, patient.get("patient_ref")),
                             )
                         )
-                before = await self.account()
+                # A caller may supply its immediately preceding, request-owned
+                # capability check. Only local validation precedes this point;
+                # both fences across credential/network work remain fresh.
+                if before is None:
+                    before = await self.account()
                 core_wire_require(self.version == "1" or before.native_visit_actions_v2)
                 workload = core_wire_secret(await self.workload())
                 # Credential acquisition can yield; current authority must still

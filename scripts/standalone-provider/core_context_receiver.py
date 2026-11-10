@@ -1,5 +1,6 @@
 """Explicit profile-bound Core-authority backend; the legacy registry stays intact."""
 
+import asyncio
 import inspect
 import re
 from typing import cast
@@ -177,6 +178,7 @@ class CoreContextReceiver(ProviderReceiver):
                 return await self.encounter_account(authorization, bind=None)
 
             version = "1"
+            initial = None
             if self.native_visit_actions_v2_enabled:
                 initial = await fresh()
                 version = "2" if initial.native_visit_actions_v2 else "1"
@@ -189,7 +191,7 @@ class CoreContextReceiver(ProviderReceiver):
                 version=version,
             )
             try:
-                return await transport.request(body, key)
+                return await transport.request(body, key, before=initial)
             finally:
                 await transport.close()
         if body.get("action") not in {
@@ -242,6 +244,12 @@ class CoreContextReceiver(ProviderReceiver):
         return matches[0]
 
     async def _selected_current(self, authorization, revision, workspace_id, account=None):
+        _, context, display = await self._current_selection(
+            authorization, revision, workspace_id, account
+        )
+        return context, display
+
+    async def _current_selection(self, authorization, revision, workspace_id, account=None):
         # Core derives the account again while answering the catalog read, so
         # that reply is itself the current-account check for the selection.
         current, value = await self._context(authorization, "catalog")
@@ -259,7 +267,11 @@ class CoreContextReceiver(ProviderReceiver):
             actor_ref=account.actor_ref,
             tenant_ref=account.tenant_ref,
         )
-        return AuthorizedCoreProvider(selection, account.user_token), self.core_display(row)
+        return (
+            account,
+            AuthorizedCoreProvider(selection, account.user_token),
+            self.core_display(row),
+        )
 
     def identity(self, *args, **kwargs):
         raise ProviderCoreUnavailable("core_registry_backend_unavailable", 403)
@@ -323,7 +335,7 @@ class CoreContextReceiver(ProviderReceiver):
                             else "Production"
                         ),
                         **(
-                            {"native_visit_actions_v2": True}
+                            {"native_visit_actions_v2": True, "native_create_opening_v1": True}
                             if value.get("native_visit_actions_v2") is True
                             else {}
                         ),
@@ -335,6 +347,64 @@ class CoreContextReceiver(ProviderReceiver):
                 return _reply(error.status, {"code": error.code})
             except Exception:
                 return _reply(403, {"code": "provider_request_denied"})
+
+        async def create_and_open(request: Request):
+            try:
+                revision = _uuid(request.headers.get("x-scribe-native-revision"))
+                body = await _read(request, _LIMITS["encounters"])
+                authorization = request.headers.get("authorization", "")
+                key = request.headers.get("idempotency-key", "")
+                has_opening = "opening_nonce" in body
+                opening = body.pop("opening_nonce", None)
+                if has_opening:
+                    _require(
+                        self.native_visit_actions_v2_enabled and body.get("action") == "create"
+                    )
+                    opening = str(_uuid(opening))
+                    _require(opening == key == body.get("creation_key"))
+                async with asyncio.timeout(30):
+                    result = await self.encounters(authorization, body, key)
+                    if opening is not None:
+                        _require(result.get("version") == "2")
+                        created = result["encounter"]
+                        mounted = await self.native_core_read(
+                            authorization,
+                            revision,
+                            "mount",
+                            {
+                                "workspace_id": str(_uuid(created["workspace_id"])),
+                                "opening_nonce": opening,
+                            },
+                            str(uuid4()),
+                        )
+                        # Both existing operations perform their full current-user
+                        # checks. Bind the composed reply to the exact created chart;
+                        # failure leaves the original durable creation key retryable.
+                        _require(
+                            mounted["recoveryScope"] == result["recoveryScope"]
+                            and mounted["appointmentRef"] == created["appointment_ref"]
+                            and mounted["encounter"]["patientRef"] == created["patient_ref"]
+                        )
+                        result = {**result, "opening": mounted}
+                _require(self.enabled and self.encounter_creation_enabled)
+                return _reply(200, {"revision": str(revision), **result})
+            except TimeoutError:
+                return _reply(503, {"detail": "provider_request_unavailable"})
+            except ProviderCoreUnavailable as error:
+                return _reply(error.status, {"detail": error.code})
+            except Exception:
+                return _reply(403, {"detail": "provider_request_denied"})
+
+        if self.encounter_creation_enabled:
+            app.router.routes.insert(
+                0,
+                APIRoute(
+                    _PREFIX + "encounters",
+                    create_and_open,
+                    methods=["POST"],
+                    include_in_schema=False,
+                ),
+            )
 
         if self.encounter_creation_enabled:
 
@@ -366,13 +436,16 @@ class CoreContextReceiver(ProviderReceiver):
                             raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
                         return account
 
-                    initial = await fresh()
                     mount = None
+                    if not self.enabled or not self.encounter_creation_enabled:
+                        raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
                     if action in {"source-start", "source-start-ready"}:
-                        context, _ = await self._selected_current(
-                            authorization, revision, _uuid(body.get("workspace_id")), initial
+                        initial, context, _ = await self._current_selection(
+                            authorization, revision, _uuid(body.get("workspace_id"))
                         )
                         mount = CoreProviderMount(context.selection, body.get("binding_ref"))
+                    else:
+                        initial = await fresh()
                     transport = ProviderNativeWorkflowTransport(
                         self.profile.core_origin,
                         fresh,
@@ -387,10 +460,9 @@ class CoreContextReceiver(ProviderReceiver):
                                 if field in body:
                                     _require(requested is None and body.pop(field) is True)
                                     requested = field
-                        # `initial` is the latest check: only local work or the
-                        # selection's catalog read, which was compared with it,
-                        # comes between. Each transport still re-checks after
-                        # its own I/O and before publishing.
+                        # The catalog reply itself supplies current account and
+                        # exact selection for source calls. Each transport still
+                        # re-checks after credential I/O and before publication.
                         result = await transport.workflow(
                             action, body, key, mount=mount, before=initial
                         )
