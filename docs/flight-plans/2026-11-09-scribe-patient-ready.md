@@ -167,19 +167,24 @@ binding checks: 239; iOS module/bridge/factory typechecks pass. Full unsigned
 physical-iPhone-target build succeeds; built app and widget both report 98,
 the feature flag and application are disabled, and no signature is present.
 ESLint, TypeScript, Ruff, Pyright, web/provider builds, PHI-log/secret/ADR scans
-and whitespace pass. PCM package: 45 tests pass; native recording package's
-95 core tests pass, with the continuation suite still running when this is written.
+and whitespace pass. PCM package: 45 tests pass; native recording package:
+95 core and 38 continuation/sink tests pass (133 total).
 
-The full disposable-PostgreSQL Python run reports 2,668 passed, 44 skipped and
-87.00% coverage. Its one failure was the golden-vector launcher finding host
-Node 22; all four protocol tests pass when rerun with required Node 24.
-No product code or safety check was changed to obtain that result.
+The final full Python run with Node 24 and a fresh disposable PostgreSQL database
+reports 2,669 passed, 44 skipped, 67 subtests and 87.00% coverage. Earlier runs
+identified a host Node-22 launcher and correctly refused database reuse; the
+required runtime and a new disposable database resolved those environment errors.
+No product code or safety check was changed to obtain the passing result.
 The receiver wheel/source distribution and 125-file hash-verified disabled image
 context build locally. The Docker image build fails on the local engine's registry
 DNS lookup; no image is published or deployed. A complete image build remains
 outstanding. Private validation evidence and the identity fixture ZIP remain
-outside the checkout. Hosted CI will run on the draft PR; independent review is
-pending and no other chat/agent has been contacted.
+outside the checkout. Draft PR: https://github.com/CosmaNeura/cosmaneura-scribe/pull/550.
+Hosted CI is running: the substantive code head `9cadfcd` passed quality, web,
+Android, browser flow, infrastructure, build, change budget and four CodeQL
+language/workflow checks; iOS and Swift analysis are pending at this evidence
+update. The documentation-only follow-up triggers fresh exact-head checks.
+Independent review is pending and no other chat/agent has been contacted.
 
 App regressions cover explicit acquisition, consent cancellation, withdrawal,
 recovery, late handles and older-build negotiation. Native regressions cover
