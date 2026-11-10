@@ -290,17 +290,18 @@ Apple reports successful upload with no errors, delivery/build
 `4733a719-1287-4727-a77b-0556636219c0`. Processing is `VALID`; the existing
 exempt-encryption classification is recorded for build 98, without a crypto
 implementation change. Build 98 is assigned to both existing testing groups.
-Internal state is `IN_BETA_TESTING`; external state is `BETA_APPROVED` following
-the new beta review submission. Synthetic-only test instructions are saved.
-Automatic notifications are false. Starting external distribution through
-Apple's Notify Testers action sends messages to existing invited testers; explicit
-owner authorization for that action is pending. Build 97 remains valid and in
-both groups, and no public App Store submission has been changed.
+Internal and external states are both `IN_BETA_TESTING`. Following beta approval,
+John explicitly authorized Notify Testers on 10 November. Apple accepted the
+single notification request for existing invited testers, and the external state
+transition was verified. Synthetic-only test instructions are saved. Automatic
+notifications remain false; this was a separately authorized manual action.
+Build 97 remains valid and in both groups, and no public App Store submission
+has been changed.
 Independent read-only review of the final package verifies all 392
 candidate hashes, source/renderer binding, exact retained Store-96 signing scopes,
 enabled staging configuration, strict distribution signatures and absence of
 private evidence/fixtures in the IPA. No actionable packaging findings; this is
-not GitHub approval. No tester invitations or notifications have been sent.
+not GitHub approval. No new tester invitations were sent.
 
 App regressions cover explicit acquisition, consent cancellation, withdrawal,
 recovery, late handles and older-build negotiation. Native regressions cover
