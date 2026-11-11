@@ -54,10 +54,29 @@ final class NativeDesktopStoreContainerTests: XCTestCase {
         }
     }
 
+    func testAppleDistributionDebuggerMarkerFalsePreservesEachExactRole() throws {
+        for bundle in NativeDesktopStoreContainer.helpers {
+            var value = claims(bundle); value["get-task-allow"] = false
+            try NativeDesktopStoreContainer.validateMembership(value, bundle: bundle, approvedGroup: group)
+            value["beta-reports-active"] = true
+            try NativeDesktopStoreContainer.validateMembership(value, bundle: bundle, approvedGroup: group)
+        }
+    }
+
+    func testAppStoreAbsenceOfBetaReportsActiveStillAcceptsExactRoles() throws {
+        for bundle in NativeDesktopStoreContainer.helpers {
+            try NativeDesktopStoreContainer.validateMembership(claims(bundle), bundle: bundle, approvedGroup: group)
+        }
+    }
+
     func testReportingMarkerCannotHideUnknownGrantsOrUseCoercedBooleans() {
         for bundle in NativeDesktopStoreContainer.helpers {
             for reporting: Any in [false, NSNumber(value: 1), "true", [true]] {
                 var value = claims(bundle); value["beta-reports-active"] = reporting
+                XCTAssertThrowsError(try NativeDesktopStoreContainer.validateMembership(value, bundle: bundle, approvedGroup: group))
+            }
+            for taskAllow: Any in [true, NSNumber(value: 1), "false", [false]] {
+                var value = claims(bundle); value["get-task-allow"] = taskAllow
                 XCTAssertThrowsError(try NativeDesktopStoreContainer.validateMembership(value, bundle: bundle, approvedGroup: group))
             }
             var value = claims(bundle); value["beta-reports-active"] = true
