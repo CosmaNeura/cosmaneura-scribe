@@ -20,6 +20,7 @@ from packaging_guard import (
     preflight_tree,
     refuse_live_payload,
     require_founder_unlock,
+    require_store_auth_enabled,
 )
 from prepare_production_profiles import prepare, project
 from test_production_composition import profile_input
@@ -577,3 +578,22 @@ def test_store_workers_preflight_before_output_or_subprocess(tmp_path, monkeypat
     with pytest.raises(ValueError, match="Staging packaging refused"):
         module.build(output, native_auth)
     assert not output.exists()
+
+
+def test_store_auth_enabled_guard_accepts_only_enabled_packages():
+    profile = {
+        "schema": 1,
+        "enabled": True,
+        "coreOrigin": STAGING_CORE,
+        "uploadOrigins": ["https://synthblob01.blob.core.windows.net"],
+    }
+    auth = {"CosmasNativeAuth": {"enabled": True}}
+    require_store_auth_enabled(profile, auth)
+    for bad in (
+        ({**profile, "enabled": False}, auth),
+        (profile, {"CosmasNativeAuth": {"enabled": False}}),
+        (profile, {}),
+        ("not-a-dict", auth),
+    ):
+        with pytest.raises(ValueError, match="enabled=true"):
+            require_store_auth_enabled(*bad)

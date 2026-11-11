@@ -87,3 +87,7 @@ first-launch copy recoverable. It does **not** resign, notarize, or resubmit.
 
 No App Store Connect reply, no resubmission, no notarization, no production
 unlock, no secret rotation, no merge to `main`, no `codex/*` branch edits.
+
+## Fail-closed inventory
+
+See `docs/codex-tasks/2026-11-11-store-launch-fail-closed-inventory.md` for every Store launch dialog cause with codes and Verified citations.

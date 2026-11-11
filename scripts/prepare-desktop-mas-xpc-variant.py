@@ -31,6 +31,13 @@ def place_store_bridge(application: Path, source: Path) -> dict[str, str]:
     Release callers bind source bytes and validate the complete app separately.
     This placement does not sign, launch, or establish XPC namespace access.
     """
+    import sys
+
+    guard_root = Path(__file__).resolve().parent / "standalone-provider"
+    if str(guard_root) not in sys.path:
+        sys.path.insert(0, str(guard_root))
+    from packaging_guard import require_store_application_auth_enabled
+
     macos = application / "Contents/MacOS"
     if (
         not application.is_absolute()
@@ -47,6 +54,9 @@ def place_store_bridge(application: Path, source: Path) -> dict[str, str]:
         or (application / "Contents/Resources/app/native/ScribeStorePipeBridge").is_symlink()
     ):
         raise ValueError("Store bridge placement requires a canonical unsigned app")
+    # Refuse disabled-auth review candidates for Store bridge placement. Default
+    # assemblers stamp enabled:false; App Store packages must enable sign-in.
+    require_store_application_auth_enabled(application)
     target = application / BRIDGE_BUNDLE_PATH
     with source.open("rb") as incoming, target.open("xb") as outgoing:
         shutil.copyfileobj(incoming, outgoing)

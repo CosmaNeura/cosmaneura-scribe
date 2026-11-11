@@ -139,10 +139,10 @@ describe("packaged desktop provider host", () => {
     const f = await fixture(), entry = await composedStoreEntry(f, { mas: false });
     try {
       await vi.waitFor(() => { expect(entry.showMessageBox).toHaveBeenCalledOnce(); expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
-      expect(entry.showMessageBox.mock.calls[0]?.[0]).toMatchObject({
+      expect(entry.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
         message: "Scribe could not open",
         buttons: ["Try again", "Quit"],
-      });
+      }));
       expect(f.runtime.protocol.registerSchemesAsPrivileged).not.toHaveBeenCalled();
       expect(entry.prepare).not.toHaveBeenCalled(); expect(entry.setPath).not.toHaveBeenCalled();
       expect(f.factory.open).not.toHaveBeenCalled(); expect(f.window).toBeNull();
