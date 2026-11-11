@@ -18,7 +18,7 @@ struct ConsumedFrameRetirementTests {
     gate.activate(generation: 1, callbacks: PCMAudioCallbacks(
       frames: { frames in
         let index = book.count
-        let receipt = PCMFrameAdmission(accepted: true, completion: Task {
+        let receipt = PCMFrameAdmission(consuming: {
           if index == 1 { await second.wait() }
           frames.zeroize()
         }, release: {
@@ -86,7 +86,7 @@ struct ConsumedFrameRetirementTests {
     gate.activate(generation: 1, callbacks: PCMAudioCallbacks(
       frames: { frames in
         let index = book.count
-        let receipt = PCMFrameAdmission(accepted: true, completion: Task {
+        let receipt = PCMFrameAdmission(consuming: {
           if index == 1 { await second.wait() }
           frames.zeroize()
         }, release: {})

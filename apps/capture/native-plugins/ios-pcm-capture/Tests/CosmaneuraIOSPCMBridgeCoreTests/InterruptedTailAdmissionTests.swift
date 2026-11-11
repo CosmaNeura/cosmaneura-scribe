@@ -20,7 +20,7 @@ struct InterruptedTailAdmissionTests {
       lifecycle: .nativeEncrypted, diagnostics: diagnostics)
     try await driver.start(sessionID: 1, callbacks: PCMAudioCallbacks(
       frames: { frames in
-        PCMFrameAdmission(accepted: true, completion: Task {
+        PCMFrameAdmission(consuming: {
           await pending.wait(); frames.zeroize()
         }, release: {})
       }, event: { events.record($0) }, invalidate: { events.invalidate($0) }), cancellation: StartupCancellation())
@@ -53,7 +53,7 @@ struct InterruptedTailAdmissionTests {
       system: system, foreground: SyntheticForeground(), lifecycle: .nativeEncrypted)
     try await driver.start(sessionID: 1, callbacks: PCMAudioCallbacks(
       frames: { frames in
-        PCMFrameAdmission(accepted: true, completion: Task {
+        PCMFrameAdmission(consuming: {
           await pending.wait()
           frames.zeroize()
         }, release: {})
