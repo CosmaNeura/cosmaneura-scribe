@@ -82,13 +82,13 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     if (disposed) return;
     const phase = state?.phase ?? (notice ? "unavailable" : "loading");
     const shown: Record<ProviderSessionPhase, [string, string]> = {
-      disabled: ["Setup required", "This installation has not been connected to your practice."],
+      disabled: ["Setup required", "This installation is not ready for sign-in yet. Try again after your practice activates Scribe, or contact support."],
       loading: ["Opening Scribe", "Checking your secure session…"],
       signedOut: ["Be present. Leave with your note.", "Scribe records with consent and helps you prepare a visit note for review in the CosmaNeura dashboard."],
       signingIn: ["Complete sign-in", "Finish signing in using the secure sign-in window."],
       ready: [scope?.unmount && !scope.abort.signal.aborted ? "" : "Your workspace", ""],
       signOutPending: ["Sign-out needs attention", "Your workspace is closed. Retry sign-out to finish."],
-      unavailable: ["Session unavailable", "Your workspace is closed. Check your session or sign out to sign in again."],
+      unavailable: ["Sign-in unavailable", "Scribe could not reach sign-in services. Check your connection, then try again."],
     };
     [title.textContent, message.textContent] = shown[phase];
     if (notice) message.textContent = notice;
@@ -128,8 +128,8 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         : (host.activateScribe ? button("activate", "Retry activation") : button("open", "Check access"));
     } else if (phase === "signedOut") recovery.innerHTML = button("sign-in", "Sign in");
     else if (phase === "signOutPending") recovery.innerHTML = button("sign-out", "Retry sign out");
-    else if (phase === "unavailable") recovery.innerHTML = button("check", "Check session") + button("sign-out", "Sign out");
-    else if (phase === "disabled") recovery.innerHTML = button("check", "Check session");
+    else if (phase === "unavailable") recovery.innerHTML = button("check", "Try again") + button("sign-in", "Sign in") + button("sign-out", "Sign out");
+    else if (phase === "disabled") recovery.innerHTML = button("check", "Try again");
     else if (phase === "ready" && (!scope || scope.abort.signal.aborted)) {
       if (host.cancellation && cancellationCheckedRevision !== state?.revision) {
         title.textContent = "Check Scribe access";

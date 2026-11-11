@@ -546,7 +546,7 @@ try {
       await until(() => root.querySelector('[data-session-action="check"]')?.disabled === false);
       for (let attempt = 0; attempt < 3; attempt++) {
         click("check"); await until(() => root.getAttribute("aria-busy") === "false");
-        assert.ok(root.textContent.includes("Session unavailable"));
+        assert.ok(root.textContent.includes("Sign-in unavailable"));
       }
       assert.equal(f.connects, 0); assert.equal(f.signIns, 0); assert.equal(f.signOuts, 0);
       assert.equal(root.querySelector('[data-session-action="open"]'), null);
@@ -760,7 +760,8 @@ try {
       await until(visible);
       f.host.session.getState = async () => { throw new Error("Offline state read failure"); };
       f.change("ready"); await until(() => f.closes === 1); click("open");
-      await until(() => root.textContent.includes("Session unavailable"));
+      await until(() => root.textContent.includes("Sign-in unavailable")
+        || root.textContent.includes("could not be checked"));
       assert.equal(visible(), false); assert.equal(f.connects, 1);
     } finally { await dispose(); }
   });

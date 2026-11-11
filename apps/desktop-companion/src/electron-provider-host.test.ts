@@ -86,10 +86,10 @@ async function composedStoreEntry(f: Awaited<ReturnType<typeof fixture>>, option
     f.events.push("scheme_registration");
     if (ready || options.failRegistration) throw new Error("Invented forbidden native scheme registration");
   });
-  const showErrorBox = vi.fn(), setPath = vi.fn();
+  const showMessageBox = vi.fn(async () => ({ response: 1 })), setPath = vi.fn();
   const electron = { ...f.runtime, app: Object.assign(f.runtime.app, { setPath, setAboutPanelOptions: vi.fn() }),
     Menu: { buildFromTemplate: vi.fn((template: unknown) => template), setApplicationMenu: vi.fn() },
-    dialog: { ...f.runtime.dialog, showErrorBox } };
+    dialog: { ...f.runtime.dialog, showMessageBox } };
   const processPort = Object.create(process);
   Object.defineProperties(processPort, { mas: { value: options.mas ?? true },
     versions: { value: { ...process.versions, electron: "44.9.1", node: "24.10.0" } },
@@ -111,7 +111,7 @@ async function composedStoreEntry(f: Awaited<ReturnType<typeof fixture>>, option
   vi.doMock("../standalone/provider-host.mjs", () => ({ openProvider: f.factory.open }));
   const entry = "../standalone/main-mas-xpc.mjs";
   await import(entry);
-  return { prepare, prepareTemp, showErrorBox, setPath, advanceReady: () => { ready = true; }, restore: () => {
+  return { prepare, prepareTemp, showMessageBox, setPath, advanceReady: () => { ready = true; }, restore: () => {
     prepareTemp.mockRestore();
     vi.doUnmock("electron"); vi.doUnmock("./mac-app-store-xpc.js"); vi.doUnmock("../standalone/provider-host.mjs");
     vi.unstubAllGlobals(); vi.resetModules();
@@ -130,7 +130,7 @@ describe("packaged desktop provider host", () => {
       expect(process.env.MAC_CHROMIUM_TMPDIR).toBeUndefined();
       expect(f.events.indexOf("scheme_registration")).toBeLessThan(f.events.indexOf("path_prepare"));
       expect(f.events.indexOf("ready_during_path_prepare")).toBeLessThan(f.events.indexOf("window"));
-      expect(f.factory.open).toHaveBeenCalledOnce(); expect(entry.showErrorBox).not.toHaveBeenCalled();
+      expect(f.factory.open).toHaveBeenCalledOnce(); expect(entry.showMessageBox).not.toHaveBeenCalled();
       f.runtime.app.emit("before-quit", { preventDefault: vi.fn() });
       await vi.waitFor(() => { expect(f.dispose).toHaveBeenCalledOnce(); expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
     } finally { entry.restore(); await f.cleanup(); }
@@ -138,7 +138,11 @@ describe("packaged desktop provider host", () => {
   it("does not register, prepare paths or acquire a provider when the composed entry fails its actual MAS guard", async () => {
     const f = await fixture(), entry = await composedStoreEntry(f, { mas: false });
     try {
-      await vi.waitFor(() => { expect(entry.showErrorBox).toHaveBeenCalledOnce(); expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
+      await vi.waitFor(() => { expect(entry.showMessageBox).toHaveBeenCalledOnce(); expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
+      expect(entry.showMessageBox.mock.calls[0]?.[0]).toMatchObject({
+        message: "Scribe could not open",
+        buttons: ["Try again", "Quit"],
+      });
       expect(f.runtime.protocol.registerSchemesAsPrivileged).not.toHaveBeenCalled();
       expect(entry.prepare).not.toHaveBeenCalled(); expect(entry.setPath).not.toHaveBeenCalled();
       expect(f.factory.open).not.toHaveBeenCalled(); expect(f.window).toBeNull();
@@ -149,7 +153,7 @@ describe("packaged desktop provider host", () => {
     try {
       await vi.waitFor(() => { expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
       expect(f.runtime.app.requestSingleInstanceLock).toHaveBeenCalledOnce(); expect(f.factory.open).not.toHaveBeenCalled();
-      expect(f.window).toBeNull(); expect(entry.showErrorBox).not.toHaveBeenCalled();
+      expect(f.window).toBeNull(); expect(entry.showMessageBox).not.toHaveBeenCalled();
       expect(entry.setPath).toHaveBeenCalledWith("userData", join(f.directory, "user-data"));
       expect(process.env.MAC_CHROMIUM_TMPDIR).toBeUndefined();
     } finally { entry.restore(); await f.cleanup(); }
@@ -157,7 +161,7 @@ describe("packaged desktop provider host", () => {
   it("rejects an inherited override in the composed entry before OS path getters or factory acquisition", async () => {
     const f = await fixture(), entry = await composedStoreEntry(f, { inheritedOverride: true });
     try {
-      await vi.waitFor(() => { expect(entry.showErrorBox).toHaveBeenCalledOnce(); expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
+      await vi.waitFor(() => { expect(entry.showMessageBox).toHaveBeenCalledOnce(); expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
       expect(f.runtime.app.getPath).not.toHaveBeenCalled(); expect(entry.prepare).not.toHaveBeenCalled();
       expect(entry.prepareTemp).not.toHaveBeenCalled(); expect(entry.setPath).not.toHaveBeenCalled();
       expect(f.runtime.app.requestSingleInstanceLock).not.toHaveBeenCalled(); expect(f.factory.open).not.toHaveBeenCalled();
@@ -180,7 +184,7 @@ describe("packaged desktop provider host", () => {
   it("latches a composed entry's failed native registration and refuses an after-ready retry", async () => {
     const f = await fixture(), entry = await composedStoreEntry(f, { failRegistration: true });
     try {
-      await vi.waitFor(() => { expect(entry.showErrorBox).toHaveBeenCalledOnce(); expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
+      await vi.waitFor(() => { expect(entry.showMessageBox).toHaveBeenCalledOnce(); expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
       expect(entry.prepare).not.toHaveBeenCalled(); expect(f.factory.open).not.toHaveBeenCalled();
       entry.advanceReady();
       const { registerPackagedAppScheme } = await import("./electron-provider-host.js");
