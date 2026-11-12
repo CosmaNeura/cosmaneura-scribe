@@ -55,7 +55,9 @@ struct DeferredRetirementIntegrationTests {
       authority: authority,
       preserveInterruptedTail: true
     ))
-    try await session.ready()
+    try await PCMTestWait.withDeadline("deferred-retirement held ready") {
+      try await session.ready()
+    }
     // stopSession is fire-and-forget: a cleanup timeout Issue may land up to ~3s
     // late, possibly while the next test in the suite is already running.
     defer {
@@ -75,7 +77,7 @@ struct DeferredRetirementIntegrationTests {
       try await PCMTestWait.until("capturedAudioFrames == \(targetFrames)") {
         session.capturedAudioFrames == targetFrames
       }
-      #expect(frames.isZeroed)
+      try #require(frames.isZeroed)
     }
 
     #expect(sink.failures.isEmpty)
@@ -89,7 +91,9 @@ struct DeferredRetirementIntegrationTests {
     }
     #expect(stopped.finalPacket?.bytes.count == 192)
     stopped.finalPacket?.bytes.zeroize()
-    await diagnostics.flush()
+    try await PCMTestWait.withDeadline("deferred-retirement held flush") {
+      await diagnostics.flush()
+    }
     let rows = try #require(
       JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [[String: Any]]
     )
@@ -141,7 +145,9 @@ struct DeferredRetirementIntegrationTests {
       authority: authority,
       preserveInterruptedTail: true
     ))
-    try await session.ready()
+    try await PCMTestWait.withDeadline("deferred-retirement overflow ready") {
+      try await session.ready()
+    }
     // stopSession is fire-and-forget: a cleanup timeout Issue may land up to ~3s
     // late, possibly while the next test in the suite is already running.
     defer {
@@ -157,9 +163,13 @@ struct DeferredRetirementIntegrationTests {
     )
     system.offer(first)
     try await PCMTestWait.until("first buffer captured") {
-      session.capturedAudioFrames == 32 && first.isZeroed
+      session.capturedAudioFrames == 32
     }
+    try #require(first.isZeroed)
     try await PCMTestWait.until("retirementEntries >= 1") { retirementEntries.count >= 1 }
+    // Low 6 (r4): wait for the first emit to finish before arming the hold so
+    // the held packet is known to be emit index 1 (order-independent of drain).
+    try await PCMTestWait.until("first emit completed") { sink.emissions >= 1 }
 
     // Arm the hold for the next full-chunk emit, then admit the second buffer.
     secondConsumeHold.arm()
@@ -173,8 +183,9 @@ struct DeferredRetirementIntegrationTests {
     )
     system.offer(second)
     try await secondConsumeHold.waitUntilHoldingOrFail()
+    #expect(sink.heldPacketIndex == 1)
     system.offer(third)
-    #expect(third.isZeroed)
+    try #require(third.isZeroed)
 
     try await PCMTestWait.until("overflow failure recorded") { !sink.failures.isEmpty }
     #expect(!secondConsumeHold.releaseTimedOut)
@@ -183,7 +194,9 @@ struct DeferredRetirementIntegrationTests {
     _ = try await PCMTestWait.withDeadline("session.stop(.discard)") {
       try await session.stop(.discard)
     }
-    await diagnostics.flush()
+    try await PCMTestWait.withDeadline("deferred-retirement overflow flush") {
+      await diagnostics.flush()
+    }
     let rows = try #require(
       JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [[String: Any]]
     )
@@ -244,6 +257,7 @@ private final class EmitHold: @unchecked Sendable {
   private let release = DispatchSemaphore(value: 0)
 
   var releaseTimedOut: Bool { lock.withLock { timedOut } }
+  var isArmed: Bool { lock.withLock { armed && !opened } }
 
   func arm() {
     lock.withLock {
@@ -329,11 +343,23 @@ private final class DeferredProbeSystem: AppleAudioSystem, @unchecked Sendable {
 private final class ProbeEmissionSink: PCMEmissionSink, @unchecked Sendable {
   private let lock = NSLock()
   private var values: [PCMTerminationCode] = []
+  private var emitCount = 0
+  private var heldIndex: Int?
   private let emitHold: EmitHold?
   init(emitHold: EmitHold? = nil) { self.emitHold = emitHold }
   var failures: [PCMTerminationCode] { lock.withLock { values } }
+  var emissions: Int { lock.withLock { emitCount } }
+  var heldPacketIndex: Int? { lock.withLock { heldIndex } }
   func terminated(_ code: PCMTerminationCode) { lock.withLock { values.append(code) } }
   func emit(_ packet: PCMEncodedPacket) throws -> any PCMAcknowledging {
+    let index = lock.withLock { () -> Int in
+      let current = emitCount
+      emitCount += 1
+      return current
+    }
+    if emitHold?.isArmed == true {
+      lock.withLock { heldIndex = index }
+    }
     emitHold?.holdIfArmed()
     struct Ack: PCMAcknowledging {
       func wait() async -> PCMAcknowledgementResult { .accepted }

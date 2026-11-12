@@ -75,11 +75,15 @@ struct AuthorityHoldTests {
     let driver = SyntheticDriver(), sink = RecordingSink()
     let core = IOSPCMCore(permission: SyntheticConsent(), audio: driver, sink: sink)
     let session = try core.start(configuration: configuration(hold: 9_000_000_000))
-    try await session.ready()
+    try await PCMTestWait.withDeadline("authority-hold ready") {
+      try await session.ready()
+    }
     for _ in 0..<9 { #expect(try await driver.offerSecond()) }
     #expect(sink.packets.isEmpty)
-    try await session.bindAuthority(liveAuthority())
-    try await session.verifySource(authority: liveAuthority(), maximumChunks: 90)
+    // One stamp for bind + verify: two liveAuthority() calls can differ by 1 ms.
+    let authority = try liveAuthority()
+    try await session.bindAuthority(authority)
+    try await session.verifySource(authority: authority, maximumChunks: 90)
     #expect(try await driver.offerSecond())
     #expect(sink.packets == [0])
     let stopped = try await PCMTestWait.withDeadline("authority-hold stop(.drain)") {
@@ -93,7 +97,9 @@ struct AuthorityHoldTests {
     let driver = SyntheticDriver(), sink = RecordingSink()
     let core = IOSPCMCore(permission: SyntheticConsent(), audio: driver, sink: sink)
     let session = try core.start(configuration: configuration(hold: 50_000_000))
-    try await session.ready()
+    try await PCMTestWait.withDeadline("authority-hold expiry ready") {
+      try await session.ready()
+    }
     for _ in 0..<3 { _ = try await driver.offerSecond() }
     try await waitUntil("authority hold expiry") { !sink.terminations.isEmpty }
     #expect(sink.terminations == [.authorityHoldExpired])
@@ -109,7 +115,9 @@ struct AuthorityHoldTests {
     let driver = SyntheticDriver(), sink = RecordingSink()
     let core = IOSPCMCore(permission: SyntheticConsent(), audio: driver, sink: sink)
     let session = try core.start(configuration: configuration(hold: 9_000_000_000))
-    try await session.ready()
+    try await PCMTestWait.withDeadline("authority-hold discard ready") {
+      try await session.ready()
+    }
     for _ in 0..<3 { _ = try await driver.offerSecond() }
     let stopped = try await PCMTestWait.withDeadline("authority-hold discard-via-drain stop") {
       try await session.stop(.drain)
@@ -123,7 +131,9 @@ struct AuthorityHoldTests {
     let driver = SyntheticDriver(), sink = RecordingSink()
     let core = IOSPCMCore(permission: SyntheticConsent(), audio: driver, sink: sink)
     let session = try core.start(configuration: configuration(hold: 9_900_000_000))
-    try await session.ready()
+    try await PCMTestWait.withDeadline("authority-hold overflow ready") {
+      try await session.ready()
+    }
     for _ in 0..<11 { _ = try await driver.offerSecond() }
     try await waitUntil("authority-hold overflow termination") { !sink.terminations.isEmpty }
     #expect(sink.packets.isEmpty)
@@ -137,14 +147,23 @@ struct AuthorityHoldTests {
     let driver = SyntheticDriver(), sink = RecordingSink()
     let core = IOSPCMCore(permission: SyntheticConsent(), audio: driver, sink: sink)
     let first = try core.start(configuration: configuration(hold: 9_000_000_000))
-    try await first.ready()
-    try await first.bindAuthority(liveAuthority())
-    await #expect(throws: PCMFailure.self) { try await first.bindAuthority(liveAuthority()) }
+    try await PCMTestWait.withDeadline("authority-hold one-use first ready") {
+      try await first.ready()
+    }
+    let firstAuthority = try liveAuthority()
+    try await first.bindAuthority(firstAuthority)
+    await #expect(throws: PCMFailure.self) { try await first.bindAuthority(firstAuthority) }
     _ = try await first.stop(.discard)
 
     let second = try core.start(configuration: configuration(hold: 9_000_000_000))
-    try await second.ready()
-    await #expect(throws: PCMFailure.self) { try await second.bindAuthority(liveAuthority()) }
+    try await PCMTestWait.withDeadline("authority-hold one-use second ready") {
+      try await second.ready()
+    }
+    // Same runID/stamp from the first session must be rejected: run IDs are
+    // one-use across sessions, not merely "a fresh authority fails".
+    await #expect(throws: PCMFailure.self) {
+      try await second.bindAuthority(firstAuthority)
+    }
     _ = try? await second.stop(.discard)
   }
 

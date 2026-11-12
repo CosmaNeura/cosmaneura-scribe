@@ -36,7 +36,13 @@ struct InterruptedTailAdmissionTests {
       try await driver.freezeInput(sessionID: 1)
       try await driver.release(sessionID: 1)
     }
-    await diagnostics.flush()
+    // Idle Mac at edcb2ab7: this flush took ~3.8–3.9 s (suite timed out at the
+    // default 3 s). Keep the deadline wrapper with an explicit 10 s bound.
+    try await PCMTestWait.withDeadline(
+      "interrupted-tail diagnostics flush", timeout: .seconds(10)
+    ) {
+      await diagnostics.flush()
+    }
     let rows = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [[String: Any]])
     #expect(rows.last?["event"] as? String == "driverAdmissionOverflow")
     #expect(rows.filter { $0["event"] as? String == "driverAdmissionOverflow" }.count == 1)
