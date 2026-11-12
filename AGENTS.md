@@ -47,8 +47,6 @@ product — do not copy its freer production authority here.
 - Put secrets or PHI in the repo or in chat.
 - Touch CosmaBot production authority as if it applied to Scribe.
 - Edit someone else’s `codex/*` branches.
-- Post commit statuses or check runs.
-- Add workflow files on branches.
 
 Commands, tiers, flight plans, and deploy-kit detail:
 `docs/reference/archive/agent-rules/AGENTS-v0.2.1.md`. API domain rules:
