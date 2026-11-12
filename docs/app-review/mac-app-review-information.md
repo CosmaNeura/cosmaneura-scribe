@@ -1,21 +1,77 @@
-# Mac App Store — App Review Information (Cosmaneura Scribe for Mac)
+# Mac App Store — App Review Information
 
 **Status:** Draft for founder fill-in. No App Store Connect action, no
 resubmission, and no reply to Apple is authorized by this document.
 
-**Rejected build context:** App Store submission 1.0 (131) was refused under
-Guideline 2.1(a) (app completeness / launch error). A separate effort owns the
-launch bug. This document covers only the **App Review Information** a reviewer
-needs once a fixed binary can open.
+**Rejected build context:** App Store submission **1.0 (122)**, reviewed
+**10 Nov 2026** on **macOS 27.2**, was refused under:
+
+| Guideline | What Apple cited | Owner of the fix |
+| --- | --- | --- |
+| **2.1(a)** Performance — App Completeness | Error at launch | Separate launch-bug track (not this doc) |
+| **5.2.5** Legal — Intellectual Property / Apple Products | App name uses “Mac” inappropriately | Metadata rename in § Metadata below (John picks the public name) |
+
+This document covers **App Review Information** and **metadata rename notes** a
+reviewer / founder needs once a fixed binary can open. It does not authorize
+Connect edits, a reply to Apple, or resubmission.
 
 **Hard boundaries:** Synthetic data only. No PHI. No real passwords, Clerk
 secrets, API keys, or production credentials in this file, in PRs, or in chat.
 Placeholders use angle brackets. Do not paste live values into the repository.
 
-**Product under review:** Cosmaneura Scribe for Mac — Electron desktop companion
-(`apps/desktop-companion`) with native Clerk auth and audio helpers. Public name
-from packaging: *Cosmaneura Scribe for Mac*. Sign-in is Clerk hosted auth, not a
-custom username/password form inside the app.
+**Product under review:** Electron desktop companion (`apps/desktop-companion`)
+with native Clerk auth and audio helpers. Packaging today still exposes
+*Cosmaneura Scribe for Mac* (`PUBLIC_MAC_NAME`); that string must change before
+resubmit per § Metadata. Sign-in is Clerk hosted auth, not a custom
+username/password form inside the app.
+
+---
+
+## Metadata rename — Guideline 5.2.5 (John’s name pick required)
+
+Apple rejected the listing because the **app name uses “Mac” inappropriately**.
+Guideline **5.2.5 Apple Products** states (paraphrased from
+[App Store Review Guidelines](https://developer.apple.com/app-store/review/guidelines/)):
+do not create an app that appears confusingly similar to an existing Apple
+product, interface, or advertising theme, and do not misuse Apple product brand
+names in the app. On the Mac App Store, appending “Mac” / “for Mac” to the
+product name is treated as that misuse — the storefront already identifies the
+platform.
+
+**Public app name — founder pick (do not invent in git):**
+
+| Field | Value |
+| --- | --- |
+| **New App Store name** | `<JOHN_PICKED_APP_NAME>` — **John chooses**; leave this placeholder until he picks. |
+| Name candidates (not chosen) | `Cosmas Scribe` · `Cosmaneura Scribe` |
+| Current rejected name (drop) | `Cosmaneura Scribe for Mac` |
+
+Do **not** commit John’s final pick into this file until he states it. After he
+picks, replace `<JOHN_PICKED_APP_NAME>` everywhere this doc still says the old
+marketing string, and update App Store Connect + packaging display name in a
+follow-on change (out of scope for this docs-only PR).
+
+### Metadata fields that must drop “Mac” / “for Mac”
+
+Strip the platform word from every customer-facing App Store Connect field
+below. Prefer `<JOHN_PICKED_APP_NAME>` (or a short accurate phrase that does not
+contain `Mac`, `macOS`, `iMac`, `MacBook`, etc.).
+
+| Connect / asset field | Why it must drop “Mac” / “for Mac” | Action |
+| --- | --- | --- |
+| **Name** (app name, ≤30 chars) | Direct 5.2.5 citation — rejected name included “Mac”. | Set to `<JOHN_PICKED_APP_NAME>`. |
+| **Subtitle** | Metadata adjacent to the name; Apple reads subtitle with the name for trademark/similarity. | Rewrite without “Mac” / “for Mac”. |
+| **Keyword** (keyword field) | Keywords must not pack Apple product brand terms; “mac” / “for mac” invite the same 5.2.5 hit. | Remove `mac`, `for mac`, and similar tokens. |
+| **Description** | Long-form listing copy is reviewed for Apple product-name misuse alongside the title. | Replace “Scribe for Mac” / “Mac app” style phrasing with the picked name or neutral “desktop” wording. |
+| **Screenshot** (and preview) text / chrome | On-image captions, device frames labeled “Mac”, or UI chrome that brands the product as “… for Mac” count as metadata. | Re-export shots so visible titles match `<JOHN_PICKED_APP_NAME>`; no “Mac” / “for Mac” overlays. |
+
+**Still allowed / not the 5.2.5 problem:** saying the binary runs on macOS inside
+**App Review Information → Notes** (reviewer instructions), technical
+entitlement docs, or internal repo paths. The prohibition is **customer-facing
+listing and product branding**, not documenting that Review happens on a Mac.
+
+**Out of scope here:** binary display-name / `PUBLIC_MAC_NAME` code change,
+Connect upload, and any reply to Apple.
 
 ---
 
@@ -66,7 +122,7 @@ Apple’s ~4,000 character limit. Replace angle-bracket placeholders before
 submit. Do **not** put PHI or real production passwords in Notes.
 
 ```text
-Thank you for reviewing Cosmaneura Scribe for Mac.
+Thank you for reviewing <JOHN_PICKED_APP_NAME>.
 
 WHAT THE APP DOES
 Scribe helps a clinician record an in-person or video visit after patient consent, then prepare a visit note in the CosmaNeura web dashboard. This build uses our staging environment with synthetic (invented) data only. Please do not enter real patient information.
@@ -77,7 +133,7 @@ Sign-in is required. Tap Sign in. A secure Clerk browser window opens (ephemeral
 If you see practice setup or activation messages, the demo account was not pre-activated — contact us with the contact info below rather than continuing.
 
 PERMISSIONS (asked only when you set up recording, not at cold launch)
-• Microphone — records the clinician-selected Mac microphone after consent. Usage: “Scribe records the selected microphone only after patient consent.”
+• Microphone — records the clinician-selected microphone after consent. Usage: “Scribe records the selected microphone only after patient consent.”
 • Screen Recording (only if you choose “On a video call”) — captures audio from the meeting window you select after consent. Usage: “Scribe captures audio from the meeting selected by the provider after patient consent.”
 Use System Settings → Privacy & Security if macOS needs a toggle, then return and choose “Check recording access.”
 
@@ -94,7 +150,7 @@ NETWORK
 The app needs HTTPS to: staging Clerk (hosted sign-in), https://staging-app.cosmaneura.com (catalog, consent, session, upload authority), and one Azure Blob Storage origin for encrypted audio upload. Offline use is not supported for this demo.
 
 DEMO ACCOUNT
-Use only the Sign-in Required credentials in App Review Information. All names and speech must remain synthetic.
+Use only the Sign-in Required credentials in App Review Information. All names and speech must remain synthetic. Do not put real passwords in git; credentials live only in App Store Connect / founder secret store.
 ```
 
 **Character count (template above, including labels):** keep the filled Notes
@@ -111,9 +167,10 @@ are instructions or placeholders — never commit real secrets.
 
 | Field | What to fill |
 | --- | --- |
+| **Name / Subtitle / Keyword / Description / Screenshots** | See § Metadata — must match `<JOHN_PICKED_APP_NAME>` with no “Mac” / “for Mac”. |
 | **Sign-in required** | **Yes** (checked). The Mac app is unusable for Review without Clerk sign-in. |
-| **User name** | `<REVIEWER_SYNTHETIC_EMAIL>` — the staging Clerk primary email John provisions. |
-| **Password** | `<REVIEWER_SYNTHETIC_PASSWORD>` — or document in Notes if the staging instance uses email one-time code only (then explain the OTP path and ensure John can supply a stable factor Apple accepts). Prefer a password factor for Review simplicity. |
+| **User name** | `<REVIEWER_SYNTHETIC_EMAIL>` — the staging Clerk primary email John provisions (synthetic only). |
+| **Password** | `<REVIEWER_SYNTHETIC_PASSWORD>` — store only in App Store Connect / founder secret store; **never commit real passwords to git**. Or document in Notes if the staging instance uses email one-time code only (then explain the OTP path and ensure John can supply a stable factor Apple accepts). Prefer a password factor for Review simplicity. |
 | **Contact information — First name** | `<CONTACT_FIRST_NAME>` (founder contact who can answer within Review hours). |
 | **Contact information — Last name** | `<CONTACT_LAST_NAME>` |
 | **Contact information — Phone number** | `<CONTACT_PHONE_E164>` — reachable during Review. |
@@ -190,9 +247,10 @@ DO NOT: merge PRs; touch App Store Connect submit/reply; use production Clerk/Co
 put real passwords in git; use PHI; edit codex/* branches you do not own.
 
 GOAL
-Leave a staging Cosmaneura Scribe for Mac build that a stranger can: launch →
-Clerk Sign in → Today’s patients → walk-in synthetic patient → mic consent →
-short recording → Finish visit → encrypted upload, without practice-setup walls.
+Leave a staging <JOHN_PICKED_APP_NAME> Mac App Store build that a stranger can:
+launch → Clerk Sign in → Today’s patients → walk-in synthetic patient → mic
+consent → short recording → Finish visit → encrypted upload, without
+practice-setup walls. Listing name must not include “Mac” / “for Mac” (5.2.5).
 
 STEPS
 1) Confirm the binary under Review is sealed to staging:
