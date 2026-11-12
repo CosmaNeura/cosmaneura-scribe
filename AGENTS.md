@@ -28,7 +28,7 @@ product — do not copy its freer production authority here.
 - Read-only inspection of docs and non-secret config.
 - Run the relevant tests inside the cloud agent before pushing.
 - Push once per round (no empty commits; one substantive push after local proof).
-- Add the `ci:full` label before asking for Fable review.
+- Get a green CI and CodeQL run on the head before asking for Fable review.
 
 ## Needs John’s yes
 
