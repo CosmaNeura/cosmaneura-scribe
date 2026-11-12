@@ -157,16 +157,30 @@ private func waitForBoundary(
   }
 }
 
-private actor RetirementLatch {
+/// Test-support latch with a synchronous, Sendable-safe open() so defer and
+/// nonisolated call sites can release without actor hops. Behaviour matches
+/// the prior actor latch: waiters resume when open() runs.
+private final class RetirementLatch: @unchecked Sendable {
+  private let lock = NSLock()
   private var opened = false
   private var waiters: [CheckedContinuation<Void, Never>] = []
   func wait() async {
-    if opened { return }
-    await withCheckedContinuation { waiters.append($0) }
+    if lock.withLock({ opened }) { return }
+    await withCheckedContinuation { continuation in
+      let resumeNow = lock.withLock { () -> Bool in
+        if opened { return true }
+        waiters.append(continuation)
+        return false
+      }
+      if resumeNow { continuation.resume() }
+    }
   }
   func open() {
-    opened = true
-    let pending = waiters; waiters.removeAll()
+    let pending = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+      opened = true
+      defer { waiters.removeAll() }
+      return waiters
+    }
     for waiter in pending { waiter.resume() }
   }
 }

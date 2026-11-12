@@ -64,13 +64,14 @@ struct DeferredRetirementIntegrationTests {
     var expectedFrames = 0
     for _ in 0..<3 {
       expectedFrames += 32
+      let targetFrames = expectedFrames
       let frames = OwnedAudioFrames(
         sampleRateHz: 16_000,
         channels: [Array(repeating: Float(0.125), count: 32)]
       )
       system.offer(frames)
-      try await PCMTestWait.until("capturedAudioFrames == \(expectedFrames)") {
-        session.capturedAudioFrames == expectedFrames
+      try await PCMTestWait.until("capturedAudioFrames == \(targetFrames)") {
+        session.capturedAudioFrames == targetFrames
       }
       #expect(frames.isZeroed)
     }
