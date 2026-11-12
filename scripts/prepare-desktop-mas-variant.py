@@ -68,7 +68,9 @@ def prepare(output: Path, clerk_source: Path) -> None:
         path = output / (name + ".entitlements.DRAFT.plist")
         path.write_bytes(plistlib.dumps(claims)); path.chmod(0o600)
     # No fabricated store version/build, App Group, profiles or distribution identity.
+    # Public display names stay separate from Electron productName / getName identity.
     info = {"CFBundleIdentifier": PARENT, "ElectronTeamID": TEAM,
+            "CFBundleName": "Cosmas Scribe", "CFBundleDisplayName": "Cosmas Scribe",
             "LSMinimumSystemVersion": "14.2",
             "LSApplicationCategoryType": "public.app-category.medical",
             "NSMicrophoneUsageDescription": "Scribe records the selected microphone only after patient consent.",

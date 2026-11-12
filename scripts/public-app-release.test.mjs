@@ -1,11 +1,24 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { installPublicMacPresentation, publicMacRelease } from "../apps/desktop-companion/src/public-app-release.ts";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { installPublicMacPresentation, PUBLIC_MAC_NAME, publicMacRelease } from "../apps/desktop-companion/src/public-app-release.ts";
 
-const release = { schema: 1, displayName: "Cosmaneura Scribe for Mac", marketingVersion: "1.0.0", build: "126", distribution: "Direct beta" };
+const release = { schema: 1, displayName: "Cosmas Scribe", marketingVersion: "1.0.0", build: "126", distribution: "Direct beta" };
+const repo = dirname(dirname(fileURLToPath(import.meta.url)));
+
+test("public Mac display name is Cosmas Scribe and never contains Mac", async () => {
+  assert.equal(PUBLIC_MAC_NAME, "Cosmas Scribe");
+  assert.equal(/mac/i.test(PUBLIC_MAC_NAME), false);
+  const desktopRelease = JSON.parse(await readFile(join(repo, "apps/desktop-companion/desktop-release.json"), "utf8"));
+  assert.equal(desktopRelease.displayName, PUBLIC_MAC_NAME);
+  assert.equal(/mac/i.test(desktopRelease.displayName), false);
+  const html = await readFile(join(repo, "apps/desktop-companion/standalone/provider.html"), "utf8");
+  assert.match(html, /<title>Cosmas Scribe<\/title>/);
+  assert.equal(/for Mac|Scribe for Mac/i.test(html), false);
+});
 
 test("About distinguishes packaged environment from distribution", () => {
   assert.deepEqual(publicMacRelease(release, "https://staging-app.cosmaneura.com", "Direct beta"), {
@@ -36,9 +49,10 @@ test("public About/menu uses the packaged release without changing internal iden
       setPath: () => { throw new Error("Account storage must not be changed"); } },
     { buildFromTemplate: value => value, setApplicationMenu: value => { template = value; } }, "Direct beta");
     await Promise.resolve();
-    assert.deepEqual(about, { applicationName: "Cosmaneura Scribe for Mac", applicationVersion: "1.0.0",
+    assert.deepEqual(about, { applicationName: "Cosmas Scribe", applicationVersion: "1.0.0",
       version: "Build 126 · Direct beta · Staging (S)" });
-    assert.equal(template[0].label, "Cosmaneura Scribe for Mac");
+    assert.equal(template[0].label, "Cosmas Scribe");
+    assert.equal(/mac/i.test(template[0].label), false);
     assert.equal(template[0].submenu.at(-1).role, "quit");
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

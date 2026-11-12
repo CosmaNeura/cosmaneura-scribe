@@ -16,6 +16,25 @@ SPEC.loader.exec_module(MAS)
 
 
 class DesktopMasVariantTests(unittest.TestCase):
+    def test_store_info_uses_public_display_name_without_mac(self):
+        # Mirror prepare()'s draft Info.plist public names without Clerk/source IO.
+        info = {
+            "CFBundleIdentifier": MAS.PARENT,
+            "ElectronTeamID": MAS.TEAM,
+            "CFBundleName": "Cosmas Scribe",
+            "CFBundleDisplayName": "Cosmas Scribe",
+            "LSMinimumSystemVersion": "14.2",
+            "LSApplicationCategoryType": "public.app-category.medical",
+        }
+        self.assertEqual(info["CFBundleName"], "Cosmas Scribe")
+        self.assertEqual(info["CFBundleDisplayName"], "Cosmas Scribe")
+        self.assertNotRegex(info["CFBundleName"], r"(?i)mac")
+        self.assertNotRegex(info["CFBundleDisplayName"], r"(?i)mac")
+        source = (HERE / "prepare-desktop-mas-variant.py").read_text()
+        self.assertIn('"CFBundleName": "Cosmas Scribe"', source)
+        self.assertIn('"CFBundleDisplayName": "Cosmas Scribe"', source)
+        self.assertNotIn("for Mac", source)
+
     def test_draft_store_claims_cannot_pass_the_existing_direct_distribution_checker(self):
         for name, expected in (("parent", HOST_CLAIMS), ("native-auth", PROVIDER_CLAIMS)):
             with self.subTest(name=name), self.assertRaises(ValueError):

@@ -2,7 +2,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { App, Menu } from "electron";
 
-export const PUBLIC_MAC_NAME = "Cosmaneura Scribe for Mac";
+export const PUBLIC_MAC_NAME = "Cosmas Scribe";
 export interface PublicMacRelease {
   readonly displayName: typeof PUBLIC_MAC_NAME;
   readonly marketingVersion: string;

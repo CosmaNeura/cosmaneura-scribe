@@ -15,7 +15,7 @@ await mkdir(output); // Refuse an existing package; never overwrite a prior app.
 const renderer = join(output, "renderer"), standalone = join(repo, "apps/desktop-companion/standalone");
 const releasePath = join(repo, "apps/desktop-companion/desktop-release.json"), release = JSON.parse(await readFile(releasePath, "utf8"));
 if (Object.keys(release).sort().join(",") !== "build,displayName,marketingVersion,schema" || release.schema !== 1
-  || release.displayName !== "Cosmaneura Scribe for Mac" || typeof release.marketingVersion !== "string"
+  || release.displayName !== "Cosmas Scribe" || typeof release.marketingVersion !== "string"
   || !/^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$/u.test(release.marketingVersion)
   || typeof release.build !== "string" || !/^[1-9][0-9]{0,9}$/u.test(release.build)) throw new Error("Invalid public release metadata");
 await mkdir(renderer);
