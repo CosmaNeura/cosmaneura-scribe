@@ -26,6 +26,9 @@ product — do not copy its freer production authority here.
 - Branch, code, synthetic tests, draft/open PRs, fix CI on that PR.
 - Use **staging** hosts, profiles, and keys only.
 - Read-only inspection of docs and non-secret config.
+- Run the relevant tests inside the cloud agent before pushing.
+- Push once per round (no empty commits; one substantive push after local proof).
+- Add the `ci:full` label before asking for Fable review.
 
 ## Needs John’s yes
 
@@ -44,6 +47,8 @@ product — do not copy its freer production authority here.
 - Put secrets or PHI in the repo or in chat.
 - Touch CosmaBot production authority as if it applied to Scribe.
 - Edit someone else’s `codex/*` branches.
+- Post commit statuses or check runs.
+- Add workflow files on branches.
 
 Commands, tiers, flight plans, and deploy-kit detail:
 `docs/reference/archive/agent-rules/AGENTS-v0.2.1.md`. API domain rules:
