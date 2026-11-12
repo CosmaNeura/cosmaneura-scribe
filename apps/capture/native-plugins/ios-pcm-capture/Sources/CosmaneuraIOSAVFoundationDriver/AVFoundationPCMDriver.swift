@@ -163,9 +163,33 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
     lifecycle: AppleRecordingLifecycle = .foregroundOnly,
     diagnostics: PCMStartupDiagnostics = .shared
   ) {
+    self.init(
+      system: system,
+      foreground: foreground,
+      frameCapacity: frameCapacity,
+      lifecycle: lifecycle,
+      diagnostics: diagnostics,
+      deferredRetirement: nil
+    )
+  }
+
+  /// Internal test seam only. Production callers use the public initializer;
+  /// deferred retirement defaults to immediate completion (current behaviour).
+  init(
+    system: any AppleAudioSystem,
+    foreground: any AppleApplicationForegroundProviding,
+    frameCapacity: UInt32 = 4_096,
+    lifecycle: AppleRecordingLifecycle = .foregroundOnly,
+    diagnostics: PCMStartupDiagnostics = .shared,
+    deferredRetirement: DriverCallbackGate.DeferredRetirement?
+  ) {
     self.system = system
     self.foreground = foreground
-    callbackGate = DriverCallbackGate(continueInBackground: lifecycle == .nativeEncrypted, diagnostics: diagnostics)
+    callbackGate = DriverCallbackGate(
+      continueInBackground: lifecycle == .nativeEncrypted,
+      diagnostics: diagnostics,
+      deferredRetirement: deferredRetirement
+    )
     profile = lifecycle == .nativeEncrypted ? .nativeEncryptedSpeech : .foregroundTwoPartySpeech
     self.frameCapacity = min(
       max(frameCapacity, 1),
