@@ -546,14 +546,18 @@ try {
       await until(() => root.querySelector('[data-session-action="check"]')?.disabled === false);
       for (let attempt = 0; attempt < 3; attempt++) {
         click("check"); await until(() => root.getAttribute("aria-busy") === "false");
-        assert.ok(root.textContent.includes("Sign-in unavailable"));
+        assert.ok(root.textContent.includes("Session unavailable"));
       }
       assert.equal(f.connects, 0); assert.equal(f.signIns, 0); assert.equal(f.signOuts, 0);
       assert.equal(root.querySelector('[data-session-action="open"]'), null);
-      click("sign-out"); await until(() => root.querySelector('[data-session-action="sign-in"]')?.disabled === false);
-      assert.equal(f.signOuts, 1); assert.equal(f.connects, 0);
+      assert.ok(root.querySelector('[data-session-action="sign-in"]'));
+      const beforeSignIn = f.signIns;
+      const beforeConnects = f.connects;
       click("sign-in"); await until(visible);
-      assert.equal(f.signIns, 1); assert.equal(f.connects, 1);
+      assert.equal(f.signIns, beforeSignIn + 1);
+      assert.equal(f.connects, beforeConnects + 1);
+      // Cold unavailable has no prior workspace; close() is a no-op before signIn, then open connects once.
+      assert.equal(f.closes, 0);
     } finally { await dispose(); }
   });
   await check(async () => {
@@ -568,7 +572,8 @@ try {
       f.failClose = false; click("stop");
       await until(() => root.querySelector('[data-session-action="sign-out"]')?.disabled === false);
       click("sign-out");
-      await until(() => root.querySelector('[data-session-action="sign-in"]')?.disabled === false);
+      await until(() => root.textContent.includes("Be present. Leave with your note.")
+        && root.querySelector('[data-session-action="sign-in"]')?.disabled === false);
       assert.equal(f.signOuts, 1); assert.equal(f.connects, 1); assert.ok(f.closes >= 2);
       click("sign-in"); await until(visible);
       assert.equal(f.signIns, 1); assert.equal(f.connects, 2);
@@ -760,8 +765,7 @@ try {
       await until(visible);
       f.host.session.getState = async () => { throw new Error("Offline state read failure"); };
       f.change("ready"); await until(() => f.closes === 1); click("open");
-      await until(() => root.textContent.includes("Sign-in unavailable")
-        || root.textContent.includes("could not be checked"));
+      await until(() => root.textContent.includes("Session unavailable"));
       assert.equal(visible(), false); assert.equal(f.connects, 1);
     } finally { await dispose(); }
   });

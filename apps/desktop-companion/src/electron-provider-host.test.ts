@@ -73,30 +73,58 @@ async function fixture() {
     waitReady: (value: Promise<void>) => { ready = value; }, cleanup: () => rm(directory, { recursive: true, force: true }) };
 }
 
-async function composedStoreEntry(f: Awaited<ReturnType<typeof fixture>>, options: { mas?: boolean; failRegistration?: boolean; lock?: boolean; inheritedOverride?: boolean } = {}) {
+async function composedStoreEntry(f: Awaited<ReturnType<typeof fixture>>, options: {
+  mas?: boolean; failRegistration?: boolean; lock?: boolean; inheritedOverride?: boolean;
+  /** Dialog responses in order. 0 = Try again, 1 = Quit. Defaults to Quit. */
+  dialogResponses?: number[];
+  /** How many native open attempts throw before a successful owner is returned. */
+  openFailuresBeforeSuccess?: number;
+  /** When true, showMessageBox rejects so the entry must fall back to showErrorBox. */
+  failMessageBox?: boolean;
+} = {}) {
   vi.resetModules();
   let ready = false;
   f.runtime.app.getName = () => "Cosmaneura Scribe Store";
   const prepare = vi.fn(async () => {
     f.events.push("path_prepare");
     await Promise.resolve(); ready = true; f.events.push("ready_during_path_prepare");
-    const directory = join(f.directory, "user-data"); await mkdir(directory, { mode: 0o700 }); return directory;
+    const directory = join(f.directory, "user-data");
+    // Retries reuse the same Store userData path; mkdir must tolerate EEXIST.
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    return directory;
   });
   f.runtime.protocol.registerSchemesAsPrivileged.mockImplementation(() => {
     f.events.push("scheme_registration");
     if (ready || options.failRegistration) throw new Error("Invented forbidden native scheme registration");
   });
-  const showMessageBox = vi.fn(async () => ({ response: 1 })), setPath = vi.fn();
+  const responses = options.dialogResponses ?? [1];
+  let dialogIndex = 0;
+  const showErrorBox = vi.fn(() => { f.events.push("error_box"); });
+  const showMessageBox = vi.fn(async () => {
+    if (options.failMessageBox) throw new Error("Invented dialog failure");
+    const response = responses[Math.min(dialogIndex, responses.length - 1)]!;
+    dialogIndex += 1;
+    f.events.push(`dialog${response}`);
+    return { response };
+  }), setPath = vi.fn();
   const electron = { ...f.runtime, app: Object.assign(f.runtime.app, { setPath, setAboutPanelOptions: vi.fn() }),
     Menu: { buildFromTemplate: vi.fn((template: unknown) => template), setApplicationMenu: vi.fn() },
-    dialog: { ...f.runtime.dialog, showMessageBox } };
+    dialog: { ...f.runtime.dialog, showMessageBox, showErrorBox } };
   const processPort = Object.create(process);
   Object.defineProperties(processPort, { mas: { value: options.mas ?? true },
     versions: { value: { ...process.versions, electron: "44.9.1", node: "24.10.0" } },
     env: { value: { ...process.env, ...(options.inheritedOverride ? { MAC_CHROMIUM_TMPDIR: "/invented/inherited-temp" } : {}) } },
     stderr: { value: Object.assign(Object.create(process.stderr), { write: vi.fn(() => true) }) } });
   vi.stubGlobal("process", processPort);
-  f.factory.open.mockImplementation(async () => { expect(process.env.MAC_CHROMIUM_TMPDIR).toBeUndefined(); return f.owner; });
+  let openAttempts = 0;
+  const failures = options.openFailuresBeforeSuccess ?? 0;
+  f.factory.open.mockImplementation(async () => {
+    expect(process.env.MAC_CHROMIUM_TMPDIR).toBeUndefined();
+    openAttempts += 1;
+    f.events.push("open");
+    if (openAttempts <= failures) throw new Error("Invented native Store service unavailable");
+    return f.owner;
+  });
   vi.doMock("electron", () => electron);
   const actual = await vi.importActual<typeof MacAppStoreXpcModule>("./mac-app-store-xpc.js");
   const realPrepareTemp = actual.MacAppStoreSingletonTemp.prepare.bind(actual.MacAppStoreSingletonTemp);
@@ -111,7 +139,7 @@ async function composedStoreEntry(f: Awaited<ReturnType<typeof fixture>>, option
   vi.doMock("../standalone/provider-host.mjs", () => ({ openProvider: f.factory.open }));
   const entry = "../standalone/main-mas-xpc.mjs";
   await import(entry);
-  return { prepare, prepareTemp, showMessageBox, setPath, advanceReady: () => { ready = true; }, restore: () => {
+  return { prepare, prepareTemp, showMessageBox, showErrorBox, setPath, advanceReady: () => { ready = true; }, restore: () => {
     prepareTemp.mockRestore();
     vi.doUnmock("electron"); vi.doUnmock("./mac-app-store-xpc.js"); vi.doUnmock("../standalone/provider-host.mjs");
     vi.unstubAllGlobals(); vi.resetModules();
@@ -203,7 +231,7 @@ describe("packaged desktop provider host", () => {
       await application!.close(); expect(f.dispose).toHaveBeenCalledOnce(); expect(f.runtime.app.quit).toHaveBeenCalledOnce();
     } finally { await f.cleanup(); }
   });
-  it("persists Store acquisition failure after native cleanup and before host quit", async () => {
+  it("persists Store acquisition failure after native cleanup without quitting the process", async () => {
     const f = await fixture();
     try {
       f.runtime.app.getName = () => "Cosmaneura Scribe Store";
@@ -212,18 +240,83 @@ describe("packaged desktop provider host", () => {
       f.factory.open.mockImplementation(() => recordRejectedStoreAcquisition(diagnostics, async () => {
         f.events.push("acquisition_cleanup"); throw new Error("invented rejected acquisition");
       }));
-      f.runtime.app.quit.mockImplementation(() => {
-        expect(JSON.parse(readFileSync(join(f.directory, "store-bootstrap-diagnostics-v1.jsonl"), "utf8")))
-          .toMatchObject({ event: "store_bootstrap_failed", reason_code: 7 });
-        f.events.push("quit");
-      });
       await expect(startElectronProvider(f.runtime, f.factory, "Cosmaneura Scribe Store", undefined,
         await MacAppStoreSingletonTemp.prepare(f.directory))).rejects.toThrow("unavailable");
-      await vi.waitFor(() => { expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
       await diagnostics.failed();
-      expect(f.events).toEqual(["acquisition_cleanup", "fixed_diagnostic", "quit"]);
+      expect(JSON.parse(readFileSync(join(f.directory, "store-bootstrap-diagnostics-v1.jsonl"), "utf8")))
+        .toMatchObject({ event: "store_bootstrap_failed", reason_code: 7 });
+      expect(f.events).toEqual(["acquisition_cleanup", "fixed_diagnostic"]);
+      expect(f.runtime.app.quit).not.toHaveBeenCalled();
       expect(f.dispose).not.toHaveBeenCalled();
     } finally { await f.cleanup(); }
+  });
+  it("retries a failed Store native open on Try again without quitting, then shows the window", async () => {
+    const f = await fixture(), entry = await composedStoreEntry(f, {
+      openFailuresBeforeSuccess: 1, dialogResponses: [0],
+    });
+    try {
+      await vi.waitFor(() => { expect(f.window).not.toBeNull(); expect(f.events).toContain("show"); });
+      expect(entry.showMessageBox).toHaveBeenCalledOnce();
+      expect(entry.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+        message: "Scribe could not open", buttons: ["Try again", "Quit"],
+      }));
+      expect(f.factory.open).toHaveBeenCalledTimes(2);
+      expect(f.runtime.app.requestSingleInstanceLock).toHaveBeenCalledTimes(2);
+      expect(f.runtime.protocol.registerSchemesAsPrivileged).toHaveBeenCalledOnce();
+      expect(f.runtime.app.quit).not.toHaveBeenCalled();
+      expect(f.events.indexOf("open")).toBeLessThan(f.events.indexOf("dialog0"));
+      expect(f.events.indexOf("dialog0")).toBeLessThan(f.events.lastIndexOf("open"));
+      expect(f.events).not.toContain("quit");
+      expect(f.events).toEqual(expect.arrayContaining([
+        "scheme_registration", "lock", "open", "dialog0", "lock", "open", "window", "show",
+      ]));
+    } finally { entry.restore(); await f.cleanup(); }
+  });
+  it("quits exactly once after repeated Store open failures when the user picks Quit", async () => {
+    const f = await fixture(), entry = await composedStoreEntry(f, {
+      // Keep failing for every attempt exercised by the dialog sequence.
+      openFailuresBeforeSuccess: 3, dialogResponses: [0, 0, 1],
+    });
+    try {
+      await vi.waitFor(() => { expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
+      expect(entry.showMessageBox).toHaveBeenCalledTimes(3);
+      expect(f.factory.open).toHaveBeenCalledTimes(3);
+      expect(f.window).toBeNull();
+      expect(f.events.filter(event => event === "dialog0")).toEqual(["dialog0", "dialog0"]);
+      expect(f.events.filter(event => event === "dialog1")).toEqual(["dialog1"]);
+      expect(f.events.filter(event => event === "quit")).toEqual(["quit"]);
+      expect(f.events.indexOf("dialog1")).toBeLessThan(f.events.indexOf("quit"));
+      expect(f.runtime.protocol.registerSchemesAsPrivileged).toHaveBeenCalledOnce();
+    } finally { entry.restore(); await f.cleanup(); }
+  });
+  it("caps Try again then shows a Quit-only dialog and quits once", async () => {
+    const { STORE_LAUNCH_RETRY_LIMIT } = await import("./store-launch-recovery.js");
+    const f = await fixture(), entry = await composedStoreEntry(f, {
+      openFailuresBeforeSuccess: STORE_LAUNCH_RETRY_LIMIT + 2,
+      dialogResponses: [0, 0, 0],
+    });
+    try {
+      await vi.waitFor(() => { expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
+      expect(entry.showMessageBox).toHaveBeenCalledTimes(STORE_LAUNCH_RETRY_LIMIT + 1);
+      expect(entry.showMessageBox).toHaveBeenLastCalledWith(expect.objectContaining({
+        buttons: ["Quit"],
+      }));
+      expect(f.factory.open).toHaveBeenCalledTimes(STORE_LAUNCH_RETRY_LIMIT + 1);
+      expect(f.window).toBeNull();
+      expect(f.events.filter(event => event === "quit")).toEqual(["quit"]);
+    } finally { entry.restore(); await f.cleanup(); }
+  });
+  it("falls back to showErrorBox and quits when showMessageBox rejects", async () => {
+    const f = await fixture(), entry = await composedStoreEntry(f, {
+      openFailuresBeforeSuccess: 1, failMessageBox: true,
+    });
+    try {
+      await vi.waitFor(() => { expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
+      expect(entry.showErrorBox).toHaveBeenCalledOnce();
+      expect(f.events).toContain("error_box");
+      expect(f.window).toBeNull();
+      expect(f.events.filter(event => event === "quit")).toEqual(["quit"]);
+    } finally { entry.restore(); await f.cleanup(); }
   });
   it("serves only verified renderer assets without request-derived file access", async () => {
     const f = await fixture();

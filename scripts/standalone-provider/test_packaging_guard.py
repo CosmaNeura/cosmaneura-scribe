@@ -20,6 +20,7 @@ from packaging_guard import (
     preflight_tree,
     refuse_live_payload,
     require_founder_unlock,
+    require_store_application_auth_enabled,
     require_store_auth_enabled,
 )
 from prepare_production_profiles import prepare, project
@@ -597,3 +598,59 @@ def test_store_auth_enabled_guard_accepts_only_enabled_packages():
     ):
         with pytest.raises(ValueError, match="enabled=true"):
             require_store_auth_enabled(*bad)
+
+
+def _store_app_fixture(tmp_path: Path, *, auth_layout: str, enabled: bool = True) -> Path:
+    application = tmp_path / "Synthetic Store.app"
+    resources = application / "Contents/Resources/app"
+    resources.mkdir(parents=True)
+    (resources / "provider-profile.json").write_text(
+        json.dumps({
+            "schema": 1,
+            "enabled": True,
+            "coreOrigin": STAGING_CORE,
+            "uploadOrigins": ["https://synthblob01.blob.core.windows.net"],
+        }) + "\n"
+    )
+    auth_plist = {"CosmasNativeAuth": {"enabled": enabled}}
+    if auth_layout == "native":
+        path = resources / "native/ScribeDesktopProvider.app/Contents/Info.plist"
+    elif auth_layout == "xpc":
+        path = application / "Contents/XPCServices/ScribeDesktopProvider.xpc/Contents/Info.plist"
+    elif auth_layout == "both":
+        native = resources / "native/ScribeDesktopProvider.app/Contents/Info.plist"
+        xpc = application / "Contents/XPCServices/ScribeDesktopProvider.xpc/Contents/Info.plist"
+        native.parent.mkdir(parents=True)
+        xpc.parent.mkdir(parents=True)
+        native.write_bytes(plistlib.dumps(auth_plist))
+        xpc.write_bytes(plistlib.dumps(auth_plist))
+        return application
+    elif auth_layout == "missing":
+        return application
+    else:
+        raise AssertionError(auth_layout)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(plistlib.dumps(auth_plist))
+    return application
+
+
+@pytest.mark.parametrize("auth_layout", ["native", "xpc"])
+def test_store_application_auth_guard_accepts_exact_layouts(tmp_path, auth_layout):
+    require_store_application_auth_enabled(_store_app_fixture(tmp_path, auth_layout=auth_layout))
+
+
+def test_store_application_auth_guard_refuses_disabled_auth(tmp_path):
+    with pytest.raises(ValueError, match="enabled=true"):
+        require_store_application_auth_enabled(
+            _store_app_fixture(tmp_path, auth_layout="native", enabled=False)
+        )
+
+
+def test_store_application_auth_guard_refuses_missing_auth_plist(tmp_path):
+    with pytest.raises(ValueError, match="CosmasNativeAuth Info.plist"):
+        require_store_application_auth_enabled(_store_app_fixture(tmp_path, auth_layout="missing"))
+
+
+def test_store_application_auth_guard_refuses_ambiguous_auth_plist(tmp_path):
+    with pytest.raises(ValueError, match="ambiguous"):
+        require_store_application_auth_enabled(_store_app_fixture(tmp_path, auth_layout="both"))

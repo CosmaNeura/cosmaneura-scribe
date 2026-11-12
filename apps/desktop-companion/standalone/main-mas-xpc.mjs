@@ -3,7 +3,12 @@ import { registerPackagedAppScheme, startElectronProvider } from "../src/electro
 import { MacAppStoreSingletonTemp, prepareMacAppStoreUserData, requireMacAppStoreXpcRuntime } from "../src/mac-app-store-xpc.js";
 import { recordRejectedStoreAcquisition, StoreBootstrapDiagnostics } from "../src/store-bootstrap-diagnostics.js";
 import { installPublicMacPresentation } from "../src/public-app-release.js";
-import { shouldRetryStoreLaunch, STORE_LAUNCH_FAILURE } from "../src/store-launch-recovery.js";
+import {
+  shouldRetryStoreLaunch,
+  STORE_LAUNCH_FAILURE,
+  STORE_LAUNCH_FAILURE_FINAL,
+  STORE_LAUNCH_RETRY_LIMIT,
+} from "../src/store-launch-recovery.js";
 
 installPublicMacPresentation(app, Menu, "Apple distribution");
 
@@ -44,7 +49,27 @@ async function start(bootstrap) {
   }, "Cosmaneura Scribe Store", stage => bootstrap.enter(stage), singletonTemp);
 }
 
+async function showLaunchFailure(options) {
+  await app.whenReady();
+  try {
+    return await dialog.showMessageBox({
+      type: "error",
+      message: options.message,
+      detail: options.detail,
+      buttons: [...options.buttons],
+      defaultId: 0,
+      cancelId: options.buttons.length - 1,
+      noLink: true,
+    });
+  } catch {
+    dialog.showErrorBox(options.message, options.detail);
+    app.quit();
+    return null;
+  }
+}
+
 async function run() {
+  let retries = 0;
   for (;;) {
     const bootstrap = new StoreBootstrapDiagnostics();
     try {
@@ -52,20 +77,23 @@ async function run() {
       return;
     } catch {
       await bootstrap.failed();
-      const result = await dialog.showMessageBox({
-        type: "error",
-        message: STORE_LAUNCH_FAILURE.message,
-        detail: STORE_LAUNCH_FAILURE.detail,
-        buttons: [...STORE_LAUNCH_FAILURE.buttons],
-        defaultId: 0,
-        cancelId: 1,
-        noLink: true,
-      });
+      const canRetry = retries < STORE_LAUNCH_RETRY_LIMIT;
+      if (!canRetry) {
+        await showLaunchFailure(STORE_LAUNCH_FAILURE_FINAL);
+        app.quit();
+        return;
+      }
+      const result = await showLaunchFailure(STORE_LAUNCH_FAILURE);
+      if (result === null) return;
       if (!shouldRetryStoreLaunch(result.response)) {
         app.quit();
         return;
       }
+      retries += 1;
     }
   }
 }
-void run();
+
+void run().catch(() => {
+  app.quit();
+});

@@ -82,16 +82,19 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     if (disposed) return;
     const phase = state?.phase ?? (notice ? "unavailable" : "loading");
     const shown: Record<ProviderSessionPhase, [string, string]> = {
-      disabled: ["Setup required", "This installation is not ready for sign-in yet. Try again after your practice activates Scribe, or contact support."],
+      disabled: ["Setup required", "This installation is not ready for sign-in. Contact support if you need help."],
       loading: ["Opening Scribe", "Checking your secure session…"],
       signedOut: ["Be present. Leave with your note.", "Scribe records with consent and helps you prepare a visit note for review in the CosmaNeura dashboard."],
       signingIn: ["Complete sign-in", "Finish signing in using the secure sign-in window."],
       ready: [scope?.unmount && !scope.abort.signal.aborted ? "" : "Your workspace", ""],
       signOutPending: ["Sign-out needs attention", "Your workspace is closed. Retry sign-out to finish."],
-      unavailable: ["Sign-in unavailable", "Scribe could not reach sign-in services. Check your connection, then try again."],
+      unavailable: ["Session unavailable", "Scribe could not open your session. Try again, or quit and reopen Scribe."],
     };
     [title.textContent, message.textContent] = shown[phase];
-    if (notice) message.textContent = notice;
+    if (notice) {
+      if (state === null) title.textContent = "Session unavailable";
+      message.textContent = notice;
+    }
     actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><div class="provider-account-panel" role="group" aria-label="Account options">${button("sign-out", "Sign out")}<p data-provider-name></p>${host.cancellation ? button("cancel-scribe", cancellationReceipt ? "Cancellation status" : "Cancel Scribe access") : ""}<a href="mailto:dev@cosmaneura.com">Get help</a></div></details>`
       : phase === "signingIn" ? button("sign-out", "Sign out") : "";
     const providerName = actions.querySelector<HTMLElement>("[data-provider-name]"); if (providerName) providerName.textContent = state?.providerDisplayName ?? "Your account";
@@ -128,7 +131,9 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         : (host.activateScribe ? button("activate", "Retry activation") : button("open", "Check access"));
     } else if (phase === "signedOut") recovery.innerHTML = button("sign-in", "Sign in");
     else if (phase === "signOutPending") recovery.innerHTML = button("sign-out", "Retry sign out");
-    else if (phase === "unavailable") recovery.innerHTML = button("check", "Try again") + button("sign-in", "Sign in") + button("sign-out", "Sign out");
+    else if (phase === "unavailable" && state?.phase === "unavailable") {
+      recovery.innerHTML = button("check", "Try again") + button("sign-in", "Sign in") + button("sign-out", "Sign out");
+    } else if (phase === "unavailable") recovery.innerHTML = button("check", "Try again");
     else if (phase === "disabled") recovery.innerHTML = button("check", "Try again");
     else if (phase === "ready" && (!scope || scope.abort.signal.aborted)) {
       if (host.cancellation && cancellationCheckedRevision !== state?.revision) {

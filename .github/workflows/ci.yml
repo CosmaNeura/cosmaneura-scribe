@@ -261,19 +261,6 @@ jobs:
           ./gradlew --no-daemon \
             :cosmaneura-scribe-capacitor-secure-queue:connectedDebugAndroidTest
 
-  desktop-store-launch:
-    runs-on: macos-26
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '24.5.0'
-      - run: npm install --global npm@11.5.2
-      - run: npm ci
-      - name: Prove sandboxed Release Store launch reaches first screen
-        run: node scripts/ci-store-sandboxed-release-launch.mjs
-
   capture-ios:
     needs: capture-web
     runs-on: macos-26

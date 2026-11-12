@@ -129,6 +129,20 @@ def require_store_auth_enabled(desktop_profile: object, auth_info: object) -> No
         raise ValueError("Store package requires CosmasNativeAuth.enabled=true")
 
 
+def store_auth_info_plist_candidates(application: Path) -> list[Path]:
+    """Exact Store auth Info.plist locations only — no recursive first-match search.
+
+    Release layout (see scripts/test_desktop_store_bridge_placement.py and
+    scripts/prepare-desktop-mas-xpc-variant.py place_store_bridge): native helper
+    app under Resources/app/native, or an XPC service beside the parent.
+    """
+    resources = application / "Contents/Resources/app"
+    return [
+        resources / "native/ScribeDesktopProvider.app/Contents/Info.plist",
+        application / "Contents/XPCServices/ScribeDesktopProvider.xpc/Contents/Info.plist",
+    ]
+
+
 def require_store_application_auth_enabled(application: Path) -> None:
     """Fail closed when a Store .app still carries a disabled auth package."""
     resources = application / "Contents/Resources/app"
@@ -136,14 +150,13 @@ def require_store_application_auth_enabled(application: Path) -> None:
     if not profile_path.is_file() or profile_path.is_symlink():
         raise ValueError("Store package requires provider-profile.json")
     profile = json.loads(profile_path.read_text())
-    auth_info_path = (
-        resources / "native/ScribeDesktopProvider.app/Contents/Info.plist"
-    )
-    # Store XPC packages keep auth under Contents/XPCServices or the helper app.
-    if not auth_info_path.is_file():
-        candidates = sorted(resources.rglob("ScribeDesktopProvider*/Contents/Info.plist"))
-        auth_info_path = next((path for path in candidates if path.is_file()), auth_info_path)
-    if not auth_info_path.is_file() or auth_info_path.is_symlink():
+    present = [
+        path for path in store_auth_info_plist_candidates(application)
+        if path.is_file() and not path.is_symlink()
+    ]
+    if not present:
         raise ValueError("Store package requires CosmasNativeAuth Info.plist")
-    auth_info = plistlib.loads(auth_info_path.read_bytes())
+    if len(present) > 1:
+        raise ValueError("Store package has ambiguous CosmasNativeAuth Info.plist")
+    auth_info = plistlib.loads(present[0].read_bytes())
     require_store_auth_enabled(profile, auth_info)

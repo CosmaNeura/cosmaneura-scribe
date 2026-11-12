@@ -124,10 +124,18 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
     () => appWindow && !appWindow.isDestroyed()
       ? appWindow.webContents.executeJavaScript("0", false) : Promise.reject(unavailable()));
   let opening: Promise<void> | null = null;
-  let ended = false, closing: Promise<void> | null = null, askingToRetry = false;
+  let ended = false, closing: Promise<void> | null = null, askingToRetry = false, startupReleased = false;
   const focus = (): void => { if (appWindow && !appWindow.isDestroyed()) { appWindow.show(); appWindow.focus(); } };
   const beforeQuit = (event: Event): void => { if (!ended) { diagnostics("before_quit"); event.preventDefault(); requestClose(); } };
   const windowClose = (event: Event): void => { diagnostics("window_close"); event.preventDefault(); requestClose(); };
+  const detachShell = (): void => {
+    removeApplicationClose?.(); removeApplicationClose = undefined;
+    runtime.app.removeListener("before-quit", beforeQuit); runtime.app.removeListener("second-instance", focus);
+    appWindow?.removeListener("close", windowClose);
+    if (appWindow && !appWindow.isDestroyed()) appWindow.destroy();
+    try { session.protocol.unhandle("app"); } catch { /* Partition may already be gone after a failed open. */ }
+    session.webRequest.onBeforeRequest(null);
+  };
   const close = (): Promise<void> => {
     if (ended) return Promise.resolve();
     return closing ??= (async () => {
@@ -136,11 +144,7 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
       await boundary?.dispose(); diagnostics("boundary_closed");
       await owner?.dispose(); diagnostics("owner_closed");
       ended = true;
-      removeApplicationClose?.(); removeApplicationClose = undefined;
-      runtime.app.removeListener("before-quit", beforeQuit); runtime.app.removeListener("second-instance", focus);
-      appWindow?.removeListener("close", windowClose);
-      if (appWindow && !appWindow.isDestroyed()) appWindow.destroy();
-      session.protocol.unhandle("app"); session.webRequest.onBeforeRequest(null);
+      detachShell();
       diagnostics("quit_ready"); runtime.app.quit();
     })().catch(() => { diagnostics("close_failed"); closing = null; throw unavailable(); });
   };
@@ -159,6 +163,18 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
       finally { askingToRetry = false; }
       if (retry) requestClose();
     });
+  }
+  /** Failed open/window startup must not quit. Store Try again reuses this process,
+   * lock, and scheme registration; Beta/MAS entries quit from their own catch. */
+  async function releaseFailedStartup(): Promise<void> {
+    if (ended || closing || startupReleased) return;
+    startupReleased = true;
+    recordingWindow.block();
+    await opening?.catch(() => undefined);
+    try { await boundary?.dispose(); } catch { /* Best-effort boundary teardown. */ }
+    try { await owner?.dispose(); } catch { /* Factory contract: never abandon a returned owner. */ }
+    ended = true;
+    detachShell();
   }
   bootstrapStage(17);
   runtime.app.on("before-quit", beforeQuit); runtime.app.on("second-instance", focus);
@@ -182,9 +198,10 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
     if (closing || ended) throw unavailable();
     appWindow.show(); diagnostics("window_ready"); return { close };
   } catch {
-    // The factory's contract requires cleanup of a rejected acquisition. A
-    // returned owner is always retained here, including a late startup result.
-    requestClose(); throw unavailable();
+    // Quit-owned shutdown (before-quit during open) already runs close(); do not
+    // race it. Otherwise release the partial acquisition without app.quit.
+    if (!closing && !ended) await releaseFailedStartup();
+    throw unavailable();
   }
 }
 function unavailable(): Error { return new Error("The Scribe desktop application is unavailable."); }

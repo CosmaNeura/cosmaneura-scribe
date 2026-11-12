@@ -2,15 +2,19 @@
 
 Tier 1 documentation. Every condition below can produce the Store launch dialog
 formerly worded **“The Mac App Store runtime or its private native services are
-unavailable.”** (now `STORE_LAUNCH_FAILURE` Try again / Quit). Labels are
-**Verified** against current `main` / this PR’s sources.
+unavailable.”** (now `STORE_LAUNCH_FAILURE` Try again / Quit). Rows without an
+exact file:line citation are labelled **Inferred**.
 
 Silent second-instance quit (`SCRIBE_STORE_BOOTSTRAP` stage 10) does **not**
 show that dialog.
 
+**Rejected build (Verified via App Store Connect):** 1.0 (122), reviewed
+10 Nov 2026, macOS 27.2. Root cause unconfirmed. Related merges: #523 (bridge
+hash / known 122 startup refusal), #528, #529.
+
 ## A. Electron entry → dialog catch
 
-| Code / stage | Exact condition | File:lines | Verified |
+| Code / stage | Exact condition | File:lines | Label |
 | --- | --- | --- | --- |
 | `SCRIBE_STORE_BOOTSTRAP:1` (default) | `process.mas !== true` OR Electron ≠ `44.9.1` OR Node not `24.*` | `apps/desktop-companion/src/mac-app-store-xpc.ts:8–11` | Verified |
 | `:18` | Inherited `MAC_CHROMIUM_TMPDIR`, or singleton temp prepare fails (abs/realpath/uid/0700/inode/socket path) | `mac-app-store-xpc.ts:18–49`; `standalone/main-mas-xpc.mjs` enter(18) | Verified |
@@ -29,26 +33,26 @@ show that dialog.
 
 ## B. Bridge `SCRIBE_STORE_BRIDGE:1–14` → stage 7 → dialog
 
-| Code | Exact condition | File:lines | Verified |
+| Code | Exact condition | File:lines | Label |
 | --- | --- | --- | --- |
-| 1 | Approved group absent | `StorePipeBridge.c` | Verified |
-| 2 | `argc != 2` | same | Verified |
-| 3 | Unknown mode/service or parent PID ≤ 1 | same | Verified |
-| 4 | Parent broker prepare/watch refused | `StorePipeBridge.c` / `StoreParentBroker.c` | Verified |
-| 5 | Open message refused | `StorePipeBridge.c` | Verified |
-| 6 | Reserved; not emitted in current bridge | markers only | Verified |
-| 7 | `xpc_connection_create` null | `StorePipeBridge.c` | Verified |
-| 8 | Peer requirement setter refused | same | Verified |
-| 9 | Other XPC error | same | Verified |
-| 10 | `XPC_ERROR_CONNECTION_INVALID` | same | Verified |
-| 11 | `XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT` | same | Verified |
-| 12 | Reply shape invalid | same | Verified |
-| 13 | `XPC_ERROR_CONNECTION_INTERRUPTED` (Mac129 path after CONTAINER:7) | same | Verified |
-| 14 | `XPC_ERROR_TERMINATION_IMMINENT` | same | Verified |
+| 1 | Approved group absent | `StorePipeBridge.c` (no stable line citation in this inventory) | Inferred |
+| 2 | `argc != 2` | same | Inferred |
+| 3 | Unknown mode/service or parent PID ≤ 1 | same | Inferred |
+| 4 | Parent broker prepare/watch refused | `StorePipeBridge.c` / `StoreParentBroker.c` | Inferred |
+| 5 | Open message refused | `StorePipeBridge.c` | Inferred |
+| 6 | Reserved; not emitted in current bridge | markers only | Inferred |
+| 7 | `xpc_connection_create` null | `StorePipeBridge.c` | Inferred |
+| 8 | Peer requirement setter refused | same | Inferred |
+| 9 | Other XPC error | same | Inferred |
+| 10 | `XPC_ERROR_CONNECTION_INVALID` | same | Inferred |
+| 11 | `XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT` | same | Inferred |
+| 12 | Reply shape invalid | same | Inferred |
+| 13 | `XPC_ERROR_CONNECTION_INTERRUPTED` (post-CONTAINER:7 path) | same | Inferred |
+| 14 | `XPC_ERROR_TERMINATION_IMMINENT` | same | Inferred |
 
 ## C. Container `SCRIBE_STORE_CONTAINER:1–12` → AUTH_ENTRY:5 → bridge → dialog
 
-| Code | Exact condition | File:lines | Verified |
+| Code | Exact condition | File:lines | Label |
 | --- | --- | --- | --- |
 | 1 | `approvedApplicationGroup == nil` | `NativeDesktopStoreContainer.swift:49` | Verified |
 | 2 | `SecCodeCopySelf` fail | `:51` | Verified |
@@ -65,26 +69,26 @@ show that dialog.
 
 ## D. Auth entry `SCRIBE_STORE_AUTH_ENTRY` fail codes → dialog
 
-| Code | Exact condition | File:lines | Verified |
+| Code | Exact condition | File:lines | Label |
 | --- | --- | --- | --- |
-| 3 | XPCService plist JoinExistingSession/RunLoopType mismatch | `DesktopProviderMain.swift` store entry | Verified |
-| 5 | Catch after container/entry (includes CONTAINER:\*) | same | Verified |
-| 8 | `DesktopProviderOwner` construction throws | same | Verified |
-| 9 | `DesktopProviderStoreRequest` init throws | `:343–361` | Verified |
+| 3 | XPCService plist JoinExistingSession/RunLoopType mismatch | `DesktopProviderMain.swift` store entry | Inferred |
+| 5 | Catch after container/entry (includes CONTAINER:\*) | same | Inferred |
+| 8 | `DesktopProviderOwner` construction throws | same | Inferred |
+| 9 | `DesktopProviderStoreRequest` init throws | `DesktopProviderMain.swift:343–361` | Verified |
 
 Progress codes 1,2,4,6,7 alone do not fail launch.
 
 ## E. Related in-window (not this dialog)
 
-| User-visible string | Trigger | File:lines | Verified |
+| User-visible string | Trigger | File:lines | Label |
 | --- | --- | --- | --- |
 | Setup required / not ready for sign-in | `CosmasNativeAuth.enabled != true` / profile `enabled:false` | `application.ts`; `DesktopProviderMain.swift:86–89`; default assemblers | Verified |
-| Sign-in unavailable / could not reach sign-in services | Auth phase `unavailable` (Clerk load timeout, init throw, etc.) | `application.ts`; `NativeWorkspaceAuth.swift:126–155` | Verified |
+| Session unavailable | Auth phase `unavailable` (Clerk load timeout, init throw, etc.) | `application.ts`; `NativeWorkspaceAuth.swift:126–155` | Verified |
 
 ## F. Default packaging vs Store
 
 | Claim | Evidence | Label |
 | --- | --- | --- |
 | Default `assemble-disabled-desktop-candidate.py` and normal `assemble-standalone-provider.py` stamp `enabled: false` / `CosmasNativeAuth.enabled: false` | `assemble-disabled-desktop-candidate.py:86–91,140–141`; `assemble-standalone-provider.py:150–175` | Verified |
-| No prior release script guaranteed enabled auth for Store bridge placement | Search of assemble/prepare scripts; production enable requires founder unlock + `--enable-production-clients` | Verified |
-| This PR’s `place_store_bridge` now refuses disabled auth packages | `packaging_guard.require_store_application_auth_enabled`; `prepare-desktop-mas-xpc-variant.place_store_bridge` | Verified |
+| No prior release script guaranteed enabled auth for Store bridge placement | Search of assemble/prepare scripts; production enable requires founder unlock + `--enable-production-clients` | Inferred |
+| `place_store_bridge` refuses disabled/missing/ambiguous auth Info.plist via exact candidate paths (native helper app or `Contents/XPCServices/…xpc`), not rglob first-match | `packaging_guard.require_store_application_auth_enabled` (`packaging_guard.py:146–162`); called from `prepare-desktop-mas-xpc-variant.place_store_bridge` (`prepare-desktop-mas-xpc-variant.py:59`) before copying the unsigned bridge into `Contents/MacOS/ScribeStorePipeBridge` | Verified |

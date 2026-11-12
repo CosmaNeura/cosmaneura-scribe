@@ -1,19 +1,24 @@
-# Codex task for John — Apple Review Mac 1.0 (131) launch failure
+# Codex task for John — Apple Review Mac Store launch failure
 
-Tier 2. Owner: John. Agents cannot perform live Azure, App Store Connect,
-notarization, or production unlock steps. Synthetic data only.
+Tier 2. Owner: John. Agents cannot perform live Azure, App Store Connect
+writes, notarization, or production unlock steps. Synthetic data only.
 
 ## Context
 
-Apple rejected App Store build **1.0 (131)** (reviewed 5 Nov 2026) under
-Guideline 2.1(a): error message on launch; did not proceed. Review device was a
-clean MacBook Pro 14-inch (Nov 2024), macOS 27.0.1, with internet and **no**
-CosmaNeura account or allowlisted network.
+**Verified via App Store Connect: 1.0 (122), reviewed 10 Nov 2026, macOS 27.2**
+(read-only API check, 12 Nov 2026). Apple's Guideline 2.1(a) rejection matches
+that build. Repo docs that still say build **131**, review **5 Nov 2026**, or
+macOS **27.0.1** are wrong and should be read as stale relative to ASC.
+
+**Root cause is unconfirmed.** Closest in-repo Store launch failure history:
+already-merged **#523** (bridge whole-file hash after Apple re-signing,
+documented as build 122's known startup refusal), then **#528** and **#529**.
+This recoverable-launch track does not claim to prove which of those (or
+another packaging/auth/network factor) Apple hit.
 
 Repo source still pins `apps/desktop-companion/desktop-release.json` at build
-**126**. Build **131** was stamped outside git via host `release-metadata.json`
-during a local assemble/sign/upload. Closest in-repo Store launch failure copy
-is the MAS+XPC dialog formerly:
+**126**. Closest in-repo Store launch failure copy is the MAS+XPC dialog
+formerly:
 
 > Scribe could not open  
 > The Mac App Store runtime or its private native services are unavailable.
@@ -24,15 +29,15 @@ first-launch copy recoverable. It does **not** resign, notarize, or resubmit.
 
 ## Exact steps (founder only)
 
-1. **Identify the submitted 131 artifact**  
-   On the Mac that built/uploaded 131, locate the signed `.app` / `.pkg` /
+1. **Identify the submitted 122 artifact**  
+   On the Mac that built/uploaded 122, locate the signed `.app` / `.pkg` /
    Transporter receipt. Record `CFBundleShortVersionString`, `CFBundleVersion`,
    parent bundle id, and whether the entry was `main-mas-xpc` (Store XPC).
 
 2. **Dump installed entitlements (no secrets)**  
    ```bash
-   codesign -d --entitlements :- "/path/to/Cosmaneura Scribe for Mac.app" > /tmp/mac131-parent.entitlements
-   codesign -d --entitlements :- "/path/to/.../ScribeDesktopProvider.xpc" > /tmp/mac131-auth.entitlements
+   codesign -d --entitlements :- "/path/to/Cosmaneura Scribe for Mac.app" > /tmp/mac122-parent.entitlements
+   codesign -d --entitlements :- "/path/to/.../ScribeDesktopProvider.xpc" > /tmp/mac122-auth.entitlements
    ```
    Compare keys against `NativeDesktopStoreContainer.validateMembership` exact
    set (identity + role + optional `beta-reports-active` Boolean true only).
@@ -57,7 +62,7 @@ first-launch copy recoverable. It does **not** resign, notarize, or resubmit.
 5. **Public network reachability (no allowlist)**  
    From a network that is **not** the office allowlist, verify HTTPS to:
    - Staging Clerk: `https://resolved-emu-53.clerk.accounts.dev`
-   - Production Clerk (if 131 was production): `https://clerk.cosmaneura.com`
+   - Production Clerk (if 122 was production): `https://clerk.cosmaneura.com`
    - Packaged `coreOrigin` (`staging-app.cosmaneura.com` or `app.cosmaneura.com`)
    If App Service / Front Door / Container Apps **network_acls default Deny**
    with a single allowed IP, Apple’s network cannot reach that host. First
@@ -78,7 +83,7 @@ first-launch copy recoverable. It does **not** resign, notarize, or resubmit.
 7. **Rebuild after source fix**  
    After merging the recoverable-launch PR and any entitlement allowlist fix
    proven by step 2:
-   - Bump `desktop-release.json` build (e.g. 132) in a reviewed change
+   - Bump `desktop-release.json` build (e.g. beyond 126) in a reviewed change
    - Assemble/sign Store XPC with **auth enabled**
    - Verify clean-install reaches **Sign in** before any App Store upload
    - Production package/unlock/upload still needs your explicit yes
@@ -87,7 +92,8 @@ first-launch copy recoverable. It does **not** resign, notarize, or resubmit.
 
 No App Store Connect reply, no resubmission, no notarization, no production
 unlock, no secret rotation, no merge to `main`, no `codex/*` branch edits.
+Staging hold remains: do not run against staging.
 
 ## Fail-closed inventory
 
-See `docs/codex-tasks/2026-11-11-store-launch-fail-closed-inventory.md` for every Store launch dialog cause with codes and Verified citations.
+See `docs/codex-tasks/2026-11-11-store-launch-fail-closed-inventory.md` for every Store launch dialog cause with codes and citation labels.
