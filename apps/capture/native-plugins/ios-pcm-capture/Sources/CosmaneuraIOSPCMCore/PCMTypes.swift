@@ -299,16 +299,6 @@ public struct PCMFrameAdmission: Sendable {
     receipt = accepted ? PCMFrameReceipt(release: release) : nil
   }
 
-  init(consuming body: @escaping @Sendable () async -> Void,
-    release: (@Sendable () -> Void)? = nil) {
-    self.init(accepted: true, release: release)
-    let admission = self
-    Task {
-      await body()
-      admission.finishConsumption()
-    }
-  }
-
   /// Called by the consumer after clearing the transferred frames and finishing
   /// their processing. Driver waiter scheduling must not hold admission open.
   func finishConsumption() {
