@@ -26,6 +26,9 @@ product — do not copy its freer production authority here.
 - Branch, code, synthetic tests, draft/open PRs, fix CI on that PR.
 - Use **staging** hosts, profiles, and keys only.
 - Read-only inspection of docs and non-secret config.
+- Run the relevant tests inside the cloud agent before pushing.
+- Push once per round (no empty commits; one substantive push after local proof).
+- Get a green CI and CodeQL run on the head before asking for Fable review.
 
 ## Needs John’s yes
 
