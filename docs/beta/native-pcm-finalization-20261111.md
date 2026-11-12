@@ -43,14 +43,16 @@ not keep that buffer after overflow or hard close.
 On the final code inputs:
 
 - Both regressions failed before their respective fixes and passed afterward.
-- Last verified macOS `swift test`: 61/61 tests in 14 suites passed at
-  55fb84f9 (Debug and Release). Result at this head will be added after the
-  Mac run; do not invent counts here.
+- Debug: `swift test`, 61/61 in 14 suites, at 862f92ac, 12 Nov 2026.
+- Release: `swift test -c release -Xswiftc -enable-testing`, 61/61 in 14
+  suites, exit 0, at 862f92ac, 12 Nov 2026.
+- A plain `-c release` test build fails by design because of the `@testable`
+  imports. Do not treat a plain Release build as a working test path.
 - Full native-recording Release suites: 133 XCTest tests passed, including two
   actual three-hour encrypted-PCM/short-lease continuation cases.
 - Independent focused validation: 19 tests in five suites passed; Fable
-  independent review rounds 1-3 returned HOLES, resolved in later commits;
-  round 4 pending.
+  independent review rounds 1-3 returned HOLES; round 4 findings drive the
+  follow-up.
 - iOS device package compilation passed for `arm64-apple-ios17.0` using the
   current iPhoneOS SDK. Existing permission-API deprecation warnings remain.
 - Diff whitespace checks passed. The retained Clerk source matches all 233 files

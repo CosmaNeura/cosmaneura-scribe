@@ -36,7 +36,9 @@ struct InterruptedTailAdmissionTests {
       try await driver.freezeInput(sessionID: 1)
       try await driver.release(sessionID: 1)
     }
-    await diagnostics.flush()
+    try await PCMTestWait.withDeadline("interrupted-tail diagnostics flush") {
+      await diagnostics.flush()
+    }
     let rows = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [[String: Any]])
     #expect(rows.last?["event"] as? String == "driverAdmissionOverflow")
     #expect(rows.filter { $0["event"] as? String == "driverAdmissionOverflow" }.count == 1)

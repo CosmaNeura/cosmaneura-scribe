@@ -11,7 +11,9 @@ struct ProducerConsumptionTests {
     let session = try core.start(configuration: PCMConfiguration(
       targetFramesPerChunk: 160_000, maximumChunks: 2,
       maximumInputFramesPerBuffer: 8_192))
-    try await session.ready()
+    try await PCMTestWait.withDeadline("producer ready") {
+      try await session.ready()
+    }
     for _ in 0..<6 {
       let frames = OwnedAudioFrames(sampleRateHz: 48_000,
         channels: [Array(repeating: Float(0.125), count: 8_192)])
@@ -19,9 +21,8 @@ struct ProducerConsumptionTests {
       try #require(receipt.accepted)
       // No driver task or copied receipt waits here. Producer completion must
       // clear the core admission and publish consumption before the next tap.
-      let consumed = try await consumptionArrives(receipt)
-      #expect(consumed && frames.isZeroed)
-      if !consumed { _ = try await session.stop(.discard); return }
+      try await PCMTestWait.until("producer receipt consumed") { receipt.isConsumed }
+      try #require(frames.isZeroed)
     }
     #expect(session.capturedAudioFrames == 16_384 && sink.failures.isEmpty)
     let stopped = try await PCMTestWait.withDeadline("producer stop(.drain)") {
@@ -36,22 +37,19 @@ struct ProducerConsumptionTests {
     let core = IOSPCMCore(permission: ConsumptionConsent(), audio: audio, sink: sink)
     let session = try core.start(configuration: PCMConfiguration(
       targetFramesPerChunk: 64, maximumChunks: 2, maximumInputFramesPerBuffer: 64))
-    try await session.ready()
+    try await PCMTestWait.withDeadline("producer invalid ready") {
+      try await session.ready()
+    }
     let frames = OwnedAudioFrames(sampleRateHz: 16_000, channels: [[Float.nan]])
     let receipt = try audio.offer(frames)
     try #require(receipt.accepted)
-    let consumed = try await consumptionArrives(receipt)
-    #expect(consumed && frames.isZeroed)
+    try await PCMTestWait.until("producer invalid receipt consumed") { receipt.isConsumed }
+    try #require(frames.isZeroed)
     let stopped = try await PCMTestWait.withDeadline("producer invalid stop(.drain)") {
       try await session.stop(.drain)
     }
     #expect(stopped.finalPacket == nil && sink.failures == [.invalidPCM])
   }
-}
-
-private func consumptionArrives(_ receipt: PCMFrameAdmission) async throws -> Bool {
-  try await PCMTestWait.until("producer receipt consumed") { receipt.isConsumed }
-  return true
 }
 
 private struct ConsumptionConsent: MicrophonePermissionAuthorizing {

@@ -110,7 +110,7 @@ struct ConsumedFrameRetirementTests {
     gate.receive(frames: firstFrames, generation: 1)
     let first = try #require(book.receipt(0))
     try await PCMTestWait.until("first receipt consumed") { first.isConsumed }
-    #expect(first.isConsumed && firstFrames.isZeroed)
+    try #require(firstFrames.isZeroed)
     try await PCMTestWait.until("first retirement entered") { retirementEntries.count >= 1 }
 
     // The old retirement task is deliberately held AFTER actual consumption.
@@ -122,9 +122,13 @@ struct ConsumedFrameRetirementTests {
     let acceptedAfterConsumed = book.count
     let failuresBeforeUnconsumedOverlap = failures.count
     retire.open()
-    // Do not assume which deferred-retirement completion arrives first; wait for
-    // the first frame's completion count before overlapping the unconsumed second.
-    try await PCMTestWait.until("first retirement completed") { retirementCompletions.count >= 1 }
+    // Assert order explicitly: while the second buffer stays unconsumed, only the
+    // first deferred-retirement entry can complete (H3/Low-6 delivery order).
+    try await PCMTestWait.until("sole first retirement completed") {
+      retirementCompletions.count >= 1 && retirementEntries.count == 1
+    }
+    #expect(retirementEntries.count == 1)
+    #expect(retirementCompletions.count >= 1)
 
     // A late completion of the first frame must not clear the second frame's
     // admission. An actually unconsumed overlap must still fail and zeroize.
@@ -136,11 +140,14 @@ struct ConsumedFrameRetirementTests {
     if let terminal = gate.retireAdmission(generation: 1) {
       try await PCMTestWait.withDeadline("retireAdmission delivery") { await terminal.value }
     }
-    await diagnostics.flush()
+    try await PCMTestWait.withDeadline("consumed-frame diagnostics flush") {
+      await diagnostics.flush()
+    }
     #expect(acceptedAfterConsumed == 2)
     #expect(failuresBeforeUnconsumedOverlap == 0)
     #expect(book.count == 2)
-    #expect(rejected.isZeroed && secondFrames.isZeroed)
+    try #require(rejected.isZeroed)
+    try #require(secondFrames.isZeroed)
     #expect(failures.count == 1 && failures.invalidations == 1)
     let rows = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [[String: Any]])
     #expect(rows.filter { $0["event"] as? String == "driverAdmissionOverflow" }.count == 1)

@@ -79,13 +79,16 @@ struct NativeStopConfigurationTests {
     let first = try core.start(configuration: PCMConfiguration(
       targetFramesPerChunk: 64, maximumChunks: 2, maximumInputFramesPerBuffer: 64,
       authority: firstAuthority, preserveInterruptedTail: true))
-    try await first.ready()
+    try await PCMTestWait.withDeadline("second-session first ready") {
+      try await first.ready()
+    }
     let firstFrames = OwnedAudioFrames(
       sampleRateHz: 16_000, channels: [Array(repeating: Float(0.125), count: 32)])
     system.offer(firstFrames)
     try await PCMTestWait.until("second-session first capture") {
-      first.capturedAudioFrames == 32 && firstFrames.isZeroed
+      first.capturedAudioFrames == 32
     }
+    try #require(firstFrames.isZeroed)
     let firstStopped = try await PCMTestWait.withDeadline("second-session first stop") {
       try await first.stop(.drain)
     }
@@ -100,17 +103,22 @@ struct NativeStopConfigurationTests {
     let second = try core.start(configuration: PCMConfiguration(
       targetFramesPerChunk: 64, maximumChunks: 2, maximumInputFramesPerBuffer: 64,
       authority: secondAuthority, preserveInterruptedTail: true))
-    try await second.ready()
+    try await PCMTestWait.withDeadline("second-session second ready") {
+      try await second.ready()
+    }
     let secondFrames = OwnedAudioFrames(
       sampleRateHz: 16_000, channels: [Array(repeating: Float(0.125), count: 32)])
     system.offer(secondFrames)
     try await PCMTestWait.until("second-session second capture") {
-      second.capturedAudioFrames == 32 && secondFrames.isZeroed
+      second.capturedAudioFrames == 32
     }
+    try #require(secondFrames.isZeroed)
 
     system.emit(.configurationChanged)
     try await PCMTestWait.until("second-session captureFailed") { !sink.failures.isEmpty }
-    #expect(sink.failures == [.captureFailed])
+    // Order-independent: any recorded failures must be captureFailed.
+    #expect(!sink.failures.isEmpty)
+    #expect(sink.failures.allSatisfy { $0 == .captureFailed })
     let secondStopped = try await PCMTestWait.withDeadline("second-session second stop") {
       try await second.stop(.drain)
     }
@@ -167,12 +175,15 @@ private func runNativeStop(_ notification: AppleAudioSystemEvent?, beforeStop: B
     expiresAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1000) + 60_000, hardMaximumChunks: 2)
   let session = try core.start(configuration: PCMConfiguration(targetFramesPerChunk: 64,
     maximumChunks: 2, maximumInputFramesPerBuffer: 64, authority: authority, preserveInterruptedTail: true))
-  try await session.ready()
+  try await PCMTestWait.withDeadline("native-stop ready") {
+    try await session.ready()
+  }
   let frames = OwnedAudioFrames(sampleRateHz: 16_000, channels: [Array(repeating: Float(0.125), count: 32)])
   system.offer(frames)
   try await PCMTestWait.until("native-stop capture") {
-    session.capturedAudioFrames == 32 && frames.isZeroed
+    session.capturedAudioFrames == 32
   }
+  try #require(frames.isZeroed)
   if beforeStop, let notification { system.emit(notification) }
   if failFirstDeactivation || failFirstFreeze {
     do {

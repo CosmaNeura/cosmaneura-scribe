@@ -55,7 +55,9 @@ struct DeferredRetirementIntegrationTests {
       authority: authority,
       preserveInterruptedTail: true
     ))
-    try await session.ready()
+    try await PCMTestWait.withDeadline("deferred-retirement held ready") {
+      try await session.ready()
+    }
     // stopSession is fire-and-forget: a cleanup timeout Issue may land up to ~3s
     // late, possibly while the next test in the suite is already running.
     defer {
@@ -75,7 +77,7 @@ struct DeferredRetirementIntegrationTests {
       try await PCMTestWait.until("capturedAudioFrames == \(targetFrames)") {
         session.capturedAudioFrames == targetFrames
       }
-      #expect(frames.isZeroed)
+      try #require(frames.isZeroed)
     }
 
     #expect(sink.failures.isEmpty)
@@ -89,7 +91,9 @@ struct DeferredRetirementIntegrationTests {
     }
     #expect(stopped.finalPacket?.bytes.count == 192)
     stopped.finalPacket?.bytes.zeroize()
-    await diagnostics.flush()
+    try await PCMTestWait.withDeadline("deferred-retirement held flush") {
+      await diagnostics.flush()
+    }
     let rows = try #require(
       JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [[String: Any]]
     )
@@ -141,7 +145,9 @@ struct DeferredRetirementIntegrationTests {
       authority: authority,
       preserveInterruptedTail: true
     ))
-    try await session.ready()
+    try await PCMTestWait.withDeadline("deferred-retirement overflow ready") {
+      try await session.ready()
+    }
     // stopSession is fire-and-forget: a cleanup timeout Issue may land up to ~3s
     // late, possibly while the next test in the suite is already running.
     defer {
@@ -157,8 +163,9 @@ struct DeferredRetirementIntegrationTests {
     )
     system.offer(first)
     try await PCMTestWait.until("first buffer captured") {
-      session.capturedAudioFrames == 32 && first.isZeroed
+      session.capturedAudioFrames == 32
     }
+    try #require(first.isZeroed)
     try await PCMTestWait.until("retirementEntries >= 1") { retirementEntries.count >= 1 }
 
     // Arm the hold for the next full-chunk emit, then admit the second buffer.
@@ -174,7 +181,7 @@ struct DeferredRetirementIntegrationTests {
     system.offer(second)
     try await secondConsumeHold.waitUntilHoldingOrFail()
     system.offer(third)
-    #expect(third.isZeroed)
+    try #require(third.isZeroed)
 
     try await PCMTestWait.until("overflow failure recorded") { !sink.failures.isEmpty }
     #expect(!secondConsumeHold.releaseTimedOut)
@@ -183,7 +190,9 @@ struct DeferredRetirementIntegrationTests {
     _ = try await PCMTestWait.withDeadline("session.stop(.discard)") {
       try await session.stop(.discard)
     }
-    await diagnostics.flush()
+    try await PCMTestWait.withDeadline("deferred-retirement overflow flush") {
+      await diagnostics.flush()
+    }
     let rows = try #require(
       JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [[String: Any]]
     )
