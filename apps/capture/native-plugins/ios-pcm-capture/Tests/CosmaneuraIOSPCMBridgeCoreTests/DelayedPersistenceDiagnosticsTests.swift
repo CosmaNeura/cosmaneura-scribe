@@ -4,6 +4,7 @@ import Testing
 
 /// Diagnostic reproducer only: invented PCM under explicit synthetic consent,
 /// a blocked packet sink, and no OS audio, network, keychain, or live recording.
+@Suite(.timeLimit(.minutes(1)))
 struct DelayedPersistenceDiagnosticsTests {
   @Test func nextFrameDuringPersistenceRecordsTheExistingAdmissionOverflow() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -20,17 +21,17 @@ struct DelayedPersistenceDiagnosticsTests {
     let firstFrames = OwnedAudioFrames(sampleRateHz: 16_000, channels: [Array(repeating: 0, count: 1_600)])
     let first = try driver.offer(firstFrames)
     try #require(first.accepted)
-    let deadline = ContinuousClock.now + .seconds(3)
-    while !sink.entered && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
-    try #require(sink.entered)
+    try await PCMTestWait.until("delayed-persistence sink entered") { sink.entered }
     let lateFrames = OwnedAudioFrames(sampleRateHz: 16_000, channels: [[0]])
     let late = try driver.offer(lateFrames)
     #expect(!late.accepted && lateFrames.isZeroed)
     sink.releasePersistence()
-    await first.waitUntilConsumed()
-    while sink.terminations.isEmpty && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+    try await PCMTestWait.until("delayed-persistence first consumed") { first.isConsumed }
+    try await PCMTestWait.until("delayed-persistence terminations") { !sink.terminations.isEmpty }
     #expect(sink.terminations == [.bufferOverflow])
-    _ = try await session.stop(.discard)
+    _ = try await PCMTestWait.withDeadline("delayed-persistence stop") {
+      try await session.stop(.discard)
+    }
     #expect(driver.releases == 1 && firstFrames.isZeroed)
     await diagnostics.flush()
     let rows = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [[String: Any]])

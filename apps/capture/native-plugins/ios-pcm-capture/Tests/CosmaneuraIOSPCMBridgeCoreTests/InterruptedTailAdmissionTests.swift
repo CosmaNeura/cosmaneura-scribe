@@ -4,6 +4,7 @@ import Testing
 @testable import CosmaneuraIOSAVFoundationDriver
 @testable import CosmaneuraIOSPCMCore
 
+@Suite(.timeLimit(.minutes(1)))
 struct InterruptedTailAdmissionTests {
   @Test func driverOverflowIsReportedBeforeAnotherFrameReachesCore() async throws {
     // Explicit synthetic consent; this boundary uses no OS audio or real PCM.
@@ -20,7 +21,7 @@ struct InterruptedTailAdmissionTests {
       lifecycle: .nativeEncrypted, diagnostics: diagnostics)
     try await driver.start(sessionID: 1, callbacks: PCMAudioCallbacks(
       frames: { frames in
-        PCMFrameAdmission(accepted: true, completion: Task {
+        PCMFrameAdmission(consuming: {
           await pending.wait(); frames.zeroize()
         }, release: {})
       }, event: { events.record($0) }, invalidate: { events.invalidate($0) }), cancellation: StartupCancellation())
@@ -28,11 +29,13 @@ struct InterruptedTailAdmissionTests {
     let rejected = OwnedAudioFrames(sampleRateHz: 16_000, channels: [[0]])
     system.offer(admitted); system.offer(rejected)
     #expect(rejected.isZeroed && !admitted.isZeroed)
-    let deadline = ContinuousClock.now + .seconds(3)
-    while events.count == 0 && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+    try await PCMTestWait.until("interrupted-tail overflow event") { events.count > 0 }
     #expect(events.count == 1 && events.invalidations == 1 && !events.sawBenign)
     await pending.release()
-    try await driver.freezeInput(sessionID: 1); try await driver.release(sessionID: 1)
+    try await PCMTestWait.withDeadline("interrupted-tail freeze/release") {
+      try await driver.freezeInput(sessionID: 1)
+      try await driver.release(sessionID: 1)
+    }
     await diagnostics.flush()
     let rows = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [[String: Any]])
     #expect(rows.last?["event"] as? String == "driverAdmissionOverflow")
@@ -53,7 +56,7 @@ struct InterruptedTailAdmissionTests {
       system: system, foreground: SyntheticForeground(), lifecycle: .nativeEncrypted)
     try await driver.start(sessionID: 1, callbacks: PCMAudioCallbacks(
       frames: { frames in
-        PCMFrameAdmission(accepted: true, completion: Task {
+        PCMFrameAdmission(consuming: {
           await pending.wait()
           frames.zeroize()
         }, release: {})
@@ -64,16 +67,16 @@ struct InterruptedTailAdmissionTests {
     let clock = ContinuousClock(), started = ContinuousClock.now
     system.emit(.routeChanged)
     if let hard { system.emit(hard) }
-    while events.count == 0 && clock.now - started < .seconds(3) {
-      try await Task.sleep(for: .milliseconds(2))
-    }
+    try await PCMTestWait.until("interrupted-tail hard event") { events.count > 0 }
     #expect(events.count == 1)
     #expect(events.invalidations == 1)
     #expect(!events.sawBenign)
     // Deliberately release the driver before its admitted frame receipt. A hard
     // invalidation/timeout must wake the benign waiter and permit physical stop.
-    try await driver.freezeInput(sessionID: 1)
-    try await driver.release(sessionID: 1)
+    try await PCMTestWait.withDeadline("interrupted-tail hard freeze/release") {
+      try await driver.freezeInput(sessionID: 1)
+      try await driver.release(sessionID: 1)
+    }
     #expect(clock.now - started < .seconds(4))
     #expect(system.releases == 1)
     #expect(!frames.isZeroed)

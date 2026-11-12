@@ -350,18 +350,17 @@ private actor IOSPCMSessionState {
           Task { await self?.receiveAdmissionOverflow() }
           return PCMFrameAdmission(accepted: false)
         case .accepted:
-          let completion = Task { [weak self] in
+          let admission = PCMFrameAdmission(
+            accepted: true, release: { frameAdmission.release() })
+          Task { [weak self] in
             guard let self else {
               frames.zeroize()
+              admission.finishConsumption()
               return
             }
-            await self.receive(frames)
+            await self.receive(frames, admission: admission)
           }
-          return PCMFrameAdmission(
-            accepted: true,
-            completion: completion,
-            release: { frameAdmission.release() }
-          )
+          return admission
         }
       },
       event: { [weak self] event in await self?.receive(event) },
@@ -517,7 +516,10 @@ private actor IOSPCMSessionState {
     throw PCMFailure(code)
   }
 
-  private func receive(_ frames: OwnedAudioFrames) async {
+  private func receive(_ frames: OwnedAudioFrames, admission: PCMFrameAdmission) async {
+    // Publish release at the consumer boundary, before returning to the
+    // submitting task. A delayed driver waiter is not input backpressure.
+    defer { admission.finishConsumption() }
     guard phase == .active else {
       frames.zeroize()
       return
