@@ -39,16 +39,129 @@ struct NativeStopConfigurationTests {
     #expect(result.bytes == nil && !result.failures.isEmpty
       && result.failures.allSatisfy { $0 == .permissionRevoked })
   }
+
+  /// Guards confirm-after-successful-freeze ordering. Revert kill: move
+  /// confirmInputFrozen ahead of a freezeInput that can still fail.
+  @Test func notificationDuringFailedFreezeDestroysTail() async throws {
+    let result = try await runNativeStop(.configurationChanged, failFirstFreeze: true,
+      freezeNotification: .configurationChanged)
+    #expect(result.bytes == nil && !result.failures.isEmpty
+      && result.failures.allSatisfy { $0 == .captureFailed })
+  }
+
+  @Test func cleanRetryAfterFailedFreezePreservesTail() async throws {
+    let result = try await runNativeStop(nil, failFirstFreeze: true)
+    #expect(result.bytes == 64 && result.failures.isEmpty)
+  }
+
+  @Test func notificationAfterSuccessfulFreezeRetryIsSwallowed() async throws {
+    let result = try await runNativeStop(.configurationChanged, failFirstFreeze: true)
+    #expect(result.bytes == 64 && result.failures.isEmpty)
+  }
+
+  /// Guards inputFrozen reset on activate. Revert kill: delete inputFrozen = false
+  /// in DriverCallbackGate.activate.
+  @Test func secondSessionActiveConfigurationChangeFailsClosedWithoutTail() async throws {
+    // Explicit synthetic consent; invented 32-frame PCM. No OS audio, network or storage.
+    let consent = ProbeConsent()
+    try #require(consent.allPartiesConsented)
+    let system = StopProbeSystem(nil)
+    let sink = StopProbeSink()
+    let driver = AVFoundationPCMDriver(
+      system: system, foreground: ProbeForeground(), lifecycle: .nativeEncrypted)
+    let core = IOSPCMCore(permission: consent, audio: driver, sink: sink)
+
+    let firstAuthority = try PCMSourceAuthority(
+      runID: UUID().uuidString.lowercased(), generation: 1,
+      expiresAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1000) + 60_000,
+      hardMaximumChunks: 2)
+    let first = try core.start(configuration: PCMConfiguration(
+      targetFramesPerChunk: 64, maximumChunks: 2, maximumInputFramesPerBuffer: 64,
+      authority: firstAuthority, preserveInterruptedTail: true))
+    try await first.ready()
+    let firstFrames = OwnedAudioFrames(
+      sampleRateHz: 16_000, channels: [Array(repeating: Float(0.125), count: 32)])
+    system.offer(firstFrames)
+    let firstDeadline = ContinuousClock.now + .seconds(2)
+    while first.capturedAudioFrames != 32 && ContinuousClock.now < firstDeadline {
+      try await Task.sleep(for: .milliseconds(1))
+    }
+    try #require(first.capturedAudioFrames == 32 && firstFrames.isZeroed)
+    let firstStopped = try await first.stop(.drain)
+    #expect(firstStopped.finalPacket?.bytes.count == 64)
+    firstStopped.finalPacket?.bytes.zeroize()
+    #expect(sink.failures.isEmpty)
+
+    let secondAuthority = try PCMSourceAuthority(
+      runID: UUID().uuidString.lowercased(), generation: 1,
+      expiresAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1000) + 60_000,
+      hardMaximumChunks: 2)
+    let second = try core.start(configuration: PCMConfiguration(
+      targetFramesPerChunk: 64, maximumChunks: 2, maximumInputFramesPerBuffer: 64,
+      authority: secondAuthority, preserveInterruptedTail: true))
+    try await second.ready()
+    let secondFrames = OwnedAudioFrames(
+      sampleRateHz: 16_000, channels: [Array(repeating: Float(0.125), count: 32)])
+    system.offer(secondFrames)
+    let secondDeadline = ContinuousClock.now + .seconds(2)
+    while second.capturedAudioFrames != 32 && ContinuousClock.now < secondDeadline {
+      try await Task.sleep(for: .milliseconds(1))
+    }
+    try #require(second.capturedAudioFrames == 32 && secondFrames.isZeroed)
+
+    system.emit(.configurationChanged)
+    let failDeadline = ContinuousClock.now + .seconds(2)
+    while sink.failures.isEmpty && ContinuousClock.now < failDeadline {
+      try await Task.sleep(for: .milliseconds(1))
+    }
+    #expect(sink.failures == [.captureFailed])
+    let secondStopped = try await second.stop(.drain)
+    #expect(secondStopped.finalPacket == nil)
+  }
+}
+
+/// Guards confirmInputFrozen generation matching. Revert kill: remove the
+/// generation guard inside confirmInputFrozen.
+struct DriverCallbackGateGenerationTests {
+  @Test func confirmInputFrozenWithStaleGenerationIsNoOp() async throws {
+    let consent = (allPartiesConsented: true, recordID: UUID())
+    try #require(consent.allPartiesConsented)
+    let failures = GateFailures()
+    let gate = DriverCallbackGate(continueInBackground: true, diagnostics: PCMStartupDiagnostics())
+    gate.activate(generation: 1, callbacks: PCMAudioCallbacks(
+      frames: { frames in
+        frames.zeroize()
+        return PCMFrameAdmission(accepted: false)
+      },
+      event: { failures.record($0) },
+      invalidate: { failures.invalidate($0) }
+    ))
+    try #require(gate.arm(generation: 1))
+    gate.freezeFrames(generation: 1)
+    // Stale confirmation must not arm preservation for this generation.
+    gate.confirmInputFrozen(generation: 99)
+    gate.receive(event: .configurationChanged, generation: 1)
+    let deadline = ContinuousClock.now + .seconds(2)
+    while failures.count == 0 && ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(1))
+    }
+    #expect(failures.count == 1 && failures.invalidations == 1)
+    #expect(failures.last == .captureFailed)
+    gate.freezeFrames(generation: 1)
+    await gate.retireAdmission(generation: 1)?.value
+  }
 }
 
 private func runNativeStop(_ notification: AppleAudioSystemEvent?, beforeStop: Bool = false,
-  failFirstDeactivation: Bool = false, retryNotification: AppleAudioSystemEvent? = nil) async throws
+  failFirstDeactivation: Bool = false, retryNotification: AppleAudioSystemEvent? = nil,
+  failFirstFreeze: Bool = false, freezeNotification: AppleAudioSystemEvent? = nil) async throws
   -> (bytes: Int?, failures: [PCMTerminationCode]) {
   // Explicit synthetic consent; invented32-frame PCM. No OS audio, network or storage.
   let consent = ProbeConsent()
   try #require(consent.allPartiesConsented)
   let system = StopProbeSystem(beforeStop ? nil : notification,
-    failFirstDeactivation: failFirstDeactivation, retryNotification: retryNotification)
+    failFirstDeactivation: failFirstDeactivation, retryNotification: retryNotification,
+    failFirstFreeze: failFirstFreeze, freezeNotification: freezeNotification)
   let sink = StopProbeSink()
   let driver = AVFoundationPCMDriver(system: system, foreground: ProbeForeground(), lifecycle: .nativeEncrypted)
   let core = IOSPCMCore(permission: consent, audio: driver, sink: sink)
@@ -65,24 +178,39 @@ private func runNativeStop(_ notification: AppleAudioSystemEvent?, beforeStop: B
   }
   try #require(session.capturedAudioFrames == 32 && frames.isZeroed)
   if beforeStop, let notification { system.emit(notification) }
-  if failFirstDeactivation {
+  if failFirstDeactivation || failFirstFreeze {
     do {
       _ = try await session.stop(.drain)
-      Issue.record("Failed deactivation must not confirm physical release")
+      Issue.record("Failed freeze/deactivation must not confirm physical release")
     } catch let failure as PCMFailure {
       #expect(failure.code == .stopFailed)
     }
-    #expect(system.sequence == ["freeze", "deactivate"])
+    if failFirstFreeze {
+      #expect(system.sequence == ["freeze"])
+    } else {
+      #expect(system.sequence == ["freeze", "deactivate"])
+    }
     #expect(throws: PCMFailure.self) {
       try core.start(configuration: PCMConfiguration(targetFramesPerChunk: 64,
         maximumChunks: 2, maximumInputFramesPerBuffer: 64))
     }
   }
+  // A freeze that already delivered a hard notification leaves capture failed;
+  // retrying stop must not invent a preserved tail.
+  if failFirstFreeze, freezeNotification != nil {
+    let stopped = try await session.stop(.drain)
+    #expect(stopped.finalPacket == nil)
+    return (nil, sink.failures)
+  }
   let stopped = try await session.stop(.drain)
   let bytes = stopped.finalPacket?.bytes.count
   stopped.finalPacket?.bytes.zeroize()
-  #expect(system.sequence == (failFirstDeactivation
-    ? ["freeze", "deactivate", "deactivate", "clear"] : ["freeze", "deactivate", "clear"]))
+  if failFirstFreeze {
+    #expect(system.sequence == ["freeze", "freeze", "deactivate", "clear"])
+  } else {
+    #expect(system.sequence == (failFirstDeactivation
+      ? ["freeze", "deactivate", "deactivate", "clear"] : ["freeze", "deactivate", "clear"]))
+  }
   return (bytes, sink.failures)
 }
 private struct ProbeConsent: MicrophonePermissionAuthorizing {
@@ -103,12 +231,18 @@ private final class StopProbeSystem: AppleAudioSystem, @unchecked Sendable {
   private let notification: AppleAudioSystemEvent?
   private let failFirstDeactivation: Bool
   private let retryNotification: AppleAudioSystemEvent?
+  private let failFirstFreeze: Bool
+  private let freezeNotification: AppleAudioSystemEvent?
   private var deactivations = 0
+  private var freezes = 0
   init(_ notification: AppleAudioSystemEvent?, failFirstDeactivation: Bool = false,
-    retryNotification: AppleAudioSystemEvent? = nil) {
+    retryNotification: AppleAudioSystemEvent? = nil, failFirstFreeze: Bool = false,
+    freezeNotification: AppleAudioSystemEvent? = nil) {
     self.notification = notification
     self.failFirstDeactivation = failFirstDeactivation
     self.retryNotification = retryNotification
+    self.failFirstFreeze = failFirstFreeze
+    self.freezeNotification = freezeNotification
   }
   var sequence: [String] { lock.withLock { operations } }
   func setEventHandler(_ handler: @escaping @Sendable (AppleAudioSystemEvent) -> Void) {
@@ -122,7 +256,20 @@ private final class StopProbeSystem: AppleAudioSystem, @unchecked Sendable {
   func startEngine() throws {}
   func offer(_ value: OwnedAudioFrames) { lock.withLock { frames }?(value) }
   func emit(_ value: AppleAudioSystemEvent) { lock.withLock { event }?(value) }
-  func freezeInput() throws { lock.withLock { operations.append("freeze"); frames = nil } }
+  func freezeInput() throws {
+    let outcome = lock.withLock { () -> ((@Sendable (AppleAudioSystemEvent) -> Void)?, AppleAudioSystemEvent?, Bool) in
+      operations.append("freeze")
+      freezes += 1
+      let shouldFail = failFirstFreeze && freezes == 1
+      if shouldFail {
+        return (event, freezeNotification, true)
+      }
+      frames = nil
+      return (nil, nil, false)
+    }
+    if let notification = outcome.1 { outcome.0?(notification) }
+    if outcome.2 { throw AVFoundationDriverError.operationFailed }
+  }
   func deactivate() throws {
     let current = lock.withLock { () -> ((@Sendable (AppleAudioSystemEvent) -> Void)?, Bool,
       AppleAudioSystemEvent?) in
@@ -147,4 +294,15 @@ private final class StopProbeSink: PCMEmissionSink, @unchecked Sendable {
     }
     return Ack()
   }
+}
+
+private final class GateFailures: @unchecked Sendable {
+  private let lock = NSLock()
+  private var events: [PCMAudioEvent] = []
+  private var invalidated = 0
+  var count: Int { lock.withLock { events.count } }
+  var invalidations: Int { lock.withLock { invalidated } }
+  var last: PCMAudioEvent? { lock.withLock { events.last } }
+  func record(_ event: PCMAudioEvent) { lock.withLock { events.append(event) } }
+  func invalidate(_ event: PCMAudioEvent) { lock.withLock { invalidated += 1 } }
 }
