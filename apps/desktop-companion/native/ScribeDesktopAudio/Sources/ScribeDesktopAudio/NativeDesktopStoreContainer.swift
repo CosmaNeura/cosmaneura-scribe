@@ -84,25 +84,20 @@ public enum NativeDesktopStoreContainer {
         let roleKeys: Set<String> = bundle == auth ? ["keychain-access-groups", "com.apple.security.network.client"]
             : bundle == parent + ".audio" ? ["com.apple.security.device.audio-input",
                 "com.apple.security.device.microphone"] : []
-        // Apple profile/resign bookkeeping only. These markers grant no sandbox,
-        // network, microphone, App Group or Keychain privilege beyond the exact
-        // identity and role checks below. Unknown keys still fail closed.
-        // TN2415: beta-reports-active on App Store distribution profiles (TestFlight);
-        // get-task-allow is the debugger-attach Boolean (must not be true here).
-        var appleDistributionKeys: Set<String> = []
+        // Apple adds this non-privileged reporting marker when re-signing for
+        // TestFlight. It changes neither the role grants nor the App Group.
+        // get-task-allow / com.apple.security.get-task-allow are NOT tolerated:
+        // Apple's Mac App Store re-sign key for that marker is unproven in-repo
+        // (see docs/codex-tasks/2026-11-11-apple-store-entitlement-resign-notes.md).
+        var reportingKeys: Set<String> = []
         if let reporting = claims["beta-reports-active"] {
             guard CFGetTypeID(reporting as CFTypeRef) == CFBooleanGetTypeID(),
                   reporting as? Bool == true else { throw StoreContainerError.unavailable }
-            appleDistributionKeys.insert("beta-reports-active")
-        }
-        if let taskAllow = claims["get-task-allow"] {
-            guard CFGetTypeID(taskAllow as CFTypeRef) == CFBooleanGetTypeID(),
-                  taskAllow as? Bool == false else { throw StoreContainerError.unavailable }
-            appleDistributionKeys.insert("get-task-allow")
+            reportingKeys.insert("beta-reports-active")
         }
         guard !approvedGroup.isEmpty, !approvedGroup.contains("/"),
               helpers.contains(bundle),
-              Set(claims.keys) == identityKeys.union(roleKeys).union(appleDistributionKeys),
+              Set(claims.keys) == identityKeys.union(roleKeys).union(reportingKeys),
               sandbox.map({ CFGetTypeID($0 as CFTypeRef) == CFBooleanGetTypeID() }) == true,
               sandbox as? Bool == true,
               claims["com.apple.security.application-groups"] as? [String] == [approvedGroup],

@@ -779,9 +779,7 @@ private final class BindingRecords: NativeRecordingFlowStore,
         connection.close()
         checks += 1
       }
-      // Injected wait is 300ms; allow CI scheduling noise while still proving the
-      // unsupported path paid the extra delayed request (not a device timing claim).
-      try require(measurements[0] - measurements[1] >= 150)
+      try require(measurements[0] - measurements[1] >= 250)
       print(
         "Synthetic admission timing round=\(round) original_ms=\(measurements[0]) combined_ms=\(measurements[1]) injected_request_wait_ms=300; no device timing claim."
       )
