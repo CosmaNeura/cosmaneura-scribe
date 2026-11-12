@@ -1,6 +1,22 @@
 import Foundation
 import Testing
 
+/// Winner-takes-all race gate for `PCMTestWait.withDeadline`. File-scoped because
+/// Swift forbids nesting types inside generic functions.
+fileprivate final class Settlement: @unchecked Sendable {
+  private let lock = NSLock()
+  private var finished = false
+
+  /// Returns true exactly once, for the winner of the race.
+  func claim() -> Bool {
+    lock.withLock {
+      if finished { return false }
+      finished = true
+      return true
+    }
+  }
+}
+
 /// Shared bounded wait for native PCM tests. Generalized from the former
 /// `waitForCalls` helper: poll a condition until it holds or the deadline
 /// (default 3s) elapses, then record an Issue and throw.
@@ -35,19 +51,6 @@ enum PCMTestWait {
     timeout: Duration = .seconds(3),
     _ work: @escaping @Sendable () async throws -> T
   ) async throws -> T {
-    final class Settlement: @unchecked Sendable {
-      private let lock = NSLock()
-      private var finished = false
-      /// Returns true exactly once, for the winner of the race.
-      func claim() -> Bool {
-        lock.withLock {
-          if finished { return false }
-          finished = true
-          return true
-        }
-      }
-    }
-
     let settlement = Settlement()
     return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
       let workTask = Task<Void, Never> {
