@@ -3,13 +3,23 @@
 **Status:** Draft for founder fill-in. No App Store Connect action, no
 resubmission, and no reply to Apple is authorized by this document.
 
-**Rejected build context:** App Store submission **1.0 (122)**, reviewed
-**10 Nov 2026** on **macOS 27.2**, was refused under:
+**Rejected build context — Verified via App Store Connect:** version **1.0**
+**REJECTED** with build **1.0 (122)** attached (read-only API check, 12 Nov
+2026), matching Apple’s message (**reviewed 10 Nov 2026**, **macOS 27.2**).
+Refused under:
 
 | Guideline | What Apple cited | Owner of the fix |
 | --- | --- | --- |
-| **2.1(a)** Performance — App Completeness | Error at launch | Separate launch-bug track (not this doc) |
-| **5.2.5** Legal — Intellectual Property / Apple Products | App name uses “Mac” inappropriately | Metadata rename in § Metadata below (John picks the public name) |
+| **2.1(a)** Performance — App Completeness | Error at launch | Separate launch-bug track (not this doc). **Root cause still unconfirmed.** |
+| **5.2.5** Legal — Intellectual Property | App name uses “Mac” inappropriately | Metadata rename in § Metadata (**Cosmas Scribe**) |
+
+**Wrong elsewhere:** PR #552’s
+`docs/codex-tasks/2026-11-11-apple-review-mac131-launch.md` (on branch
+`grok/scribe-mac-launch-recoverable`) still says **1.0 (131)** / **5 Nov 2026** /
+**macOS 27.0.1** — that build identity is **incorrect** relative to Connect.
+This docs-only PR does not edit that other branch. Repo
+`apps/desktop-companion/desktop-release.json` still pins build **126** (assemble
+stamp ≠ rejected Connect build).
 
 This document covers **App Review Information** and **metadata rename notes** a
 reviewer / founder needs once a fixed binary can open. It does not authorize
@@ -18,58 +28,53 @@ Connect edits, a reply to Apple, or resubmission.
 **Hard boundaries:** Synthetic data only. No PHI. No real passwords, Clerk
 secrets, API keys, or production credentials in this file, in PRs, or in chat.
 Placeholders use angle brackets. Do not paste live values into the repository.
+**A staging hold is in effect** — do not start steps that touch staging until
+John lifts it (see §3 / §5).
 
 **Product under review:** Electron desktop companion (`apps/desktop-companion`)
-with native Clerk auth and audio helpers. Packaging today still exposes
-*Cosmaneura Scribe for Mac* (`PUBLIC_MAC_NAME`); that string must change before
-resubmit per § Metadata. Sign-in is Clerk hosted auth, not a custom
-username/password form inside the app.
+with native Clerk auth and audio helpers. Packaging may still expose the old
+*Cosmaneura Scribe for Mac* string until the rename PR (#558) lands; listing
+name for Connect is **Cosmas Scribe**. Sign-in is Clerk hosted auth, not a
+custom username/password form inside the app.
 
 ---
 
-## Metadata rename — Guideline 5.2.5 (John’s name pick)
+## Metadata rename — Guideline 5.2.5 + Apple trademark practice
 
-Apple rejected the listing because the **app name uses “Mac” inappropriately**.
-Guideline **5.2.5 Apple Products** states (paraphrased from
-[App Store Review Guidelines](https://developer.apple.com/app-store/review/guidelines/)):
-do not create an app that appears confusingly similar to an existing Apple
-product, interface, or advertising theme, and do not misuse Apple product brand
-names in the app. On the Mac App Store, appending “Mac” / “for Mac” to the
-product name is treated as that misuse — the storefront already identifies the
-platform.
+Apple’s rejection under **5.2.5** said the **app name uses “Mac”
+inappropriately**. Limit the 5.2.5 claim to that rejection wording.
 
-**Public app name — John’s pick:**
+The broader rule against using Apple product names (including Mac) in third-party
+product naming is attributed to
+[Apple’s trademark guidelines for third parties](https://www.apple.com/legal/intellectual-property/guidelinesfor3rdparties.html),
+not quoted here as additional 5.2.5 guideline text.
+
+**Public app name — John’s pick (12 Nov 2026):**
 
 | Field | Value |
 | --- | --- |
-| **New App Store name** | **Cosmas Scribe** (John picked; former candidates were `Cosmas Scribe` · `Cosmaneura Scribe`) |
+| **New App Store name** | **Cosmas Scribe** |
 | **Listing subtitle** | `Record and review visit notes` (keep; contains no “Mac”) |
 | Current rejected name (drop) | `Cosmaneura Scribe for Mac` |
 
-App Store Connect paste + packaging display-name change remain follow-on work
-(out of scope for this docs-only PR).
+Binary / packaging display-name rename is tracked in PR **#558** (out of scope
+here). Connect paste remains founder-owned.
 
-### Metadata fields that must drop “Mac” / “for Mac”
+### Metadata fields — Name (5.2.5) vs cautious practice
 
-Strip the platform word from every customer-facing App Store Connect field
-below. Prefer **Cosmas Scribe** (or a short accurate phrase that does not
-contain `Mac`, `macOS`, `iMac`, `MacBook`, etc.).
-
-| Connect / asset field | Why it must drop “Mac” / “for Mac” | Action |
+| Connect / asset field | Basis | Action |
 | --- | --- | --- |
-| **Name** (app name, ≤30 chars) | Direct 5.2.5 citation — rejected name included “Mac”. | Set to **Cosmas Scribe**. |
-| **Subtitle** | Metadata adjacent to the name; Apple reads subtitle with the name for trademark/similarity. | Keep **Record and review visit notes** (already has no “Mac” / “for Mac”). |
-| **Keyword** (keyword field) | Keywords must not pack Apple product brand terms; “mac” / “for mac” invite the same 5.2.5 hit. | Remove `mac`, `for mac`, and similar tokens. |
-| **Description** | Long-form listing copy is reviewed for Apple product-name misuse alongside the title. | **Remove “Mac” / “for Mac”** (and “Scribe for Mac” / “Mac app” phrasing); use Cosmas Scribe or neutral “desktop” wording. |
-| **Screenshot** (and preview) text / chrome | On-image captions, device frames labeled “Mac”, or UI chrome that brands the product as “… for Mac” count as metadata. | **Check screenshots** — re-export so visible titles match **Cosmas Scribe**; no “Mac” / “for Mac” overlays. |
+| **Name** (app name, ≤30 chars) | Apple rejection / **5.2.5** — name used “Mac” inappropriately | Set to **Cosmas Scribe**. |
+| **Subtitle** | **Cautious practice** (not an Apple-stated 5.2.5 field rule in the rejection) | Keep **Record and review visit notes** (already has no “Mac” / “for Mac”). |
+| **Keyword** | **Cautious practice** | Remove `mac`, `for mac`, and similar tokens. |
+| **Description** | **Cautious practice** | **Remove “Mac” / “for Mac”** (and “Scribe for Mac” / “Mac app” phrasing); use Cosmas Scribe or neutral “desktop” wording. |
+| **Screenshot** (and preview) text / chrome | **Cautious practice** | **Check screenshots** — re-export so visible titles match **Cosmas Scribe**; no “Mac” / “for Mac” overlays. |
 
-**Still allowed / not the 5.2.5 problem:** saying the binary runs on macOS inside
-**App Review Information → Notes** (reviewer instructions), technical
-entitlement docs, or internal repo paths. The prohibition is **customer-facing
-listing and product branding**, not documenting that Review happens on a Mac.
+**Still allowed:** saying the binary runs on macOS inside **App Review
+Information → Notes**, technical entitlement docs, or internal repo paths.
 
-**Out of scope here:** binary display-name / `PUBLIC_MAC_NAME` code change,
-Connect upload, and any reply to Apple.
+**Out of scope here:** Connect upload, reply to Apple, and packaging rename
+(#558).
 
 ---
 
@@ -87,13 +92,30 @@ practice-setup or activation dead ends.
 | **A. Synthetic staging account (recommended)** | Normal app path against `https://staging-app.cosmaneura.com` and staging Clerk (`resolved-emu-53`). Founder provisions email/password (or email code) factors Apple can type into App Review Information, activates practice/Scribe grant ahead of review. | Matches how the shipped app works. Needs live staging Core, Clerk, Azure blob upload, and founder ops. Mac UI does **not** currently wire “Complete practice setup” / “Activate Scribe” (iOS does); the account **must** be fully ready before the reviewer launches. No product code change for the access path itself. |
 | **B. In-app demo / offline review mode** | Flag-guarded, default-off path that skips live Clerk/Core and plays a canned synthetic visit. | Does **not** exist today. Would be a Tier 2 auth/session change, easy to mis-ship, and still would not prove the real capture/upload path Apple may exercise. Larger blast radius than provisioning one synthetic account. Only consider if staging cannot be kept reachable for Review. |
 
-**Why A wins for this resubmission:** John already selected staging for the App
-Review demo (`docs/flight-plans/2026-11-04-scribe-account-setup.md`). There is
-no production-path `APP_REVIEW`, demo, or sandbox product toggle in the Mac
-binary. Meaningful recording requires live Clerk, Core capture/admission APIs,
-and Azure block-blob upload. Building B delays Review and risks live-user
-behavior unless carefully sealed; A reuses the existing staging profile gate
-(`provider-profile.json` → `enabled: true`, schema 1 staging origin).
+**Why A is favored (pending John’s confirmation):** There is no production-path
+`APP_REVIEW`, demo, or sandbox product toggle in the Mac binary. Meaningful
+recording requires live Clerk, Core capture/admission APIs, and Azure block-blob
+upload. Building B delays Review and risks live-user behavior unless carefully
+sealed; A reuses the existing staging profile gate (`provider-profile.json` →
+`enabled: true`, schema 1 staging origin).
+
+`docs/flight-plans/2026-11-04-scribe-account-setup.md` line 82 records John’s
+staging choice for the **iOS 95+** App Review demo candidate. Applying that same
+staging choice to **this Mac submission** is an **assumption John must confirm**
+— it is not independent proof that Mac Review must use staging.
+
+### John decides — staging-sealed vs production-sealed Review binary
+
+Apple approves the **exact binary** that ships. A **staging-sealed** build that
+Review approves would reach public customers still sealed to staging unless
+release is held manually and a **production** build is submitted afterwards.
+
+| Option | What it means | Notes |
+| --- | --- | --- |
+| **1. Staging-sealed Review build** | Submit the staging package; keep App Store release **manual hold**; after approval, submit a separate production-sealed build for the public listing | Matches current staging-default packaging; needs a second submission for production |
+| **2. Production-sealed Review build** | Seal the Review binary to production Core/Clerk with a **synthetic** production account | Needs **John’s yes** per `AGENTS.md` (production package / live auth boundary) |
+
+**Do not choose for John.** Record his pick before Connect submit.
 
 ### What must be provisioned (by whom) — no live secrets here
 
@@ -103,13 +125,33 @@ behavior unless carefully sealed; A reuses the existing staging profile gate
 | Staging Cosmas practice membership | John (Core / Cosmas admin path) | Active practice membership for that Clerk subject; workforce/provider role sufficient for Scribe catalog + walk-in creation. Practice and patients must be invented names only. |
 | Scribe capability / activation | John | Account must **not** return `scribe_account_setup_required` for `practice` or `activation` on the Mac client. Complete practice onboarding and Scribe activation **before** Review (browser/Core tools or iOS setup UI). Activation alone is not recording authority; still need capture grant. |
 | Capture / cohort grant | John | Founder-selected synthetic practice cohort with Scribe capture enabled for desktop, `non_phi_test_only` / synthetic classification only. |
-| Staging package profile | Packaging owner (John for production-bound assemble) | MAS/TestFlight candidate sealed to staging Core origin, `enabled: true`, matching auth/audio helpers, single Azure blob upload origin. Do not submit a disabled assemble receipt. |
+| Staging package profile | Packaging owner (John for production-bound assemble) | MAS/TestFlight candidate sealed to staging Core origin, `enabled: true`, matching auth/audio helpers, single Azure blob upload origin. Do not submit a disabled assemble receipt. Schema-1 staging packages pin a fixed staging `workspaceId` — see note below. |
 | Azure blob upload | Already part of staging topology | Confirm the package’s single `https://<account>.blob.core.windows.net` origin accepts ciphertext from the staging workload path. No SAS strings in this doc. |
 | Network reachability | John / ops | Reviewer Mac must reach staging Clerk, `staging-app.cosmaneura.com`, and the blob origin over HTTPS. |
 
-**Explicit non-goals for this access path:** production Clerk/Core, real patient
-data, sharing founder personal credentials in App Store Connect, shipping a
-demo-mode binary to live users.
+**Schema-1 staging `workspaceId` pin:**
+`apps/desktop-companion/src/standalone-provider-profile.ts` defines
+`STAGING_WORKSPACE` at line 3 and, for non-production (schema 1) profiles,
+returns that constant at line 25 (staging packages do not take a free-form
+workspace id from the profile file). Consumers:
+
+- `apps/desktop-companion/src/standalone-provider.ts:55` — cancellation helper
+  scoped with `profile.workspaceId`
+- `apps/desktop-companion/src/standalone-provider.ts:73-76` — device custody +
+  `DurableDesktopRecordStore.open({ … workspaceId })` for pending-creation
+  journals
+
+Core encounter / catalog scopes still come from live API responses (e.g.
+`apps/capture/src/provider/encounter-setup.ts`,
+`apps/capture/src/provider/core-client.ts`), not from rewriting those responses
+to `STAGING_WORKSPACE`. Whether the reviewer’s Clerk membership / practice must
+**equal** that UUID for admission is **unverified** here; treat the pin as a
+hard local-custody/cancellation namespace for schema-1 packages, and confirm
+Core membership separately.
+
+**Explicit non-goals for this access path:** production Clerk/Core (unless John
+picks option 2 above), real patient data, sharing founder personal credentials
+in App Store Connect, shipping a demo-mode binary to live users.
 
 ---
 
@@ -126,23 +168,23 @@ WHAT THE APP DOES
 Scribe helps a clinician record an in-person or video visit after patient consent, then prepare a visit note in the CosmaNeura web dashboard. This build uses our staging environment with synthetic (invented) data only. Please do not enter real patient information.
 
 SIGN-IN
-Sign-in is required. Tap Sign in. A secure Clerk browser window opens (ephemeral system browser). Sign in with the demo account in App Review Information (email + password). When the window finishes, return to Scribe. Choose Open workspace if prompted. You should land on “Today’s patients.”
+Sign-in is required. Click Sign in. A secure Clerk browser window opens (ephemeral system browser). Sign in with the demo account in App Review Information (email + password). When the window finishes, return to Scribe. Choose Check access or Open workspace if prompted. You should land on “Today’s patients.”
 
 If you see practice setup or activation messages, the demo account was not pre-activated — contact us with the contact info below rather than continuing.
 
 PERMISSIONS (asked only when you set up recording, not at cold launch)
-• Microphone — records the clinician-selected microphone after consent. Usage: “Scribe records the selected microphone only after patient consent.”
-• Screen Recording (only if you choose “On a video call”) — captures audio from the meeting window you select after consent. Usage: “Scribe captures audio from the meeting selected by the provider after patient consent.”
-Use System Settings → Privacy & Security if macOS needs a toggle, then return and choose “Check recording access.”
+• Microphone — records the clinician-selected microphone after consent.
+• Screen Recording (only if you choose “On a video call”) — captures audio from the meeting window you select after consent.
+In System Settings → Privacy & Security, the app appears as “Cosmaneura Scribe Store” (until the rename package ships). Allow that entry for Microphone (and Screen Recording if used), then return and choose “Check recording access.”
 
 HOW TO RECORD A SYNTHETIC SAMPLE
 1. On Today’s patients, choose “+ Walk-in or new patient.”
 2. Enter an invented name only, e.g. “Review Test Patient.” Choose “Continue to recording setup.”
 3. Prefer “In the room” (microphone only). Avoid video-call mode unless you also allow Screen Recording.
 4. If prompted, choose “Check recording access” / “Set up recording access” and allow Microphone.
-5. Read or skip aloud the consent line shown. Check “The patient said yes.”
+5. Read the consent line shown aloud (you may role-play the patient). Check “The patient said yes.”
 6. Choose “Start recording.” Speak a few invented sentences (no real clinical details).
-7. Choose “Finish visit.” Wait for save/upload. Optional: Account menu → Open dashboard (opens staging CosmaNeura notes in a browser).
+7. Choose “Finish visit.” Wait for save/upload. Optional: on Today’s patients, open More → Open the dashboard (opens CosmaNeura notes in a browser).
 
 NETWORK
 The app needs HTTPS to: staging Clerk (hosted sign-in), https://staging-app.cosmaneura.com (catalog, consent, session, upload authority), and one Azure Blob Storage origin for encrypted audio upload. Offline use is not supported for this demo.
@@ -150,6 +192,27 @@ The app needs HTTPS to: staging Clerk (hosted sign-in), https://staging-app.cosm
 DEMO ACCOUNT
 Use only the Sign-in Required credentials in App Review Information. All names and speech must remain synthetic. Do not put real passwords in git; credentials live only in App Store Connect / founder secret store.
 ```
+
+**Maintainer notes (not for Connect paste):**
+
+- Ephemeral system browser:
+  `apps/capture/native-plugins/cosmas-native-auth/Sources/CosmasNativeAuth/ClerkKitWorkspaceDriver.swift:52-53`
+  (`prefersEphemeralWebBrowserSession: true`).
+- Sign-in / workspace controls:
+  `apps/capture/src/provider/application.ts:129` (“Sign in”),
+  `:134-138` (“Check access” / “Open workspace”). Account menu at `:95` is only
+  Sign out, Cancel Scribe access, Get help — not dashboard.
+- Dashboard control on Today’s patients:
+  `apps/capture/src/provider/workspace.ts:348` (`More` → `Open the dashboard`).
+- System Settings display name:
+  `apps/capture/src/provider/preparation-controls.ts:14,75,80`
+  (`Cosmaneura Scribe Store` when `document.title` matches).
+- Usage-description strings (packaging drafts, not a checked-in app
+  `Info.plist` on this branch):
+  `scripts/prepare-desktop-mas-variant.py:74-75` and
+  `scripts/prepare-desktop-mas-xpc-variant.py:129-134`
+  (`NSMicrophoneUsageDescription` /
+  `NSScreenCaptureUsageDescription`).
 
 **Character count (template above, including labels):** keep the filled Notes
 (with short email/password reminders if needed) under ~4,000 characters. Prefer
@@ -160,12 +223,24 @@ Notes.
 
 ## 3. App Review Information field checklist
 
+**A staging hold is in effect. Do not start any step that touches staging until
+John lifts it.**
+
 Fill in App Store Connect for the **Mac** app version under review. Values below
 are instructions or placeholders — never commit real secrets.
 
+### John decides — which binary Apple will approve (repeat of §1)
+
+Apple approves the exact binary that ships. Options (do not pick here):
+
+1. **Staging-sealed** Review build + **manual release hold**, then a later
+   production submission; or
+2. **Production-sealed** Review build with a synthetic account (**John’s yes**
+   per `AGENTS.md`).
+
 | Field | What to fill |
 | --- | --- |
-| **Name / Subtitle / Keyword / Description / Screenshots** | See § Metadata — must match `Cosmas Scribe` with no “Mac” / “for Mac”. |
+| **Name / Subtitle / Keyword / Description / Screenshots** | See § Metadata — name **Cosmas Scribe**; subtitle **Record and review visit notes**; still remove “Mac” from Description and check Screenshots (cautious practice). |
 | **Sign-in required** | **Yes** (checked). The Mac app is unusable for Review without Clerk sign-in. |
 | **User name** | `<REVIEWER_SYNTHETIC_EMAIL>` — the staging Clerk primary email John provisions (synthetic only). |
 | **Password** | `<REVIEWER_SYNTHETIC_PASSWORD>` — store only in App Store Connect / founder secret store; **never commit real passwords to git**. Or document in Notes if the staging instance uses email one-time code only (then explain the OTP path and ensure John can supply a stable factor Apple accepts). Prefer a password factor for Review simplicity. |
@@ -178,10 +253,12 @@ are instructions or placeholders — never commit real secrets.
 | **Export compliance / encryption** | Follow existing App Store Connect answers for this app; this doc does not change them. |
 | **Advertising Identifier** | N/A unless the binary uses IDFA (Scribe Mac does not advertise). |
 
-**Pre-submit smoke (founder, staging package only):** cold launch → Sign in with
-the exact App Review credentials → Today’s patients → walk-in → mic permission
-→ consent → short synthetic recording → Finish visit → upload completes. If
-launch fails, do not submit; that is the separate 2.1(a) launch-fix track.
+**Pre-submit smoke (founder; only after John lifts the staging hold if the
+candidate is staging-sealed):** cold launch → Sign in with the exact App Review
+credentials → Today’s patients → walk-in → mic permission → consent → short
+synthetic recording → Finish visit → upload completes. If launch fails, do not
+submit; that is the separate 2.1(a) launch-fix track (**root cause still
+unconfirmed**).
 
 ---
 
@@ -222,17 +299,20 @@ hooks in this documentation-only change.
 
 ### Existing flags (not App Review demo)
 
-| Mechanism | Role |
-| --- | --- |
-| `BETA_CONSENT_PREPARATION` | Expired (2026-11-01); not a Review bypass. |
-| `COSMAS_RECALL_DESKTOP_COMPANION_ENABLED` | Default false; Recall pilot. |
-| `provider-profile.enabled` | Real connect gate; false fails closed. |
-| `tools/virtual-lab/*` | Lab/synthetic tooling only — not shipped UI. |
-| Mock BFF / readiness benchmarks | Test-only under `apps/desktop-companion/test-tools/`. |
+| Mechanism | Role | Citation |
+| --- | --- | --- |
+| `BETA_CONSENT_PREPARATION` | Expired **2026-11-01**; not a Review bypass | `apps/capture/src/provider/beta-consent-preparation.ts:5-10` (`expires: "2026-11-01"`); expiry behavior covered in `beta-consent-preparation.test.ts:10-11` |
+| `COSMAS_RECALL_DESKTOP_COMPANION_ENABLED` | Default **false**; Recall pilot | Flag name `apps/desktop-companion/src/config.ts:1-2`; default `DEFAULT_COMPANION_FEATURE_CONFIG.enabled: false` at `:23-25` |
+| `provider-profile.enabled` | Real connect gate; false fails closed | `apps/desktop-companion/src/standalone-provider.ts:57-58` (`profile.enabled !== true`) |
+| `tools/virtual-lab/` | Lab/synthetic tooling only — not shipped UI | Directory `tools/virtual-lab/` (e.g. `tools/virtual-lab/README.md`) |
+| Mock BFF / readiness benchmarks | Test-only | `apps/desktop-companion/test-tools/` |
 
 ---
 
 ## 5. Codex task for John — live Azure / Clerk / Core setup
+
+**A staging hold is in effect. Do not start any step that touches staging until
+John lifts it.**
 
 Copy the block below into a Codex (or founder) task. Agents without Clerk/Azure
 dashboard access cannot execute these steps.
@@ -241,28 +321,36 @@ dashboard access cannot execute these steps.
 TASK: Provision Mac App Store Review synthetic access (staging only)
 OWNER: John
 REPO CONTEXT: cosmaneura-scribe docs/app-review/mac-app-review-information.md
-DO NOT: merge PRs; touch App Store Connect submit/reply; use production Clerk/Core;
-put real passwords in git; use PHI; edit codex/* branches you do not own.
+HOLD: A staging hold is in effect. Do not start any step that touches staging
+until John lifts it.
+DO NOT: merge PRs; touch App Store Connect submit/reply; use production Clerk/Core
+unless John explicitly picks a production-sealed Review binary; put real
+passwords in git; use PHI; edit codex/* branches you do not own.
 
 GOAL
-Leave a staging Cosmas Scribe Mac App Store build that a stranger can:
-launch → Clerk Sign in → Today’s patients → walk-in synthetic patient → mic
-consent → short recording → Finish visit → encrypted upload, without
-practice-setup walls. Listing name must not include “Mac” / “for Mac” (5.2.5).
+Leave a Cosmas Scribe Mac App Store build that a stranger can: launch → Clerk
+Sign in → Today’s patients → walk-in synthetic patient → mic consent → short
+recording → Finish visit → encrypted upload, without practice-setup walls.
+Listing name must not include “Mac” / “for Mac” (5.2.5 rejection).
 
 STEPS
-1) Confirm the binary under Review is sealed to staging:
+1) Confirm which binary John chose for Review (staging-sealed + manual hold, or
+   production-sealed with synthetic account — John’s yes for production).
+   If staging-sealed:
    - coreOrigin https://staging-app.cosmaneura.com
-   - Clerk issuer resolved-emu-53 (pk_test_ path)
+   - Clerk issuer resolved-emu-53 (pk_test_ publishable-key prefix for non-prod;
+     see NativeClerkConfiguration.swift)
    - provider-profile enabled true
    - About / public release badge shows Staging (S), not Production (P)
    - MAS/XPC helpers and sandbox entitlements match the submitted package
-2) In staging Clerk, create a dedicated synthetic user:
+   - schema-1 packages pin workspaceId STAGING_WORKSPACE
+     (standalone-provider-profile.ts)
+2) In the chosen Clerk instance, create a dedicated synthetic user:
    - Email: choose a disposable reviewer mailbox you control
    - Enable a password factor Apple can type (preferred) or document OTP
    - Do not reuse personal founder login in App Store Connect
    - Store credentials only in 1Password / App Store Connect — never in git
-3) In staging Cosmas/Core:
+3) In Cosmas/Core for that environment:
    - Attach that Clerk subject to an active synthetic practice (invented name)
    - Grant provider/workforce role needed for catalog + walk-in creation
    - Complete practice onboarding so Mac will not show “Complete practice setup”
@@ -270,20 +358,25 @@ STEPS
      (Mac lacks those buttons; browser or iOS setup UI is required)
    - Enable Scribe capture capability / cohort for desktop on that practice
    - Ensure cancellation status is not blocking new recordings
+   - For schema-1 staging packages: confirm local custody/cancellation namespace
+     uses pinned STAGING_WORKSPACE; separately confirm Core membership works
+     for that synthetic user (Core workspace equality to the pin is unverified
+     in docs alone)
 4) Azure / upload:
-   - Confirm staging blob account origin matches the package uploadOrigins entry
+   - Confirm blob account origin matches the package uploadOrigins entry
    - Confirm managed-identity / workload path can authorize block-blob put for
      a synthetic capture (no SAS strings in chat or git)
 5) Network:
-   - From a clean Mac, verify HTTPS to Clerk, staging-app.cosmaneura.com, blob
-6) Dry run with the exact App Review credentials:
-   - Sign in → Open workspace → + Walk-in → invented name → In the room →
-     Check recording access → The patient said yes → Start recording →
-     speak synthetic lines → Finish visit → confirm upload/save
+   - From a clean Mac, verify HTTPS to Clerk, Core origin, blob
+6) Dry run with the exact App Review credentials (only after any staging hold
+   is lifted if using staging):
+   - Sign in → Check access / Open workspace → + Walk-in → invented name →
+     In the room → Check recording access → The patient said yes →
+     Start recording → speak synthetic lines → Finish visit → confirm upload/save
 7) Fill App Store Connect App Review Information using the checklist in
    docs/app-review/mac-app-review-information.md (§3) and Notes (§2).
 8) Do not submit or reply to Apple until the separate launch-fix (2.1(a))
-   is verified on the same binary.
+   is verified on the same binary (root cause still unconfirmed).
 
 DONE WHEN
 Dry run succeeds on the candidate Mac package with only synthetic data, and
@@ -296,17 +389,22 @@ App Review fields are ready for John to paste (credentials still outside git).
 
 | Topic | Location |
 | --- | --- |
-| MAS / Electron entries | `apps/desktop-companion/standalone/main-mas*.mjs`, `main.mjs` |
-| Sealed staging/production profile | `apps/desktop-companion/src/standalone-provider-profile.ts` |
-| Standalone host (no practice setup wire) | `apps/desktop-companion/src/standalone-provider.ts` |
+| MAS / Electron entries | `apps/desktop-companion/standalone/main-mas.mjs`, `main-mas-xpc.mjs`, `main.mjs` |
+| Sealed staging/production profile | `apps/desktop-companion/src/standalone-provider-profile.ts` (`STAGING_WORKSPACE` L3; schema-1 pin L25) |
+| Standalone host (no practice setup wire) | `apps/desktop-companion/src/standalone-provider.ts` (`workspaceId` use L55, L73-76) |
 | Desktop UI host | `apps/capture/src/provider/desktop-application.ts` |
-| Session / Sign in UI | `apps/capture/src/provider/application.ts` |
+| Session / Sign in UI | `apps/capture/src/provider/application.ts` (Account menu L95; Sign in L129; Check access / Open workspace L134-138) |
+| Today’s patients → More → dashboard | `apps/capture/src/provider/workspace.ts:348` |
+| System Settings app label | `apps/capture/src/provider/preparation-controls.ts:14,75,80` |
 | iOS practice/activation (parity reference) | `apps/capture/src/provider/native-application.ts` |
-| Clerk hosted sign-in | `apps/capture/native-plugins/cosmas-native-auth/.../ClerkKitWorkspaceDriver.swift` |
-| Mic / screen permission prompts | `apps/desktop-companion/native/ScribeDesktopAudio/.../Main.swift` |
-| Consent / walk-in copy | `recording-preparation-view.ts`, `encounter-setup-view.ts`, `workspace.ts` |
-| Staging App Review demo decision | `docs/flight-plans/2026-11-04-scribe-account-setup.md` |
+| Clerk hosted sign-in (ephemeral browser) | `apps/capture/native-plugins/cosmas-native-auth/Sources/CosmasNativeAuth/ClerkKitWorkspaceDriver.swift:52-53` |
+| Clerk `pk_test_` / `pk_live_` prefix | `apps/capture/native-plugins/cosmas-native-auth/Sources/CosmasNativeAuth/NativeClerkConfiguration.swift:110` |
+| Mic / screen permission helper entry | `apps/desktop-companion/native/ScribeDesktopAudio/Sources/ScribeDesktopAudioHelper/Main.swift` |
+| MAS usage-description drafts | `scripts/prepare-desktop-mas-variant.py:74-75`; `scripts/prepare-desktop-mas-xpc-variant.py:129-134` |
+| Consent / walk-in copy | `apps/capture/src/provider/recording-preparation-view.ts`, `encounter-setup-view.ts`, `workspace.ts` |
+| Staging App Review demo decision (iOS 95+) | `docs/flight-plans/2026-11-04-scribe-account-setup.md:82` |
 | MAS packaging ADR | `docs/adr/0080-dormant-mac-app-store-distribution.md` |
+| Repo-pinned release build (126) | `apps/desktop-companion/desktop-release.json` |
 
 ---
 
@@ -315,3 +413,6 @@ App Review fields are ready for John to paste (credentials still outside git).
 **Tier 0 for this documentation-only change** (no runtime, auth, or packaging
 behavior change). Executing the Codex task (Clerk/practice/capability) is
 **Tier 2** operational work under founder authority and is outside this PR.
+Cloud agents cannot run the Mac Swift merge filter
+`swift test --filter NativeDesktopStoreContainerTests` (plain or
+`-DSCRIBE_MAC_APP_STORE_XPC`); Beta runs that on a Mac after push.
