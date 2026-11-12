@@ -163,9 +163,33 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
     lifecycle: AppleRecordingLifecycle = .foregroundOnly,
     diagnostics: PCMStartupDiagnostics = .shared
   ) {
+    self.init(
+      system: system,
+      foreground: foreground,
+      frameCapacity: frameCapacity,
+      lifecycle: lifecycle,
+      diagnostics: diagnostics,
+      deferredRetirement: nil
+    )
+  }
+
+  /// Internal test seam only. Production callers use the public initializer;
+  /// deferred retirement defaults to immediate completion (current behaviour).
+  init(
+    system: any AppleAudioSystem,
+    foreground: any AppleApplicationForegroundProviding,
+    frameCapacity: UInt32 = 4_096,
+    lifecycle: AppleRecordingLifecycle = .foregroundOnly,
+    diagnostics: PCMStartupDiagnostics = .shared,
+    deferredRetirement: DriverCallbackGate.DeferredRetirement?
+  ) {
     self.system = system
     self.foreground = foreground
-    callbackGate = DriverCallbackGate(continueInBackground: lifecycle == .nativeEncrypted, diagnostics: diagnostics)
+    callbackGate = DriverCallbackGate(
+      continueInBackground: lifecycle == .nativeEncrypted,
+      diagnostics: diagnostics,
+      deferredRetirement: deferredRetirement
+    )
     profile = lifecycle == .nativeEncrypted ? .nativeEncryptedSpeech : .foregroundTwoPartySpeech
     self.frameCapacity = min(
       max(frameCapacity, 1),
@@ -246,6 +270,7 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
     callbackGate.freezeFrames(generation: current.generation)
     do {
       try system.freezeInput()
+      callbackGate.confirmInputFrozen(generation: current.generation)
       PCMStartupDiagnostics.shared.record(.inputFrozen)
       current.phase = .frozen
       session = current
@@ -383,6 +408,7 @@ final class DriverCallbackGate: @unchecked Sendable {
   private var generation: UInt64?
   private var callbacks: PCMAudioCallbacks?
   private var framesOpen = false
+  private var inputFrozen = false
   private var frameOutstanding = false
   private var frameReceipt: PCMFrameAdmission?
   private var frameToken: UInt64 = 0
@@ -406,6 +432,7 @@ final class DriverCallbackGate: @unchecked Sendable {
       self.generation = generation
       self.callbacks = callbacks
       framesOpen = false
+      inputFrozen = false
       frameOutstanding = false
       frameReceipt = nil
       frameToken = 0
@@ -434,6 +461,13 @@ final class DriverCallbackGate: @unchecked Sendable {
     lock.withLock {
       guard self.generation == generation else { return }
       framesOpen = false
+    }
+  }
+
+  func confirmInputFrozen(generation: UInt64) {
+    lock.withLock {
+      guard self.generation == generation else { return }
+      inputFrozen = true
     }
   }
 
@@ -521,6 +555,10 @@ final class DriverCallbackGate: @unchecked Sendable {
       // Only the native encrypted graph opts into preservation. Its hard events
       // still override a prior benign event; a stopped source never reopens.
       let preserve = continueInBackground && storedCallbacks.invalidate != nil
+      // Once physical input is confirmed frozen, our own audio-session
+      // deactivation may reconfigure the engine. That notification cannot
+      // invalidate audio already captured. Real hard events remain armed.
+      if preserve && inputFrozen && event == .configurationChanged { return }
       let deliveryEvent: PCMAudioEvent = preserve && event == .configurationChanged ? .captureFailed : mapped
       if terminalEventSent && (!preserve || benign || hardEventSent) { return }
       terminalEventSent = true

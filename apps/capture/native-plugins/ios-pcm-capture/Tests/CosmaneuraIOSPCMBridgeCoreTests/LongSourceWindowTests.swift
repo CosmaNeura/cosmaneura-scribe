@@ -49,7 +49,7 @@ private final class SyntheticDriver: PCMAudioDriving, @unchecked Sendable {
       channels: [Array(repeating: 0.125, count: 16_000)])
     let admitted = callback.frames(frames)
     try #require(admitted.accepted)
-    await admitted.waitUntilConsumed()
+    try await PCMTestWait.until("long-window buffer consumed") { admitted.isConsumed }
     #expect(frames.isZeroed)
   }
   func freezeInput(sessionID: UInt64) async throws { lock.withLock { callbacks = nil } }
@@ -92,7 +92,7 @@ private final class CountingSink: PCMEmissionSink, @unchecked Sendable {
   }
 }
 
-@Suite(.serialized)
+@Suite(.serialized, .timeLimit(.minutes(5)))
 struct LongSourceWindowTests {
   @Test func threeHoursOfPCMKeepContiguousPositionsAcrossShortWindows() async throws {
     let consent = SyntheticConsent(), driver = SyntheticDriver()
@@ -100,27 +100,42 @@ struct LongSourceWindowTests {
     let core = IOSPCMCore(permission: consent, audio: driver, sink: sink, sourceClock: clock)
     let session = try core.start(configuration: PCMConfiguration(targetFramesPerChunk: 160_000,
       maximumChunks: 90, maximumInputFramesPerBuffer: 16_000, authority: authority()))
-    try await session.ready()
+    try await PCMTestWait.withDeadline("long-window session.ready") {
+      try await session.ready()
+    }
     var generation = 1
     // Stream all 172.8 million invented frames. Nothing accumulates the visit or
     // touches a microphone, Keychain, file, network, or installed application.
     for second in 0..<10_800 {
       if second > 0 && second.isMultiple(of: 780) {
         generation += 1
-        try await session.extend(PCMSourceExtension(runID: runID, generation: generation,
-          expiresAtMilliseconds: epoch + Int64(second + 900) * 1_000,
-          maximumChunks: (second + 900) / 10))
+        let extendGeneration = generation
+        let extendSecond = second
+        try await PCMTestWait.withDeadline("long-window extend gen \(extendGeneration)") {
+          try await session.extend(PCMSourceExtension(runID: runID, generation: extendGeneration,
+            expiresAtMilliseconds: epoch + Int64(extendSecond + 900) * 1_000,
+            maximumChunks: (extendSecond + 900) / 10))
+        }
       }
-      if second.isMultiple(of: 10) { await session.heartbeat() }
+      if second.isMultiple(of: 10) {
+        try await PCMTestWait.withDeadline("long-window heartbeat") {
+          await session.heartbeat()
+        }
+      }
       try await driver.offerSecond()
       clock.advance()
     }
-    let stopped = try await session.stop(.drain)
+    let stopped = try await PCMTestWait.withDeadline("long-window session.stop(.drain)") {
+      try await session.stop(.drain)
+    }
     #expect(stopped.finalPacket == nil)
     sink.verify()
+    let postStopGeneration = generation + 1
     await #expect(throws: PCMFailure.self) {
-      try await session.extend(PCMSourceExtension(runID: runID, generation: generation + 1,
-        expiresAtMilliseconds: epoch + 11_700_000, maximumChunks: 1_170))
+      try await PCMTestWait.withDeadline("long-window post-stop extend") {
+        try await session.extend(PCMSourceExtension(runID: runID, generation: postStopGeneration,
+          expiresAtMilliseconds: epoch + 11_700_000, maximumChunks: 1_170))
+      }
     }
   }
 
