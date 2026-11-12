@@ -27,7 +27,7 @@ username/password form inside the app.
 
 ---
 
-## Metadata rename — Guideline 5.2.5 (John’s name pick required)
+## Metadata rename — Guideline 5.2.5 (John’s name pick)
 
 Apple rejected the listing because the **app name uses “Mac” inappropriately**.
 Guideline **5.2.5 Apple Products** states (paraphrased from
@@ -38,32 +38,30 @@ names in the app. On the Mac App Store, appending “Mac” / “for Mac” to t
 product name is treated as that misuse — the storefront already identifies the
 platform.
 
-**Public app name — founder pick (do not invent in git):**
+**Public app name — John’s pick:**
 
 | Field | Value |
 | --- | --- |
-| **New App Store name** | `<JOHN_PICKED_APP_NAME>` — **John chooses**; leave this placeholder until he picks. |
-| Name candidates (not chosen) | `Cosmas Scribe` · `Cosmaneura Scribe` |
+| **New App Store name** | **Cosmas Scribe** (John picked; former candidates were `Cosmas Scribe` · `Cosmaneura Scribe`) |
+| **Listing subtitle** | `Record and review visit notes` (keep; contains no “Mac”) |
 | Current rejected name (drop) | `Cosmaneura Scribe for Mac` |
 
-Do **not** commit John’s final pick into this file until he states it. After he
-picks, replace `<JOHN_PICKED_APP_NAME>` everywhere this doc still says the old
-marketing string, and update App Store Connect + packaging display name in a
-follow-on change (out of scope for this docs-only PR).
+App Store Connect paste + packaging display-name change remain follow-on work
+(out of scope for this docs-only PR).
 
 ### Metadata fields that must drop “Mac” / “for Mac”
 
 Strip the platform word from every customer-facing App Store Connect field
-below. Prefer `<JOHN_PICKED_APP_NAME>` (or a short accurate phrase that does not
+below. Prefer **Cosmas Scribe** (or a short accurate phrase that does not
 contain `Mac`, `macOS`, `iMac`, `MacBook`, etc.).
 
 | Connect / asset field | Why it must drop “Mac” / “for Mac” | Action |
 | --- | --- | --- |
-| **Name** (app name, ≤30 chars) | Direct 5.2.5 citation — rejected name included “Mac”. | Set to `<JOHN_PICKED_APP_NAME>`. |
-| **Subtitle** | Metadata adjacent to the name; Apple reads subtitle with the name for trademark/similarity. | Rewrite without “Mac” / “for Mac”. |
+| **Name** (app name, ≤30 chars) | Direct 5.2.5 citation — rejected name included “Mac”. | Set to **Cosmas Scribe**. |
+| **Subtitle** | Metadata adjacent to the name; Apple reads subtitle with the name for trademark/similarity. | Keep **Record and review visit notes** (already has no “Mac” / “for Mac”). |
 | **Keyword** (keyword field) | Keywords must not pack Apple product brand terms; “mac” / “for mac” invite the same 5.2.5 hit. | Remove `mac`, `for mac`, and similar tokens. |
-| **Description** | Long-form listing copy is reviewed for Apple product-name misuse alongside the title. | Replace “Scribe for Mac” / “Mac app” style phrasing with the picked name or neutral “desktop” wording. |
-| **Screenshot** (and preview) text / chrome | On-image captions, device frames labeled “Mac”, or UI chrome that brands the product as “… for Mac” count as metadata. | Re-export shots so visible titles match `<JOHN_PICKED_APP_NAME>`; no “Mac” / “for Mac” overlays. |
+| **Description** | Long-form listing copy is reviewed for Apple product-name misuse alongside the title. | **Remove “Mac” / “for Mac”** (and “Scribe for Mac” / “Mac app” phrasing); use Cosmas Scribe or neutral “desktop” wording. |
+| **Screenshot** (and preview) text / chrome | On-image captions, device frames labeled “Mac”, or UI chrome that brands the product as “… for Mac” count as metadata. | **Check screenshots** — re-export so visible titles match **Cosmas Scribe**; no “Mac” / “for Mac” overlays. |
 
 **Still allowed / not the 5.2.5 problem:** saying the binary runs on macOS inside
 **App Review Information → Notes** (reviewer instructions), technical
@@ -122,7 +120,7 @@ Apple’s ~4,000 character limit. Replace angle-bracket placeholders before
 submit. Do **not** put PHI or real production passwords in Notes.
 
 ```text
-Thank you for reviewing <JOHN_PICKED_APP_NAME>.
+Thank you for reviewing Cosmas Scribe.
 
 WHAT THE APP DOES
 Scribe helps a clinician record an in-person or video visit after patient consent, then prepare a visit note in the CosmaNeura web dashboard. This build uses our staging environment with synthetic (invented) data only. Please do not enter real patient information.
@@ -167,7 +165,7 @@ are instructions or placeholders — never commit real secrets.
 
 | Field | What to fill |
 | --- | --- |
-| **Name / Subtitle / Keyword / Description / Screenshots** | See § Metadata — must match `<JOHN_PICKED_APP_NAME>` with no “Mac” / “for Mac”. |
+| **Name / Subtitle / Keyword / Description / Screenshots** | See § Metadata — must match `Cosmas Scribe` with no “Mac” / “for Mac”. |
 | **Sign-in required** | **Yes** (checked). The Mac app is unusable for Review without Clerk sign-in. |
 | **User name** | `<REVIEWER_SYNTHETIC_EMAIL>` — the staging Clerk primary email John provisions (synthetic only). |
 | **Password** | `<REVIEWER_SYNTHETIC_PASSWORD>` — store only in App Store Connect / founder secret store; **never commit real passwords to git**. Or document in Notes if the staging instance uses email one-time code only (then explain the OTP path and ensure John can supply a stable factor Apple accepts). Prefer a password factor for Review simplicity. |
@@ -247,7 +245,7 @@ DO NOT: merge PRs; touch App Store Connect submit/reply; use production Clerk/Co
 put real passwords in git; use PHI; edit codex/* branches you do not own.
 
 GOAL
-Leave a staging <JOHN_PICKED_APP_NAME> Mac App Store build that a stranger can:
+Leave a staging Cosmas Scribe Mac App Store build that a stranger can:
 launch → Clerk Sign in → Today’s patients → walk-in synthetic patient → mic
 consent → short recording → Finish visit → encrypted upload, without
 practice-setup walls. Listing name must not include “Mac” / “for Mac” (5.2.5).
