@@ -1,0 +1,105 @@
+{
+  "contract_version": "scribe-ingest-preview-v0",
+  "availability": "local-only",
+  "tenant_context": {
+    "location": "header",
+    "name": "X-Tenant-ID",
+    "required": true,
+    "schema": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "attach_request": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "session_id",
+      "status"
+    ],
+    "properties": {
+      "session_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "status": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "transcript_text": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 100000
+      }
+    }
+  },
+  "preview_get": {
+    "method": "GET",
+    "path": "/local/ingest-preview/{session_id}",
+    "path_parameters": {
+      "session_id": {
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "content_type": "application/json",
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "tenant_id",
+            "status"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "tenant_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "status": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "transcript_text": {
+              "type": "string",
+              "maxLength": 100000
+            }
+          }
+        }
+      },
+      "404": {
+        "description": "Missing, malformed, absent, or cross-tenant lookups fail closed."
+      }
+    }
+  },
+  "fixture": {
+    "tenant_id": "10000000-0000-4000-8000-000000000001",
+    "attach_request": {
+      "session_id": "20000000-0000-4000-8000-000000000001",
+      "status": "transcript_ready",
+      "transcript_text": "Synthetic local transcript fixture."
+    },
+    "get_response": {
+      "id": "20000000-0000-4000-8000-000000000001",
+      "tenant_id": "10000000-0000-4000-8000-000000000001",
+      "status": "transcript_ready",
+      "transcript_text": "Synthetic local transcript fixture."
+    }
+  }
+}
