@@ -460,7 +460,7 @@ def test_disabled_desktop_candidate_preflights_synthetic_verified_inputs(poison)
             json.dumps(
                 {
                     "schema": 1,
-                    "displayName": "Cosmas Scribe",
+                    "displayName": "Cosmaneura Scribe for Mac",
                     "distribution": "Direct beta",
                     "marketingVersion": "1.0.0",
                     "build": "95",
@@ -515,14 +515,12 @@ def test_disabled_desktop_candidate_preflights_synthetic_verified_inputs(poison)
             assert not args.output.exists()
         else:
             module.assemble(args)
-            app = args.output / "Cosmas Scribe.app"
+            app = args.output / "Cosmaneura Scribe for Mac.app"
             profile = json.loads((app / "Contents/Resources/app/provider-profile.json").read_text())
             assert profile["coreOrigin"] == STAGING_CORE and profile["enabled"] is False
             info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
-            assert info["CFBundleName"] == "Cosmas Scribe"
-            assert info["CFBundleDisplayName"] == "Cosmas Scribe S"
-            assert "Mac" not in info["CFBundleName"]
-            assert "Mac" not in info["CFBundleDisplayName"]
+            assert info["CFBundleName"] == "Cosmaneura Scribe Beta"
+            assert info["CFBundleDisplayName"] == "Cosmaneura Scribe for Mac S"
             assert info["CFBundleDisplayName"].endswith(" S")
 
 

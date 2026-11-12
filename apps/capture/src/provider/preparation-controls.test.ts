@@ -21,8 +21,9 @@ class Control {
 class Controls {
   nodes = new Map<string, Control>(); focused: Control | null = null;
   listeners = new Map<string, Set<(event: Event) => void>>();
-  ownerDocument = { createElement: () => new Control(this) };
-  constructor(isIOS: boolean, meeting = false) {
+  ownerDocument = { title: "Scribe Desktop", createElement: () => new Control(this) };
+  constructor(isIOS: boolean, meeting = false, title = "Scribe Desktop") {
+    this.ownerDocument.title = title;
     for (const selector of ["[data-workspace-action=\"prepare\"]", "[name=\"consent\"]", "[data-consent-script]", "[data-audio-summary]",
       "[data-recording-guidance]", "[data-preflight-verdict]", "[data-preflight-access]", "[data-preflight-access-optional]",
       "[data-preflight-required-access]", "[data-preflight-access-help]", "[data-preflight-repair]", "[data-preflight-repair-steps]",
@@ -48,8 +49,8 @@ class Controls {
 }
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0)) await close(); vi.unstubAllGlobals(); });
-function fixture(isIOS: boolean, initial: AudioPreflightSnapshot, openGate?: Promise<void>, onConsent?: () => void, setup?: { ready: () => void; invalidated: () => void }) {
-  const root = new Controls(isIOS, initial.desktopAudio === "meeting");
+function fixture(isIOS: boolean, initial: AudioPreflightSnapshot, openGate?: Promise<void>, onConsent?: () => void, setup?: { ready: () => void; invalidated: () => void }, title = "Scribe Desktop") {
+  const root = new Controls(isIOS, initial.desktopAudio === "meeting", title);
   vi.stubGlobal("Element", Control);
   vi.stubGlobal("Option", class extends Control { constructor(label: string, value: string) { super(root); this.textContent = label; this.value = value; } });
   let current = initial;
@@ -160,6 +161,15 @@ describe("compact audio-free recording setup", () => {
     f.root.node('[name="consent"]').checked = true; f.root.emit("change", '[name="consent"]');
     expect(f.root.node('[data-workspace-action="prepare"]').disabled).toBe(true);
     expect(f.requestAccess).not.toHaveBeenCalled();
+  });
+  it("names Cosmas Scribe in screen-recording repair copy when the document title is Cosmas Scribe", async () => {
+    const f = fixture(false, { ...readyMac, meetingWindows: { ...readyMac.meetingWindows!, state: "permission_required", selectedId: null } },
+      undefined, undefined, undefined, "Cosmas Scribe");
+    await vi.waitFor(() => expect(f.root.node("[data-preflight-verdict]").textContent).toBe("Screen Recording access is needed."));
+    expect(f.root.node("[data-preflight-repair-steps]").children.map(child => child.textContent)).toEqual([
+      "Open System Settings → Privacy & Security → Screen Recording.", "Allow Cosmas Scribe. If it is already on, turn it off and on.",
+      "Reopen Scribe if macOS asks, then choose Check recording access.",
+    ]);
   });
   it("keeps Start disabled after a failed optional check until a successful recheck", async () => {
     const f = fixture(true, readyIOS);

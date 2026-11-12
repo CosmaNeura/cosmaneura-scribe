@@ -65,7 +65,7 @@ def assemble(args: argparse.Namespace) -> None:
             raise ValueError(f"Desktop host build artifact differs: {name}")
     release = json.loads(ordinary(host / "release-metadata.json").read_bytes())
     if (
-        release.get("displayName") != "Cosmas Scribe"
+        release.get("displayName") != "Cosmaneura Scribe for Mac"
         or release.get("distribution") != "Direct beta"
         or release.get("marketingVersion")
         != json.loads(ordinary(host / "package.json").read_bytes())["version"]
@@ -101,7 +101,7 @@ def assemble(args: argparse.Namespace) -> None:
     ):
         preflight_tree(source, label)
     output.mkdir(mode=0o700)  # Refuse any existing app, payload or symbolic link.
-    app = output / (str(release["displayName"]) + ".app")
+    app = output / "Cosmaneura Scribe for Mac.app"
     shutil.copytree(runtime, app, symlinks=True)
     contents = app / "Contents"
     # Only this newly owned outer bundle changes. Keep every actual helper byte
@@ -157,7 +157,7 @@ def assemble(args: argparse.Namespace) -> None:
     runtime_info.update(
         {
             "CFBundleIdentifier": "com.cosmaneura.scribe.beta.desktop",
-            "CFBundleName": release["displayName"],
+            "CFBundleName": "Cosmaneura Scribe Beta",
             "CFBundleDisplayName": release["displayName"] + " " + marker,
             "CFBundleIconFile": "Scribe.icns",
             "CFBundleShortVersionString": release["marketingVersion"],
