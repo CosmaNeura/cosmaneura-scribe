@@ -116,9 +116,7 @@ struct NativeStopConfigurationTests {
 
     system.emit(.configurationChanged)
     try await PCMTestWait.until("second-session captureFailed") { !sink.failures.isEmpty }
-    // Order-independent: any recorded failures must be captureFailed.
-    #expect(!sink.failures.isEmpty)
-    #expect(sink.failures.allSatisfy { $0 == .captureFailed })
+    #expect(sink.failures == [.captureFailed])
     let secondStopped = try await PCMTestWait.withDeadline("second-session second stop") {
       try await second.stop(.drain)
     }

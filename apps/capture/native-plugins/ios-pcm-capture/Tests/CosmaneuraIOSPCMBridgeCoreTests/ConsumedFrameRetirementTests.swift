@@ -122,13 +122,12 @@ struct ConsumedFrameRetirementTests {
     let acceptedAfterConsumed = book.count
     let failuresBeforeUnconsumedOverlap = failures.count
     retire.open()
-    // Assert order explicitly: while the second buffer stays unconsumed, only the
-    // first deferred-retirement entry can complete (H3/Low-6 delivery order).
+    // While the second buffer stays unconsumed, only the first deferred-
+    // retirement entry can complete. Poll completions; assert entries == 1.
     try await PCMTestWait.until("sole first retirement completed") {
-      retirementCompletions.count >= 1 && retirementEntries.count == 1
+      retirementCompletions.count >= 1
     }
     #expect(retirementEntries.count == 1)
-    #expect(retirementCompletions.count >= 1)
 
     // A late completion of the first frame must not clear the second frame's
     // admission. An actually unconsumed overlap must still fail and zeroize.

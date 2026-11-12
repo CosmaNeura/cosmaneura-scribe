@@ -159,9 +159,10 @@ struct AuthorityHoldTests {
     try await PCMTestWait.withDeadline("authority-hold one-use second ready") {
       try await second.ready()
     }
-    let reusedAuthority = try liveAuthority()
+    // Same runID/stamp from the first session must be rejected: run IDs are
+    // one-use across sessions, not merely "a fresh authority fails".
     await #expect(throws: PCMFailure.self) {
-      try await second.bindAuthority(reusedAuthority)
+      try await second.bindAuthority(firstAuthority)
     }
     _ = try? await second.stop(.discard)
   }

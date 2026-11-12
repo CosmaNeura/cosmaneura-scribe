@@ -11,6 +11,13 @@ struct ProducerConsumptionTests {
     let session = try core.start(configuration: PCMConfiguration(
       targetFramesPerChunk: 160_000, maximumChunks: 2,
       maximumInputFramesPerBuffer: 8_192))
+    // On until/#require failure, discard so the suite does not leave a live session.
+    var discardOnFailure = true
+    defer {
+      if discardOnFailure {
+        stopProducerSession(session)
+      }
+    }
     try await PCMTestWait.withDeadline("producer ready") {
       try await session.ready()
     }
@@ -28,6 +35,7 @@ struct ProducerConsumptionTests {
     let stopped = try await PCMTestWait.withDeadline("producer stop(.drain)") {
       try await session.stop(.drain)
     }
+    discardOnFailure = false
     #expect(stopped.finalPacket?.bytes.count == 32_768)
     stopped.finalPacket?.bytes.zeroize()
   }
@@ -37,6 +45,12 @@ struct ProducerConsumptionTests {
     let core = IOSPCMCore(permission: ConsumptionConsent(), audio: audio, sink: sink)
     let session = try core.start(configuration: PCMConfiguration(
       targetFramesPerChunk: 64, maximumChunks: 2, maximumInputFramesPerBuffer: 64))
+    var discardOnFailure = true
+    defer {
+      if discardOnFailure {
+        stopProducerSession(session)
+      }
+    }
     try await PCMTestWait.withDeadline("producer invalid ready") {
       try await session.ready()
     }
@@ -48,7 +62,17 @@ struct ProducerConsumptionTests {
     let stopped = try await PCMTestWait.withDeadline("producer invalid stop(.drain)") {
       try await session.stop(.drain)
     }
+    discardOnFailure = false
     #expect(stopped.finalPacket == nil && sink.failures == [.invalidPCM])
+  }
+}
+
+/// Fire-and-forget discard used only when an until/#require path throws.
+private func stopProducerSession(_ session: IOSPCMSessionHandle) {
+  Task {
+    _ = try? await PCMTestWait.withDeadline("producer cleanup session.stop(.discard)") {
+      try await session.stop(.discard)
+    }
   }
 }
 

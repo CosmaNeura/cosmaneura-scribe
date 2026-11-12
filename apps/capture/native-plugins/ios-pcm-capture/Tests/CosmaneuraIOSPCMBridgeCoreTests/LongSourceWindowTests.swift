@@ -130,9 +130,12 @@ struct LongSourceWindowTests {
     }
     #expect(stopped.finalPacket == nil)
     sink.verify()
+    let postStopGeneration = generation + 1
     await #expect(throws: PCMFailure.self) {
-      try await session.extend(PCMSourceExtension(runID: runID, generation: generation + 1,
-        expiresAtMilliseconds: epoch + 11_700_000, maximumChunks: 1_170))
+      try await PCMTestWait.withDeadline("long-window post-stop extend") {
+        try await session.extend(PCMSourceExtension(runID: runID, generation: postStopGeneration,
+          expiresAtMilliseconds: epoch + 11_700_000, maximumChunks: 1_170))
+      }
     }
   }
 

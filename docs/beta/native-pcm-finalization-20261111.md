@@ -44,10 +44,12 @@ On the final code inputs:
 
 - Both regressions failed before their respective fixes and passed afterward.
 - Debug: `swift test`, 61/61 in 14 suites, at 862f92ac, 12 Nov 2026.
-- Release: `swift test -c release -Xswiftc -enable-testing`, 61/61 in 14
-  suites, exit 0, at 862f92ac, 12 Nov 2026.
-- A plain `-c release` test build fails by design because of the `@testable`
-  imports. Do not treat a plain Release build as a working test path.
+- Release: `swift build -c release` passed at 862f92ac; Release tests were not
+  run.
+- Required local entry point for this package's `swift test`:
+  `apps/capture/native-plugins/ios-pcm-capture/Scripts/run-swift-test.sh`
+  (default 600 s, override with `PCM_SWIFT_TEST_TIMEOUT_SECONDS`). Mac proof
+  runs must also sit inside an outer timeout.
 - Full native-recording Release suites: 133 XCTest tests passed, including two
   actual three-hour encrypted-PCM/short-lease continuation cases.
 - Independent focused validation: 19 tests in five suites passed; Fable

@@ -167,6 +167,9 @@ struct DeferredRetirementIntegrationTests {
     }
     try #require(first.isZeroed)
     try await PCMTestWait.until("retirementEntries >= 1") { retirementEntries.count >= 1 }
+    // Low 6 (r4): wait for the first emit to finish before arming the hold so
+    // the held packet is known to be emit index 1 (order-independent of drain).
+    try await PCMTestWait.until("first emit completed") { sink.emissions >= 1 }
 
     // Arm the hold for the next full-chunk emit, then admit the second buffer.
     secondConsumeHold.arm()
@@ -180,6 +183,7 @@ struct DeferredRetirementIntegrationTests {
     )
     system.offer(second)
     try await secondConsumeHold.waitUntilHoldingOrFail()
+    #expect(sink.heldPacketIndex == 1)
     system.offer(third)
     try #require(third.isZeroed)
 
@@ -253,6 +257,7 @@ private final class EmitHold: @unchecked Sendable {
   private let release = DispatchSemaphore(value: 0)
 
   var releaseTimedOut: Bool { lock.withLock { timedOut } }
+  var isArmed: Bool { lock.withLock { armed && !opened } }
 
   func arm() {
     lock.withLock {
@@ -338,11 +343,23 @@ private final class DeferredProbeSystem: AppleAudioSystem, @unchecked Sendable {
 private final class ProbeEmissionSink: PCMEmissionSink, @unchecked Sendable {
   private let lock = NSLock()
   private var values: [PCMTerminationCode] = []
+  private var emitCount = 0
+  private var heldIndex: Int?
   private let emitHold: EmitHold?
   init(emitHold: EmitHold? = nil) { self.emitHold = emitHold }
   var failures: [PCMTerminationCode] { lock.withLock { values } }
+  var emissions: Int { lock.withLock { emitCount } }
+  var heldPacketIndex: Int? { lock.withLock { heldIndex } }
   func terminated(_ code: PCMTerminationCode) { lock.withLock { values.append(code) } }
   func emit(_ packet: PCMEncodedPacket) throws -> any PCMAcknowledging {
+    let index = lock.withLock { () -> Int in
+      let current = emitCount
+      emitCount += 1
+      return current
+    }
+    if emitHold?.isArmed == true {
+      lock.withLock { heldIndex = index }
+    }
     emitHold?.holdIfArmed()
     struct Ack: PCMAcknowledging {
       func wait() async -> PCMAcknowledgementResult { .accepted }
