@@ -187,14 +187,17 @@ struct DeferredRetirementIntegrationTests {
   }
 }
 
+/// Fire-and-forget cleanup: does not block a thread. A stuck stop is bounded by
+/// `PCMTestWait.withDeadline` and abandoned after the Issue is recorded.
 private func stopSession(_ session: IOSPCMSessionHandle, mode: PCMStopMode) {
-  let done = DispatchSemaphore(value: 0)
   Task {
-    _ = try? await session.stop(mode)
-    done.signal()
-  }
-  if done.wait(timeout: .now() + .seconds(3)) == .timedOut {
-    Issue.record("Timed out after 3s waiting for cleanup session.stop")
+    do {
+      _ = try await PCMTestWait.withDeadline("cleanup session.stop") {
+        try await session.stop(mode)
+      }
+    } catch {
+      // Timeout path already recorded an Issue inside withDeadline.
+    }
   }
 }
 
