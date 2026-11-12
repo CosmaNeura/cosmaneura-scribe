@@ -43,7 +43,9 @@ not keep that buffer after overflow or hard close.
 On the final code inputs:
 
 - Both regressions failed before their respective fixes and passed afterward.
-- macOS `swift test` result pending re-run at the new head (Debug and Release).
+- Last verified macOS `swift test`: 61/61 tests in 14 suites passed at
+  55fb84f9 (Debug and Release). Result at this head will be added after the
+  Mac run; do not invent counts here.
 - Full native-recording Release suites: 133 XCTest tests passed, including two
   actual three-hour encrypted-PCM/short-lease continuation cases.
 - Independent focused validation: 19 tests in five suites passed; Fable

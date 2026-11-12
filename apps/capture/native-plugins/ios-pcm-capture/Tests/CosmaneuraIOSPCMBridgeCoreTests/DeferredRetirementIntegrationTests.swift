@@ -56,6 +56,8 @@ struct DeferredRetirementIntegrationTests {
       preserveInterruptedTail: true
     ))
     try await session.ready()
+    // stopSession is fire-and-forget: a cleanup timeout Issue may land up to ~3s
+    // late, possibly while the next test in the suite is already running.
     defer {
       retire.open()
       stopSession(session, mode: .discard)
@@ -140,6 +142,8 @@ struct DeferredRetirementIntegrationTests {
       preserveInterruptedTail: true
     ))
     try await session.ready()
+    // stopSession is fire-and-forget: a cleanup timeout Issue may land up to ~3s
+    // late, possibly while the next test in the suite is already running.
     defer {
       secondConsumeHold.open()
       retire.open()
@@ -187,8 +191,10 @@ struct DeferredRetirementIntegrationTests {
   }
 }
 
-/// Fire-and-forget cleanup: does not block a thread. A stuck stop is bounded by
-/// `PCMTestWait.withDeadline` and abandoned after the Issue is recorded.
+/// Fire-and-forget cleanup: does not block the defer caller. A stuck stop is
+/// bounded by `PCMTestWait.withDeadline` and abandoned after the Issue is
+/// recorded — so that Issue can surface up to ~3s after the test returns,
+/// possibly while the next test is already running.
 private func stopSession(_ session: IOSPCMSessionHandle, mode: PCMStopMode) {
   Task {
     do {
