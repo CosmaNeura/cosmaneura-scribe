@@ -3,6 +3,7 @@ import Testing
 @testable import CosmaneuraIOSPCMCore
 @testable import CosmaneuraIOSAVFoundationDriver
 
+@Suite(.timeLimit(.minutes(1)))
 struct NativeStopConfigurationTests {
   @Test func ordinaryNativeStopPreservesPartialTail() async throws {
     let result = try await runNativeStop(nil)
@@ -82,12 +83,12 @@ struct NativeStopConfigurationTests {
     let firstFrames = OwnedAudioFrames(
       sampleRateHz: 16_000, channels: [Array(repeating: Float(0.125), count: 32)])
     system.offer(firstFrames)
-    let firstDeadline = ContinuousClock.now + .seconds(2)
-    while first.capturedAudioFrames != 32 && ContinuousClock.now < firstDeadline {
-      try await Task.sleep(for: .milliseconds(1))
+    try await PCMTestWait.until("second-session first capture") {
+      first.capturedAudioFrames == 32 && firstFrames.isZeroed
     }
-    try #require(first.capturedAudioFrames == 32 && firstFrames.isZeroed)
-    let firstStopped = try await first.stop(.drain)
+    let firstStopped = try await PCMTestWait.withDeadline("second-session first stop") {
+      try await first.stop(.drain)
+    }
     #expect(firstStopped.finalPacket?.bytes.count == 64)
     firstStopped.finalPacket?.bytes.zeroize()
     #expect(sink.failures.isEmpty)
@@ -103,25 +104,23 @@ struct NativeStopConfigurationTests {
     let secondFrames = OwnedAudioFrames(
       sampleRateHz: 16_000, channels: [Array(repeating: Float(0.125), count: 32)])
     system.offer(secondFrames)
-    let secondDeadline = ContinuousClock.now + .seconds(2)
-    while second.capturedAudioFrames != 32 && ContinuousClock.now < secondDeadline {
-      try await Task.sleep(for: .milliseconds(1))
+    try await PCMTestWait.until("second-session second capture") {
+      second.capturedAudioFrames == 32 && secondFrames.isZeroed
     }
-    try #require(second.capturedAudioFrames == 32 && secondFrames.isZeroed)
 
     system.emit(.configurationChanged)
-    let failDeadline = ContinuousClock.now + .seconds(2)
-    while sink.failures.isEmpty && ContinuousClock.now < failDeadline {
-      try await Task.sleep(for: .milliseconds(1))
-    }
+    try await PCMTestWait.until("second-session captureFailed") { !sink.failures.isEmpty }
     #expect(sink.failures == [.captureFailed])
-    let secondStopped = try await second.stop(.drain)
+    let secondStopped = try await PCMTestWait.withDeadline("second-session second stop") {
+      try await second.stop(.drain)
+    }
     #expect(secondStopped.finalPacket == nil)
   }
 }
 
 /// Guards confirmInputFrozen generation matching. Revert kill: remove the
 /// generation guard inside confirmInputFrozen.
+@Suite(.timeLimit(.minutes(1)))
 struct DriverCallbackGateGenerationTests {
   @Test func confirmInputFrozenWithStaleGenerationIsNoOp() async throws {
     let consent = (allPartiesConsented: true, recordID: UUID())
@@ -141,14 +140,13 @@ struct DriverCallbackGateGenerationTests {
     // Stale confirmation must not arm preservation for this generation.
     gate.confirmInputFrozen(generation: 99)
     gate.receive(event: .configurationChanged, generation: 1)
-    let deadline = ContinuousClock.now + .seconds(2)
-    while failures.count == 0 && ContinuousClock.now < deadline {
-      try await Task.sleep(for: .milliseconds(1))
-    }
+    try await PCMTestWait.until("stale-generation captureFailed") { failures.count > 0 }
     #expect(failures.count == 1 && failures.invalidations == 1)
     #expect(failures.last == .captureFailed)
     gate.freezeFrames(generation: 1)
-    await gate.retireAdmission(generation: 1)?.value
+    if let terminal = gate.retireAdmission(generation: 1) {
+      try await PCMTestWait.withDeadline("stale-generation retireAdmission") { await terminal.value }
+    }
   }
 }
 
@@ -172,18 +170,20 @@ private func runNativeStop(_ notification: AppleAudioSystemEvent?, beforeStop: B
   try await session.ready()
   let frames = OwnedAudioFrames(sampleRateHz: 16_000, channels: [Array(repeating: Float(0.125), count: 32)])
   system.offer(frames)
-  let deadline = ContinuousClock.now + .seconds(2)
-  while session.capturedAudioFrames != 32 && ContinuousClock.now < deadline {
-    try await Task.sleep(for: .milliseconds(1))
+  try await PCMTestWait.until("native-stop capture") {
+    session.capturedAudioFrames == 32 && frames.isZeroed
   }
-  try #require(session.capturedAudioFrames == 32 && frames.isZeroed)
   if beforeStop, let notification { system.emit(notification) }
   if failFirstDeactivation || failFirstFreeze {
     do {
-      _ = try await session.stop(.drain)
+      _ = try await PCMTestWait.withDeadline("native-stop failed first stop") {
+        try await session.stop(.drain)
+      }
       Issue.record("Failed freeze/deactivation must not confirm physical release")
     } catch let failure as PCMFailure {
       #expect(failure.code == .stopFailed)
+    } catch is PCMTestWait.TimeoutError {
+      Issue.record("Failed freeze/deactivation stop timed out")
     }
     if failFirstFreeze {
       #expect(system.sequence == ["freeze"])
@@ -198,11 +198,15 @@ private func runNativeStop(_ notification: AppleAudioSystemEvent?, beforeStop: B
   // A freeze that already delivered a hard notification leaves capture failed;
   // retrying stop must not invent a preserved tail.
   if failFirstFreeze, freezeNotification != nil {
-    let stopped = try await session.stop(.drain)
+    let stopped = try await PCMTestWait.withDeadline("native-stop failed-freeze retry") {
+      try await session.stop(.drain)
+    }
     #expect(stopped.finalPacket == nil)
     return (nil, sink.failures)
   }
-  let stopped = try await session.stop(.drain)
+  let stopped = try await PCMTestWait.withDeadline("native-stop final drain") {
+    try await session.stop(.drain)
+  }
   let bytes = stopped.finalPacket?.bytes.count
   stopped.finalPacket?.bytes.zeroize()
   if failFirstFreeze {

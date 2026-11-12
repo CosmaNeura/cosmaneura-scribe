@@ -3,6 +3,7 @@ import Foundation
 import Testing
 
 /// Consented invented PCM only; no OS microphone, storage or network.
+@Suite(.timeLimit(.minutes(1)))
 struct ProducerConsumptionTests {
   @Test func corePublishesConsumptionWithoutAReceiptWaiter() async throws {
     let audio = NonWaitingDriver(), sink = ConsumptionSink()
@@ -23,7 +24,9 @@ struct ProducerConsumptionTests {
       if !consumed { _ = try await session.stop(.discard); return }
     }
     #expect(session.capturedAudioFrames == 16_384 && sink.failures.isEmpty)
-    let stopped = try await session.stop(.drain)
+    let stopped = try await PCMTestWait.withDeadline("producer stop(.drain)") {
+      try await session.stop(.drain)
+    }
     #expect(stopped.finalPacket?.bytes.count == 32_768)
     stopped.finalPacket?.bytes.zeroize()
   }
@@ -39,17 +42,16 @@ struct ProducerConsumptionTests {
     try #require(receipt.accepted)
     let consumed = try await consumptionArrives(receipt)
     #expect(consumed && frames.isZeroed)
-    let stopped = try await session.stop(.drain)
+    let stopped = try await PCMTestWait.withDeadline("producer invalid stop(.drain)") {
+      try await session.stop(.drain)
+    }
     #expect(stopped.finalPacket == nil && sink.failures == [.invalidPCM])
   }
 }
 
 private func consumptionArrives(_ receipt: PCMFrameAdmission) async throws -> Bool {
-  let deadline = ContinuousClock.now + .seconds(2)
-  while !receipt.isConsumed && ContinuousClock.now < deadline {
-    try await Task.sleep(for: .milliseconds(1))
-  }
-  return receipt.isConsumed
+  try await PCMTestWait.until("producer receipt consumed") { receipt.isConsumed }
+  return true
 }
 
 private struct ConsumptionConsent: MicrophonePermissionAuthorizing {

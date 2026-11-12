@@ -43,11 +43,12 @@ not keep that buffer after overflow or hard close.
 On the final code inputs:
 
 - Both regressions failed before their respective fixes and passed afterward.
-- Full PCM Release suite: 54 tests in 12 suites passed.
+- macOS `swift test` result pending re-run at the new head (Debug and Release).
 - Full native-recording Release suites: 133 XCTest tests passed, including two
   actual three-hour encrypted-PCM/short-lease continuation cases.
-- Independent focused validation: 19 tests in five suites passed; independent
-  source review reported no blocking findings.
+- Independent focused validation: 19 tests in five suites passed; Fable
+  independent review rounds 1-3 returned HOLES, resolved in later commits;
+  round 4 pending.
 - iOS device package compilation passed for `arm64-apple-ios17.0` using the
   current iPhoneOS SDK. Existing permission-API deprecation warnings remain.
 - Diff whitespace checks passed. The retained Clerk source matches all 233 files

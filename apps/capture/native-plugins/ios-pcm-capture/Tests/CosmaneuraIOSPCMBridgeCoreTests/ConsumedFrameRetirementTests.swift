@@ -4,6 +4,7 @@ import Testing
 @testable import CosmaneuraIOSAVFoundationDriver
 @testable import CosmaneuraIOSPCMCore
 
+@Suite(.timeLimit(.minutes(1)))
 struct ConsumedFrameRetirementTests {
   @Test func nextCallbackCannotObserveReleasedAdmissionBeforeConsumedPublication() async throws {
     // Explicit synthetic consent; no OS audio, source, real identity or data.
@@ -14,7 +15,10 @@ struct ConsumedFrameRetirementTests {
     let callbackEntered = DispatchSemaphore(value: 0), callbackReturned = DispatchSemaphore(value: 0)
     let second = RetirementLatch()
     let gate = DriverCallbackGate(continueInBackground: true, diagnostics: PCMStartupDiagnostics())
-    defer { finishRelease.signal() }
+    defer {
+      finishRelease.signal()
+      second.open()
+    }
     gate.activate(generation: 1, callbacks: PCMAudioCallbacks(
       frames: { frames in
         let index = book.count
@@ -56,12 +60,14 @@ struct ConsumedFrameRetirementTests {
     try #require(returnedAfterRelease == .success)
     #expect(book.count == 2 && failures.count == 0)
     let first = try #require(book.receipt(0)), next = try #require(book.receipt(1))
-    await first.waitUntilConsumed()
+    try await PCMTestWait.until("first receipt consumed") { first.isConsumed }
     #expect(first.isConsumed && releases.count == 1)
-    await second.open()
-    await next.waitUntilConsumed()
+    second.open()
+    try await PCMTestWait.until("next receipt consumed") { next.isConsumed }
     gate.freezeFrames(generation: 1)
-    await gate.retireAdmission(generation: 1)?.value
+    if let terminal = gate.retireAdmission(generation: 1) {
+      try await PCMTestWait.withDeadline("retireAdmission delivery") { await terminal.value }
+    }
     #expect(nextFrames.isZeroed && next.isConsumed && releases.count == 2)
   }
 
@@ -75,13 +81,19 @@ struct ConsumedFrameRetirementTests {
     let diagnostics = PCMStartupDiagnostics()
     let path = directory.appendingPathComponent("diagnostics.json")
     diagnostics.configure(destination: path); diagnostics.record(.startRequested)
-    let retire = RetirementLatch(), second = RetirementLatch(), retired = RetirementLatch()
+    let retire = RetirementLatch(), second = RetirementLatch()
+    let retirementEntries = CallCounter(), retirementCompletions = CallCounter()
     let book = AdmissionBook(), failures = AdmissionFailures()
+    defer {
+      retire.open()
+      second.open()
+    }
     let gate = DriverCallbackGate(continueInBackground: true, diagnostics: diagnostics,
       deferredRetirement: { complete in
+        retirementEntries.increment()
         await retire.wait()
         complete()
-        await retired.open()
+        retirementCompletions.increment()
       })
     gate.activate(generation: 1, callbacks: PCMAudioCallbacks(
       frames: { frames in
@@ -97,28 +109,33 @@ struct ConsumedFrameRetirementTests {
     let firstFrames = OwnedAudioFrames(sampleRateHz: 16_000, channels: [[0]])
     gate.receive(frames: firstFrames, generation: 1)
     let first = try #require(book.receipt(0))
-    await first.waitUntilConsumed()
+    try await PCMTestWait.until("first receipt consumed") { first.isConsumed }
     #expect(first.isConsumed && firstFrames.isZeroed)
+    try await PCMTestWait.until("first retirement entered") { retirementEntries.count >= 1 }
 
     // The old retirement task is deliberately held AFTER actual consumption.
     // There remains exactly one unconsumed buffer, not a larger input queue.
     let secondFrames = OwnedAudioFrames(sampleRateHz: 16_000, channels: [[0]])
     gate.receive(frames: secondFrames, generation: 1)
-    let secondReceipt = book.receipt(1)
+    try await PCMTestWait.until("second receipt admitted") { book.receipt(1) != nil }
+    let secondReceipt = try #require(book.receipt(1))
     let acceptedAfterConsumed = book.count
     let failuresBeforeUnconsumedOverlap = failures.count
-    await retire.open()
-    await retired.wait()
+    retire.open()
+    // Do not assume which deferred-retirement completion arrives first; wait for
+    // the first frame's completion count before overlapping the unconsumed second.
+    try await PCMTestWait.until("first retirement completed") { retirementCompletions.count >= 1 }
 
     // A late completion of the first frame must not clear the second frame's
     // admission. An actually unconsumed overlap must still fail and zeroize.
     let rejected = OwnedAudioFrames(sampleRateHz: 16_000, channels: [[0]])
-    if secondReceipt != nil { gate.receive(frames: rejected, generation: 1) }
-    await second.open()
-    await secondReceipt?.waitUntilConsumed()
+    gate.receive(frames: rejected, generation: 1)
+    second.open()
+    try await PCMTestWait.until("second receipt consumed") { secondReceipt.isConsumed }
     gate.freezeFrames(generation: 1)
-    let terminal = gate.retireAdmission(generation: 1)
-    await terminal?.value
+    if let terminal = gate.retireAdmission(generation: 1) {
+      try await PCMTestWait.withDeadline("retireAdmission delivery") { await terminal.value }
+    }
     await diagnostics.flush()
     #expect(acceptedAfterConsumed == 2)
     #expect(failuresBeforeUnconsumedOverlap == 0)
@@ -152,6 +169,13 @@ private actor RetirementLatch {
     let pending = waiters; waiters.removeAll()
     for waiter in pending { waiter.resume() }
   }
+}
+
+private final class CallCounter: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value = 0
+  var count: Int { lock.withLock { value } }
+  func increment() { lock.withLock { value += 1 } }
 }
 
 private final class AdmissionBook: @unchecked Sendable {

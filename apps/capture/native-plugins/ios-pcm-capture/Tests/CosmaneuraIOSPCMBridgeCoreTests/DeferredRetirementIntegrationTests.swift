@@ -6,6 +6,7 @@ import Testing
 
 /// Guards the driver's deferredRetirement pass-through into DriverCallbackGate.
 /// Revert kill: make AVFoundationPCMDriver ignore deferredRetirement (always nil).
+@Suite(.timeLimit(.minutes(1)))
 struct DeferredRetirementIntegrationTests {
   @Test func heldRetirementStillAdmitsConsumedBuffersThroughRealCoreAndDriver() async throws {
     // Explicit synthetic consent; invented PCM only. No OS audio, network or PHI.
@@ -21,8 +22,8 @@ struct DeferredRetirementIntegrationTests {
     diagnostics.record(.startRequested)
 
     let retire = SyncLatch()
-    let retired = SyncLatch()
-    let retirementCalls = CallCounter()
+    let retirementEntries = CallCounter()
+    let retirementCompletions = CallCounter()
     let system = DeferredProbeSystem()
     let sink = ProbeEmissionSink()
     let driver = AVFoundationPCMDriver(
@@ -31,10 +32,10 @@ struct DeferredRetirementIntegrationTests {
       lifecycle: .nativeEncrypted,
       diagnostics: diagnostics,
       deferredRetirement: { complete in
-        retirementCalls.increment()
+        retirementEntries.increment()
         await retire.wait()
         complete()
-        await retired.open()
+        retirementCompletions.increment()
       }
     )
     let core = IOSPCMCore(permission: consent, audio: driver, sink: sink, diagnostics: diagnostics)
@@ -57,7 +58,6 @@ struct DeferredRetirementIntegrationTests {
     try await session.ready()
     defer {
       retire.open()
-      retired.open()
       stopSession(session, mode: .discard)
     }
 
@@ -69,20 +69,21 @@ struct DeferredRetirementIntegrationTests {
         channels: [Array(repeating: Float(0.125), count: 32)]
       )
       system.offer(frames)
-      let deadline = ContinuousClock.now + .seconds(2)
-      while session.capturedAudioFrames < expectedFrames && ContinuousClock.now < deadline {
-        try await Task.sleep(for: .milliseconds(1))
+      try await PCMTestWait.until("capturedAudioFrames == \(expectedFrames)") {
+        session.capturedAudioFrames == expectedFrames
       }
-      try #require(session.capturedAudioFrames == expectedFrames)
       #expect(frames.isZeroed)
     }
 
     #expect(sink.failures.isEmpty)
     // Must observe the injected seam; ignoring deferredRetirement leaves this at 0.
-    try await waitForCalls(retirementCalls, atLeast: 3)
+    // Do not assume which buffer's retirement Task arrives first.
+    try await PCMTestWait.until("retirementEntries >= 3") { retirementEntries.count >= 3 }
     retire.open()
-    await retired.wait()
-    let stopped = try await session.stop(.drain)
+    try await PCMTestWait.until("retirementCompletions >= 3") { retirementCompletions.count >= 3 }
+    let stopped = try await PCMTestWait.withDeadline("session.stop(.drain)") {
+      try await session.stop(.drain)
+    }
     #expect(stopped.finalPacket?.bytes.count == 192)
     stopped.finalPacket?.bytes.zeroize()
     await diagnostics.flush()
@@ -107,7 +108,7 @@ struct DeferredRetirementIntegrationTests {
 
     let retire = SyncLatch()
     let secondConsumeHold = EmitHold()
-    let retirementCalls = CallCounter()
+    let retirementEntries = CallCounter()
     let system = DeferredProbeSystem()
     let sink = ProbeEmissionSink(emitHold: secondConsumeHold)
     let driver = AVFoundationPCMDriver(
@@ -116,7 +117,7 @@ struct DeferredRetirementIntegrationTests {
       lifecycle: .nativeEncrypted,
       diagnostics: diagnostics,
       deferredRetirement: { complete in
-        retirementCalls.increment()
+        retirementEntries.increment()
         await retire.wait()
         complete()
       }
@@ -150,12 +151,10 @@ struct DeferredRetirementIntegrationTests {
       channels: [Array(repeating: Float(0.125), count: 32)]
     )
     system.offer(first)
-    let firstDeadline = ContinuousClock.now + .seconds(2)
-    while session.capturedAudioFrames < 32 && ContinuousClock.now < firstDeadline {
-      try await Task.sleep(for: .milliseconds(1))
+    try await PCMTestWait.until("first buffer captured") {
+      session.capturedAudioFrames == 32 && first.isZeroed
     }
-    try #require(session.capturedAudioFrames == 32 && first.isZeroed)
-    try await waitForCalls(retirementCalls, atLeast: 1)
+    try await PCMTestWait.until("retirementEntries >= 1") { retirementEntries.count >= 1 }
 
     // Arm the hold for the next full-chunk emit, then admit the second buffer.
     secondConsumeHold.arm()
@@ -168,19 +167,17 @@ struct DeferredRetirementIntegrationTests {
       channels: [Array(repeating: Float(0.25), count: 32)]
     )
     system.offer(second)
-    let holding = await secondConsumeHold.waitUntilHolding()
-    try #require(holding)
+    try await secondConsumeHold.waitUntilHoldingOrFail()
     system.offer(third)
     #expect(third.isZeroed)
 
-    let failDeadline = ContinuousClock.now + .seconds(3)
-    while sink.failures.isEmpty && ContinuousClock.now < failDeadline {
-      try await Task.sleep(for: .milliseconds(1))
-    }
-    #expect(!sink.failures.isEmpty)
+    try await PCMTestWait.until("overflow failure recorded") { !sink.failures.isEmpty }
+    #expect(!secondConsumeHold.releaseTimedOut)
     secondConsumeHold.open()
     retire.open()
-    _ = try? await session.stop(.discard)
+    _ = try await PCMTestWait.withDeadline("session.stop(.discard)") {
+      try await session.stop(.discard)
+    }
     await diagnostics.flush()
     let rows = try #require(
       JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [[String: Any]]
@@ -189,23 +186,15 @@ struct DeferredRetirementIntegrationTests {
   }
 }
 
-private func waitForCalls(
-  _ counter: CallCounter, atLeast: Int, timeout: Duration = .seconds(2)
-) async throws {
-  let deadline = ContinuousClock.now + timeout
-  while counter.count < atLeast && ContinuousClock.now < deadline {
-    try await Task.sleep(for: .milliseconds(1))
-  }
-  try #require(counter.count >= atLeast)
-}
-
 private func stopSession(_ session: IOSPCMSessionHandle, mode: PCMStopMode) {
   let done = DispatchSemaphore(value: 0)
   Task {
     _ = try? await session.stop(mode)
     done.signal()
   }
-  _ = done.wait(timeout: .now() + .seconds(5))
+  if done.wait(timeout: .now() + .seconds(3)) == .timedOut {
+    Issue.record("Timed out after 3s waiting for cleanup session.stop")
+  }
 }
 
 private final class SyncLatch: @unchecked Sendable {
@@ -234,18 +223,23 @@ private final class SyncLatch: @unchecked Sendable {
 }
 
 /// Blocks sink.emit after arm() so the core's receive defer has not yet published
-/// consumption for that full chunk. Open from every exit path.
+/// consumption for that full chunk. Open from every exit path. A release-side
+/// timeout is recorded and must fail the overflow test (not silently continue).
 private final class EmitHold: @unchecked Sendable {
   private let lock = NSLock()
   private var armed = false
   private var opened = false
+  private var timedOut = false
   private let entered = DispatchSemaphore(value: 0)
   private let release = DispatchSemaphore(value: 0)
+
+  var releaseTimedOut: Bool { lock.withLock { timedOut } }
 
   func arm() {
     lock.withLock {
       armed = true
       opened = false
+      timedOut = false
     }
   }
 
@@ -253,15 +247,23 @@ private final class EmitHold: @unchecked Sendable {
     let shouldHold = lock.withLock { armed && !opened }
     guard shouldHold else { return }
     entered.signal()
-    _ = release.wait(timeout: .now() + .seconds(5))
+    if release.wait(timeout: .now() + .seconds(3)) == .timedOut {
+      lock.withLock { timedOut = true }
+      Issue.record("EmitHold release timed out after 3s")
+    }
   }
 
-  func waitUntilHolding(timeoutSeconds: Int = 2) async -> Bool {
-    return await withCheckedContinuation { continuation in
+  func waitUntilHoldingOrFail(timeoutSeconds: Int = 3) async throws {
+    let held = await withCheckedContinuation { continuation in
       DispatchQueue.global().async {
         let result = self.entered.wait(timeout: .now() + .seconds(timeoutSeconds))
         continuation.resume(returning: result == .success)
       }
+    }
+    guard held else {
+      Issue.record("Timed out after \(timeoutSeconds)s waiting for EmitHold to enter")
+      throw PCMTestWait.TimeoutError(
+        label: "EmitHold enter", timeout: .seconds(timeoutSeconds))
     }
   }
 

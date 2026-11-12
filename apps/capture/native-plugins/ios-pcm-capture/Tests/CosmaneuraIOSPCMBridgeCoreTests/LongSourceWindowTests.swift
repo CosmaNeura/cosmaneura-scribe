@@ -49,7 +49,7 @@ private final class SyntheticDriver: PCMAudioDriving, @unchecked Sendable {
       channels: [Array(repeating: 0.125, count: 16_000)])
     let admitted = callback.frames(frames)
     try #require(admitted.accepted)
-    await admitted.waitUntilConsumed()
+    try await PCMTestWait.until("long-window buffer consumed") { admitted.isConsumed }
     #expect(frames.isZeroed)
   }
   func freezeInput(sessionID: UInt64) async throws { lock.withLock { callbacks = nil } }
@@ -92,7 +92,7 @@ private final class CountingSink: PCMEmissionSink, @unchecked Sendable {
   }
 }
 
-@Suite(.serialized)
+@Suite(.serialized, .timeLimit(.minutes(5)))
 struct LongSourceWindowTests {
   @Test func threeHoursOfPCMKeepContiguousPositionsAcrossShortWindows() async throws {
     let consent = SyntheticConsent(), driver = SyntheticDriver()
@@ -115,7 +115,9 @@ struct LongSourceWindowTests {
       try await driver.offerSecond()
       clock.advance()
     }
-    let stopped = try await session.stop(.drain)
+    let stopped = try await PCMTestWait.withDeadline("long-window session.stop(.drain)") {
+      try await session.stop(.drain)
+    }
     #expect(stopped.finalPacket == nil)
     sink.verify()
     await #expect(throws: PCMFailure.self) {
