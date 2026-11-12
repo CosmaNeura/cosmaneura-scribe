@@ -20,8 +20,8 @@ struct DeferredRetirementIntegrationTests {
     diagnostics.configure(destination: path)
     diagnostics.record(.startRequested)
 
-    let retire = RetirementLatch()
-    let retired = RetirementLatch()
+    let retire = SyncLatch()
+    let retired = SyncLatch()
     let retirementCalls = CallCounter()
     let system = DeferredProbeSystem()
     let sink = ProbeEmissionSink()
@@ -38,6 +38,9 @@ struct DeferredRetirementIntegrationTests {
       }
     )
     let core = IOSPCMCore(permission: consent, audio: driver, sink: sink, diagnostics: diagnostics)
+    // targetFramesPerChunk 160 > 96 offered frames, so append never fills a chunk
+    // (IOSPCMCore.append/startDelivery) and prepareFinalPacket keeps the full
+    // 192-byte drained tail instead of emitting three 64-byte packets.
     let authority = try PCMSourceAuthority(
       runID: UUID().uuidString.lowercased(),
       generation: 1,
@@ -45,13 +48,18 @@ struct DeferredRetirementIntegrationTests {
       hardMaximumChunks: 4
     )
     let session = try core.start(configuration: PCMConfiguration(
-      targetFramesPerChunk: 32,
+      targetFramesPerChunk: 160,
       maximumChunks: 4,
       maximumInputFramesPerBuffer: 32,
       authority: authority,
       preserveInterruptedTail: true
     ))
     try await session.ready()
+    defer {
+      retire.open()
+      retired.open()
+      stopSession(session, mode: .discard)
+    }
 
     var expectedFrames = 0
     for _ in 0..<3 {
@@ -71,8 +79,8 @@ struct DeferredRetirementIntegrationTests {
 
     #expect(sink.failures.isEmpty)
     // Must observe the injected seam; ignoring deferredRetirement leaves this at 0.
-    try #require(retirementCalls.count >= 3)
-    await retire.open()
+    try await waitForCalls(retirementCalls, atLeast: 3)
+    retire.open()
     await retired.wait()
     let stopped = try await session.stop(.drain)
     #expect(stopped.finalPacket?.bytes.count == 192)
@@ -97,10 +105,11 @@ struct DeferredRetirementIntegrationTests {
     diagnostics.configure(destination: path)
     diagnostics.record(.startRequested)
 
-    let retire = RetirementLatch()
+    let retire = SyncLatch()
+    let secondConsumeHold = EmitHold()
     let retirementCalls = CallCounter()
     let system = DeferredProbeSystem()
-    let sink = ProbeEmissionSink()
+    let sink = ProbeEmissionSink(emitHold: secondConsumeHold)
     let driver = AVFoundationPCMDriver(
       system: system,
       foreground: ProbeForeground(),
@@ -113,6 +122,8 @@ struct DeferredRetirementIntegrationTests {
       }
     )
     let core = IOSPCMCore(permission: consent, audio: driver, sink: sink, diagnostics: diagnostics)
+    // Chunk size 32 makes each buffer a full sink.emit. Hold the second emit so
+    // finishConsumption has not run when the third buffer arrives.
     let authority = try PCMSourceAuthority(
       runID: UUID().uuidString.lowercased(),
       generation: 1,
@@ -127,6 +138,11 @@ struct DeferredRetirementIntegrationTests {
       preserveInterruptedTail: true
     ))
     try await session.ready()
+    defer {
+      secondConsumeHold.open()
+      retire.open()
+      stopSession(session, mode: .discard)
+    }
 
     // First buffer is consumed by the core while retirement stays held.
     let first = OwnedAudioFrames(
@@ -139,10 +155,10 @@ struct DeferredRetirementIntegrationTests {
       try await Task.sleep(for: .milliseconds(1))
     }
     try #require(session.capturedAudioFrames == 32 && first.isZeroed)
-    try #require(retirementCalls.count >= 1)
+    try await waitForCalls(retirementCalls, atLeast: 1)
 
-    // Second is admitted under held retirement; third arrives while second is
-    // still unconsumed and must fail closed with driverAdmissionOverflow.
+    // Arm the hold for the next full-chunk emit, then admit the second buffer.
+    secondConsumeHold.arm()
     let second = OwnedAudioFrames(
       sampleRateHz: 16_000,
       channels: [Array(repeating: Float(0.125), count: 32)]
@@ -152,6 +168,8 @@ struct DeferredRetirementIntegrationTests {
       channels: [Array(repeating: Float(0.25), count: 32)]
     )
     system.offer(second)
+    let holding = await secondConsumeHold.waitUntilHolding()
+    try #require(holding)
     system.offer(third)
     #expect(third.isZeroed)
 
@@ -160,7 +178,8 @@ struct DeferredRetirementIntegrationTests {
       try await Task.sleep(for: .milliseconds(1))
     }
     #expect(!sink.failures.isEmpty)
-    await retire.open()
+    secondConsumeHold.open()
+    retire.open()
     _ = try? await session.stop(.discard)
     await diagnostics.flush()
     let rows = try #require(
@@ -170,18 +189,88 @@ struct DeferredRetirementIntegrationTests {
   }
 }
 
-private actor RetirementLatch {
+private func waitForCalls(
+  _ counter: CallCounter, atLeast: Int, timeout: Duration = .seconds(2)
+) async throws {
+  let deadline = ContinuousClock.now + timeout
+  while counter.count < atLeast && ContinuousClock.now < deadline {
+    try await Task.sleep(for: .milliseconds(1))
+  }
+  try #require(counter.count >= atLeast)
+}
+
+private func stopSession(_ session: IOSPCMSessionHandle, mode: PCMStopMode) {
+  let done = DispatchSemaphore(value: 0)
+  Task {
+    _ = try? await session.stop(mode)
+    done.signal()
+  }
+  _ = done.wait(timeout: .now() + .seconds(5))
+}
+
+private final class SyncLatch: @unchecked Sendable {
+  private let lock = NSLock()
   private var opened = false
   private var waiters: [CheckedContinuation<Void, Never>] = []
   func wait() async {
-    if opened { return }
-    await withCheckedContinuation { waiters.append($0) }
+    if lock.withLock({ opened }) { return }
+    await withCheckedContinuation { continuation in
+      let resumeNow = lock.withLock { () -> Bool in
+        if opened { return true }
+        waiters.append(continuation)
+        return false
+      }
+      if resumeNow { continuation.resume() }
+    }
   }
   func open() {
-    opened = true
-    let pending = waiters
-    waiters.removeAll()
+    let pending = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+      opened = true
+      defer { waiters.removeAll() }
+      return waiters
+    }
     for waiter in pending { waiter.resume() }
+  }
+}
+
+/// Blocks sink.emit after arm() so the core's receive defer has not yet published
+/// consumption for that full chunk. Open from every exit path.
+private final class EmitHold: @unchecked Sendable {
+  private let lock = NSLock()
+  private var armed = false
+  private var opened = false
+  private let entered = DispatchSemaphore(value: 0)
+  private let release = DispatchSemaphore(value: 0)
+
+  func arm() {
+    lock.withLock {
+      armed = true
+      opened = false
+    }
+  }
+
+  func holdIfArmed() {
+    let shouldHold = lock.withLock { armed && !opened }
+    guard shouldHold else { return }
+    entered.signal()
+    _ = release.wait(timeout: .now() + .seconds(5))
+  }
+
+  func waitUntilHolding(timeoutSeconds: Int = 2) async -> Bool {
+    return await withCheckedContinuation { continuation in
+      DispatchQueue.global().async {
+        let result = self.entered.wait(timeout: .now() + .seconds(timeoutSeconds))
+        continuation.resume(returning: result == .success)
+      }
+    }
+  }
+
+  func open() {
+    lock.withLock {
+      opened = true
+      armed = false
+    }
+    release.signal()
   }
 }
 
@@ -228,9 +317,12 @@ private final class DeferredProbeSystem: AppleAudioSystem, @unchecked Sendable {
 private final class ProbeEmissionSink: PCMEmissionSink, @unchecked Sendable {
   private let lock = NSLock()
   private var values: [PCMTerminationCode] = []
+  private let emitHold: EmitHold?
+  init(emitHold: EmitHold? = nil) { self.emitHold = emitHold }
   var failures: [PCMTerminationCode] { lock.withLock { values } }
   func terminated(_ code: PCMTerminationCode) { lock.withLock { values.append(code) } }
   func emit(_ packet: PCMEncodedPacket) throws -> any PCMAcknowledging {
+    emitHold?.holdIfArmed()
     struct Ack: PCMAcknowledging {
       func wait() async -> PCMAcknowledgementResult { .accepted }
       func cancel() {}

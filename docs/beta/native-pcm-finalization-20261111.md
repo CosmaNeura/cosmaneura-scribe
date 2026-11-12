@@ -22,19 +22,21 @@ Two deterministic regressions use invented PCM with explicit synthetic consent:
   publication before returning. Waiters observe completion and cannot hold
   admission open. The single-unconsumed-buffer bound remains in force.
 - A native audio-session configuration notification during deactivation discarded
-  an otherwise valid 64-byte final tail. Native configuration notifications after
-  **successful physical input freeze** no longer invalidate captured audio.
-  Permission revocation, capture failures, and media-service failures remain hard
-  events, including during a failed-deactivation retry. Active configuration
-  changes and notifications before freeze confirmation remain hard events.
+  an otherwise valid 64-byte final tail. **New in this PR:** native configuration
+  notifications after **successful physical input freeze** no longer invalidate
+  captured audio. Permission revocation, capture failures, and media-service
+  failures remain hard events, including during a failed-deactivation retry.
+  Active configuration changes and notifications before freeze confirmation
+  remain hard events.
 
 This does not suppress true processing backpressure or recover an incomplete
 recording by uploading it as complete. Existing incomplete visits and saved audio
 remain preserved. No storage format, source-authority rule, or consent gate changes.
 
 At most one in-flight tap buffer at the stop instant is not retained. That bound
-is intentional: the gate admits one outstanding buffer, and a stop that races an
-unconsumed tap callback does not keep that buffer after overflow or hard close.
+is intentional: the gate admits one outstanding buffer of up to `frameCapacity`
+(default **4,096 frames**), and a stop that races an unconsumed tap callback does
+not keep that buffer after overflow or hard close.
 
 ## Validation and qualification
 
@@ -75,11 +77,12 @@ input-consumption latency may still produce a fail-closed overflow; a
 configuration notification synchronously inside a failed or unconfirmed freeze
 remains intentionally unsuppressed.
 
-Accepted risk (unchanged behaviour): a real audio-route or session-configuration
-notice that Apple delivers on the `AppleAudioSystem` queue just after freeze is
-confirmed can still be classified under the post-freeze preservation rule. The
-width of that window depends on the queue `AppleAudioSystem` delivers on; this
-change does not add a grace period or second confirmation beyond physical freeze.
+Risk acceptance **pending John's sign-off:** a real audio-route or
+session-configuration notice that Apple delivers on the `AppleAudioSystem` queue
+just after freeze is confirmed can still be classified under this PR's new
+post-freeze preservation rule. The width of that window depends on the queue
+`AppleAudioSystem` delivers on; this change does not add a grace period or
+second confirmation beyond physical freeze.
 
 ## Release and recovery
 
