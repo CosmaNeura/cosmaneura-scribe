@@ -33,13 +33,13 @@ private final class SyntheticDriver: PCMAudioDriving, @unchecked Sendable {
     lock.withLock { self.callbacks = callbacks }
   }
   /// One invented second of constant tone; returns false once input is closed.
-  @discardableResult func offerSecond() async -> Bool {
+  @discardableResult func offerSecond() async throws -> Bool {
     guard let callback = lock.withLock({ callbacks }) else { return false }
     let frames = OwnedAudioFrames(sampleRateHz: 16_000,
       channels: [Array(repeating: 0.125, count: 16_000)])
     let admitted = callback.frames(frames)
     guard admitted.accepted else { return false }
-    await admitted.waitUntilConsumed()
+    try await PCMTestWait.until("authority-hold buffer consumed") { admitted.isConsumed }
     return true
   }
   func freezeInput(sessionID: UInt64) async throws { lock.withLock { callbacks = nil } }
@@ -65,24 +65,26 @@ private final class RecordingSink: PCMEmissionSink, @unchecked Sendable {
   var terminations: [PCMTerminationCode] { lock.withLock { failures } }
 }
 
-private func waitUntil(_ condition: () -> Bool) async throws {
-  for _ in 0..<200 where !condition() { try await Task.sleep(nanoseconds: 10_000_000) }
+private func waitUntil(_ label: String, _ condition: @Sendable () -> Bool) async throws {
+  try await PCMTestWait.until(label, timeout: .seconds(3), condition)
 }
 
-@Suite(.serialized)
+@Suite(.serialized, .timeLimit(.minutes(1)))
 struct AuthorityHoldTests {
   @Test func heldAudioReachesTheSinkOnlyAfterBinding() async throws {
     let driver = SyntheticDriver(), sink = RecordingSink()
     let core = IOSPCMCore(permission: SyntheticConsent(), audio: driver, sink: sink)
     let session = try core.start(configuration: configuration(hold: 9_000_000_000))
     try await session.ready()
-    for _ in 0..<9 { #expect(await driver.offerSecond()) }
+    for _ in 0..<9 { #expect(try await driver.offerSecond()) }
     #expect(sink.packets.isEmpty)
     try await session.bindAuthority(liveAuthority())
     try await session.verifySource(authority: liveAuthority(), maximumChunks: 90)
-    #expect(await driver.offerSecond())
+    #expect(try await driver.offerSecond())
     #expect(sink.packets == [0])
-    let stopped = try await session.stop(.drain)
+    let stopped = try await PCMTestWait.withDeadline("authority-hold stop(.drain)") {
+      try await session.stop(.drain)
+    }
     #expect(stopped.finalPacket == nil)
     #expect(sink.terminations.isEmpty)
   }
@@ -92,11 +94,13 @@ struct AuthorityHoldTests {
     let core = IOSPCMCore(permission: SyntheticConsent(), audio: driver, sink: sink)
     let session = try core.start(configuration: configuration(hold: 50_000_000))
     try await session.ready()
-    for _ in 0..<3 { await driver.offerSecond() }
-    try await waitUntil { !sink.terminations.isEmpty }
+    for _ in 0..<3 { _ = try await driver.offerSecond() }
+    try await waitUntil("authority hold expiry") { !sink.terminations.isEmpty }
     #expect(sink.terminations == [.authorityHoldExpired])
     await #expect(throws: PCMFailure.self) { try await session.bindAuthority(liveAuthority()) }
-    let stopped = try await session.stop(.drain)
+    let stopped = try await PCMTestWait.withDeadline("authority-hold expiry stop") {
+      try await session.stop(.drain)
+    }
     #expect(stopped.finalPacket == nil)
     #expect(sink.packets.isEmpty)
   }
@@ -106,8 +110,10 @@ struct AuthorityHoldTests {
     let core = IOSPCMCore(permission: SyntheticConsent(), audio: driver, sink: sink)
     let session = try core.start(configuration: configuration(hold: 9_000_000_000))
     try await session.ready()
-    for _ in 0..<3 { await driver.offerSecond() }
-    let stopped = try await session.stop(.drain)
+    for _ in 0..<3 { _ = try await driver.offerSecond() }
+    let stopped = try await PCMTestWait.withDeadline("authority-hold discard-via-drain stop") {
+      try await session.stop(.drain)
+    }
     #expect(stopped.finalPacket == nil)
     #expect(sink.packets.isEmpty)
     await #expect(throws: PCMFailure.self) { try await session.bindAuthority(liveAuthority()) }
@@ -118,11 +124,13 @@ struct AuthorityHoldTests {
     let core = IOSPCMCore(permission: SyntheticConsent(), audio: driver, sink: sink)
     let session = try core.start(configuration: configuration(hold: 9_900_000_000))
     try await session.ready()
-    for _ in 0..<11 { await driver.offerSecond() }
-    try await waitUntil { !sink.terminations.isEmpty }
+    for _ in 0..<11 { _ = try await driver.offerSecond() }
+    try await waitUntil("authority-hold overflow termination") { !sink.terminations.isEmpty }
     #expect(sink.packets.isEmpty)
     #expect(sink.terminations == [.bufferOverflow])
-    _ = try? await session.stop(.discard)
+    _ = try? await PCMTestWait.withDeadline("authority-hold overflow stop") {
+      try await session.stop(.discard)
+    }
   }
 
   @Test func bindingIsOneUseAndRunIDsAreNotReused() async throws {
