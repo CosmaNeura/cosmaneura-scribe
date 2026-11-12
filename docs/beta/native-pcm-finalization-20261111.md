@@ -32,6 +32,10 @@ This does not suppress true processing backpressure or recover an incomplete
 recording by uploading it as complete. Existing incomplete visits and saved audio
 remain preserved. No storage format, source-authority rule, or consent gate changes.
 
+At most one in-flight tap buffer at the stop instant is not retained. That bound
+is intentional: the gate admits one outstanding buffer, and a stop that races an
+unconsumed tap callback does not keep that buffer after overflow or hard close.
+
 ## Validation and qualification
 
 On the final code inputs:
@@ -48,19 +52,34 @@ On the final code inputs:
   in the current source lock; direct native-auth tests in an unassembled checkout
   were unavailable because its vendor directory was absent.
 
-The unsigned local beta **98.1** validation candidate, its full-app build, signing,
-installation, and physical QA are separate pending qualifications. Package-level
+Signing, installation, and physical QA of the local beta **98.1** staging
+candidate are **unconfirmed** in this repository. The flight-plan commit
+described them as pending; the PR description asserted a signed install and a
+passed physical take. Neither claim is backed by a retained signed artifact,
+device journal, or other independent evidence in the repo or PR history, so both
+surfaces treat that state as unconfirmed rather than inventing one. Package-level
 tests and compilation do not establish that the physical recorder is fixed.
 Use only the existing qualified synthetic staging profile and invented data.
 Do not enable new cohorts or use PHI in this rehearsal.
 
-Before filming the final submission flow, test on the connected iPhone 12 with
-native screen recording active and its microphone off. Confirm sustained capture
-beyond the observed 2:30 failure, successful physical closure, complete final-tail
-retention, upload, transcript review, and a saved note. Check short capture and
-stop as well. Genuine input-consumption latency may still produce a fail-closed
-overflow; a configuration notification synchronously inside a failed or
-unconfirmed freeze remains intentionally unsuppressed.
+The post-freeze `configurationChanged` preservation branch is proven by
+synthetic regression tests only. There is no device proof that a physical take
+emitted `configurationChanged` after `inputFrozen` and retained its tail.
+
+Before release filming, require several sustained takes on the connected
+iPhone 12 with native screen recording active and its microphone off, and at
+least one take whose journal shows `configurationChanged` after `inputFrozen`
+with the final tail retained. Also confirm successful physical closure, upload,
+transcript review, and a saved note, plus a short capture-and-stop. Genuine
+input-consumption latency may still produce a fail-closed overflow; a
+configuration notification synchronously inside a failed or unconfirmed freeze
+remains intentionally unsuppressed.
+
+Accepted risk (unchanged behaviour): a real audio-route or session-configuration
+notice that Apple delivers on the `AppleAudioSystem` queue just after freeze is
+confirmed can still be classified under the post-freeze preservation rule. The
+width of that window depends on the queue `AppleAudioSystem` delivers on; this
+change does not add a grace period or second confirmation beyond physical freeze.
 
 ## Release and recovery
 
