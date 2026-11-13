@@ -172,7 +172,7 @@ Scribe helps a clinician record an in-person or video visit after patient consen
 SIGN-IN
 Sign-in is required. Click Sign in. A secure Clerk browser window opens (ephemeral system browser). Sign in with the demo account in App Review Information (email + password). When the window finishes, return to Scribe. Choose Check access or Open workspace if prompted. You should land on “Today’s patients.”
 
-If you see practice setup or activation messages, the demo account was not pre-activated — contact us with the contact info below rather than continuing.
+If you see practice setup or activation messages, the demo account was not pre-activated — contact us using the contact details in App Review Information rather than continuing.
 
 PERMISSIONS (asked only when you set up recording, not at cold launch)
 • Microphone — records the clinician-selected microphone after consent.
@@ -192,10 +192,13 @@ NETWORK
 The app needs HTTPS to: staging Clerk (hosted sign-in), https://staging-app.cosmaneura.com (catalog, consent, session, upload authority), and one Azure Blob Storage origin for encrypted audio upload. Offline use is not supported for this demo.
 
 DEMO ACCOUNT
-Use only the Sign-in Required credentials in App Review Information. All names and speech must remain synthetic. Do not put real passwords in git; credentials live only in App Store Connect / founder secret store.
+Use only the Sign-in Required credentials in App Review Information. All names and speech must remain synthetic.
 ```
 
 **Maintainer notes (not for Connect paste):**
+
+- If the demo account is OTP-only, rewrite “(email + password)” in the SIGN-IN
+  paste block above.
 
 - Ephemeral system browser:
   `apps/capture/native-plugins/cosmas-native-auth/Sources/CosmasNativeAuth/ClerkKitWorkspaceDriver.swift:52-53`
@@ -327,7 +330,7 @@ Copy the block below into a Codex (or founder) task. Agents without Clerk/Azure
 dashboard access cannot execute these steps.
 
 ```text
-TASK: Provision Mac App Store Review synthetic access (staging only)
+TASK: Provision Mac App Store Review synthetic access (environment per John's pick)
 OWNER: John
 REPO CONTEXT: cosmaneura-scribe docs/app-review/mac-app-review-information.md
 HOLD: A staging hold is in effect. Do not start any step that touches staging
@@ -404,7 +407,7 @@ App Review fields are ready for John to paste (credentials still outside git).
 | Desktop UI host | `apps/capture/src/provider/desktop-application.ts` |
 | Session / Sign in UI | `apps/capture/src/provider/application.ts` (Account menu L95; Sign in L129; Check access / Open workspace L134-138) |
 | Today’s patients → More → dashboard | `apps/capture/src/provider/workspace.ts:348` |
-| System Settings app label | `apps/capture/src/provider/preparation-controls.ts:14,75,80` |
+| In-app repair-copy app name (not the System Settings label) | `apps/capture/src/provider/preparation-controls.ts:14,75,80` |
 | iOS practice/activation (parity reference) | `apps/capture/src/provider/native-application.ts` |
 | Clerk hosted sign-in (ephemeral browser) | `apps/capture/native-plugins/cosmas-native-auth/Sources/CosmasNativeAuth/ClerkKitWorkspaceDriver.swift:52-53` |
 | Clerk `pk_test_` / `pk_live_` prefix | `apps/capture/native-plugins/cosmas-native-auth/Sources/CosmasNativeAuth/NativeClerkConfiguration.swift:110` |
