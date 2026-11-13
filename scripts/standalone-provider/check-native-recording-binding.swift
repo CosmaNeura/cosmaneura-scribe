@@ -5,6 +5,10 @@ import Security
 
 // Offline integration: real native auth policy, Core client, binding journal and
 // Apple encryption, with synthetic replies and in-memory custody/storage only.
+/// Injected preparation wait accounted per delayed wire hit. Same magnitude as
+/// the former Task.sleep; used only by the synthetic admission-timing proof.
+private let preparationWaitMilliseconds = 300
+
 private actor BindingWire: ProviderNativeWire {
   let workspace = UUID(), session = UUID(), tenant = UUID()
   let binding = "scribe_capture_binding_01j00000000000000000000000"
@@ -15,6 +19,10 @@ private actor BindingWire: ProviderNativeWire {
   var fault = "none"
   var admissionSupported = false
   var preparationDelay = false
+  /// Deterministic stand-in for wall time: each preparation wire hit advances
+  /// this by `preparationWaitMilliseconds` instead of sleeping the runner.
+  var injectedPreparationElapsedMilliseconds = 0
+  var preparationDelayApplications = 0
   var requests: [ProviderNativeRequest] = []
   var onAdmission: (@MainActor @Sendable () -> Void)?
   var onWindow: (@MainActor @Sendable () -> Void)?
@@ -25,6 +33,13 @@ private actor BindingWire: ProviderNativeWire {
   func supportAdmission(_ value: Bool, delay: Bool = false) {
     admissionSupported = value
     preparationDelay = delay
+  }
+  /// Advance the injected preparation clock once per delayed wire hit.
+  /// Keeps the original 300 ms accounting without ContinuousClock load noise.
+  func applyPreparationDelay() {
+    guard preparationDelay else { return }
+    preparationDelayApplications += 1
+    injectedPreparationElapsedMilliseconds += preparationWaitMilliseconds
   }
   func send(_ request: ProviderNativeRequest, token: String) async throws -> ProviderNativeReply {
     try require(token.split(separator: ".").count == 3)
@@ -74,7 +89,7 @@ private actor BindingWire: ProviderNativeWire {
           == Set(
             ["workspace_id", "binding_ref", "request_nonce", "attestation", "configured_capture"]
               + (combined ? ["native_recording_preparation"] : [])))
-      if preparationDelay { try await Task.sleep(for: .milliseconds(300)) }
+      applyPreparationDelay()
       var answer: [String: Any] = [
         "contract_version": "1", "workspace_id": workspace.uuidString.lowercased(),
         "binding_ref": binding, "request_nonce": body["request_nonce"]!,
@@ -118,7 +133,7 @@ private actor BindingWire: ProviderNativeWire {
     let kind = operation["kind"] as! String
     var receipt: [String: Any]
     if kind == "native_recording_context" || kind == "native_recording_preparation" {
-      if preparationDelay { try await Task.sleep(for: .milliseconds(300)) }
+      applyPreparationDelay()
       receipt = [
         "schema_version": "1.0", "workspace_id": workspace.uuidString.lowercased(),
         "tenant_id": tenant.uuidString.lowercased(), "session_id": session.uuidString.lowercased(),
@@ -606,6 +621,77 @@ private final class BindingRecords: NativeRecordingFlowStore,
       try require(await wire.requests.filter { $0.action == .mount }.isEmpty)
       connection.close(); checks += 1
     }
+    // Combined admission preparation must elide the second preparation wire hit.
+    // Injected clock (not ContinuousClock): BindingWire advances 300 ms only when a
+    // preparation wire path actually runs. Request counts alone do not prove those
+    // hits accounted the wait; the >= 250 gap on injected elapsed does. Values are
+    // not hardcoded — NativeProviderConnection's retention behaviour drives them.
+    for round in 1...3 {
+      var measurements: [Int] = []
+      var delayApplications: [Int] = []
+      for supported in [false, true] {
+        let driver = Driver()
+        let wire = BindingWire(modulus)
+        await wire.supportAdmission(supported, delay: true)
+        let auth = NativeWorkspaceAuth(
+          enabled: true, organizationID: "org_offline",
+          tokenPolicy: try NativeTokenPolicy(
+            issuer: "https://identity.clerk.accounts.dev", audience: "offline-provider"),
+          driver: { driver }, accessBlock: { Block() })
+        let connection = NativeProviderConnection(
+          auth: auth, wire: wire, nativeAdmissionPreparationEnabled: true)
+        _ = try await connection.send(
+          CheckNativeProvider.request(
+            auth, action: "mount",
+            body: String(
+              decoding:
+                try JSONSerialization.data(withJSONObject: [
+                  "workspace_id": wire.workspace.uuidString.lowercased()
+                ]), as: UTF8.self)))
+        let started = await wire.injectedPreparationElapsedMilliseconds
+        let before = await wire.requests.count
+        let tokens = driver.tokens
+        _ = try await connection.send(
+          CheckNativeProvider.request(
+            auth, action: "capture-admissions",
+            body: String(
+              decoding:
+                try JSONSerialization.data(withJSONObject: [
+                  "workspace_id": wire.workspace.uuidString.lowercased(),
+                  "binding_ref": wire.binding,
+                  "request_nonce": UUID().uuidString.lowercased(),
+                  "attestation": ["all_parties_consented": true],
+                  "configured_capture": ["schema_version": "1.0", "language_mode": "en-US"],
+                ]), as: UTF8.self)))
+        _ = try await connection.prepareRecordingContext(
+          CheckNativeProvider.request(
+            auth, action: "recorder-context",
+            body: String(
+              decoding:
+                try JSONSerialization.data(withJSONObject: [
+                  "workspace_id": wire.workspace.uuidString.lowercased(),
+                  "binding_ref": wire.binding,
+                  "session_id": wire.session.uuidString.lowercased(),
+                  "request_nonce": UUID().uuidString.lowercased(),
+                ]), as: UTF8.self)))
+        let elapsed =
+          await wire.injectedPreparationElapsedMilliseconds - started
+        let delays = await wire.preparationDelayApplications
+        try require(await wire.requests.count == before + (supported ? 1 : 2))
+        try require(driver.tokens == tokens + (supported ? 1 : 2))
+        // Do not assert delay hit counts here: that would make >= 250 vacuous.
+        // Elapsed comes only from applyPreparationDelay on real preparation hits.
+        try require(elapsed == delays * preparationWaitMilliseconds)
+        measurements.append(elapsed)
+        delayApplications.append(delays)
+        connection.close()
+        checks += 1
+      }
+      try require(measurements[0] - measurements[1] >= 250)
+      print(
+        "Synthetic admission timing round=\(round) original_ms=\(measurements[0]) combined_ms=\(measurements[1]) injected_request_wait_ms=\(preparationWaitMilliseconds) delay_hits_original=\(delayApplications[0]) delay_hits_combined=\(delayApplications[1]); injected clock only, no device timing claim."
+      )
+    }
     // Real owner-created flow/key/window proof drives the only ticket-aware
     // native operation. No bridge boolean or fabricated proof is supplied.
     for fault in ["none", "none2", "none3", "deadline", "before_deadline", "clock_back",
@@ -724,65 +810,6 @@ private final class BindingRecords: NativeRecordingFlowStore,
         }
       }
       connection.close(); checks += 1
-    }
-    for round in 1...3 {
-      var measurements: [Int] = []
-      for supported in [false, true] {
-        let driver = Driver()
-        let wire = BindingWire(modulus)
-        await wire.supportAdmission(supported, delay: true)
-        let auth = NativeWorkspaceAuth(
-          enabled: true, organizationID: "org_offline",
-          tokenPolicy: try NativeTokenPolicy(
-            issuer: "https://identity.clerk.accounts.dev", audience: "offline-provider"),
-          driver: { driver }, accessBlock: { Block() })
-        let connection = NativeProviderConnection(
-          auth: auth, wire: wire, nativeAdmissionPreparationEnabled: true)
-        _ = try await connection.send(
-          CheckNativeProvider.request(
-            auth, action: "mount",
-            body: String(
-              decoding:
-                try JSONSerialization.data(withJSONObject: [
-                  "workspace_id": wire.workspace.uuidString.lowercased()
-                ]), as: UTF8.self)))
-        let started = ContinuousClock.now
-        let before = await wire.requests.count
-        let tokens = driver.tokens
-        _ = try await connection.send(
-          CheckNativeProvider.request(
-            auth, action: "capture-admissions",
-            body: String(
-              decoding:
-                try JSONSerialization.data(withJSONObject: [
-                  "workspace_id": wire.workspace.uuidString.lowercased(),
-                  "binding_ref": wire.binding,
-                  "request_nonce": UUID().uuidString.lowercased(),
-                  "attestation": ["all_parties_consented": true],
-                  "configured_capture": ["schema_version": "1.0", "language_mode": "en-US"],
-                ]), as: UTF8.self)))
-        _ = try await connection.prepareRecordingContext(
-          CheckNativeProvider.request(
-            auth, action: "recorder-context",
-            body: String(
-              decoding:
-                try JSONSerialization.data(withJSONObject: [
-                  "workspace_id": wire.workspace.uuidString.lowercased(),
-                  "binding_ref": wire.binding,
-                  "session_id": wire.session.uuidString.lowercased(),
-                  "request_nonce": UUID().uuidString.lowercased(),
-                ]), as: UTF8.self)))
-        let elapsed = ProviderNativeRequestTiming.milliseconds(from: started, to: .now)
-        try require(await wire.requests.count == before + (supported ? 1 : 2))
-        try require(driver.tokens == tokens + (supported ? 1 : 2))
-        measurements.append(elapsed)
-        connection.close()
-        checks += 1
-      }
-      try require(measurements[0] - measurements[1] >= 250)
-      print(
-        "Synthetic admission timing round=\(round) original_ms=\(measurements[0]) combined_ms=\(measurements[1]) injected_request_wait_ms=300; no device timing claim."
-      )
     }
     for supported in [false, true] {
       for fault in [
