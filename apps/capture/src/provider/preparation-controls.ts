@@ -11,7 +11,7 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
   onSetupReady?: () => void;
   onSetupInvalidated?: () => void;
 }): { snapshot(): AudioPreflightSnapshot | null; ready(): boolean; close(): Promise<void> } {
-  const desktopName = root.ownerDocument.title === "Cosmaneura Scribe Store" ? "Cosmaneura Scribe Store" : "Scribe Desktop";
+  const desktopName = root.ownerDocument.title === "Cosmas Scribe" ? "Cosmas Scribe" : "Scribe Desktop";
   const lifetime = new AbortController(), signal = lifetime.signal;
   const externalAbort = (): void => lifetime.abort();
   options.signal.addEventListener("abort", externalAbort, { once: true }); if (options.signal.aborted) lifetime.abort();

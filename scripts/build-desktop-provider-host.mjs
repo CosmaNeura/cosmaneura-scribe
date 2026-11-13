@@ -18,12 +18,18 @@ if (Object.keys(release).sort().join(",") !== "build,displayName,marketingVersio
   || release.displayName !== "Cosmaneura Scribe for Mac" || typeof release.marketingVersion !== "string"
   || !/^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$/u.test(release.marketingVersion)
   || typeof release.build !== "string" || !/^[1-9][0-9]{0,9}$/u.test(release.build)) throw new Error("Invalid public release metadata");
+const publicDisplayName = store ? "Cosmas Scribe" : release.displayName;
 await mkdir(renderer);
 const hash = value => createHash("sha256").update(value).digest("hex"), files = {};
 for (const name of ["provider.html", "desktop-start.js", "provider-capture.js", "provider-capture.css"]) {
   const source = join(name.startsWith("provider-capture") ? input : standalone, name), info = await lstat(source);
   if (!info.isFile() || info.isSymbolicLink() || info.size > 4 * 1024 * 1024) throw new Error("Invalid renderer build input");
-  const bytes = await readFile(source);
+  let bytes = await readFile(source);
+  if (name === "provider.html" && store) {
+    const rewritten = bytes.toString("utf8").replace(/<title>[^<]*<\/title>/u, `<title>${publicDisplayName}</title>`);
+    if (!rewritten.includes(`<title>${publicDisplayName}</title>`)) throw new Error("Store provider title rewrite failed");
+    bytes = Buffer.from(rewritten);
+  }
   await writeFile(join(renderer, name), bytes); files[name] = hash(bytes);
 }
 const icon = await readFile(join(standalone, "Scribe.icns"));
@@ -40,7 +46,9 @@ const imports = Object.values(preload.metafile.outputs).flatMap(value => value.i
 if (imports.length !== 1 || imports[0].path !== "electron" || !imports[0].external) throw new Error("Preload has an unexpected runtime dependency");
 await writeFile(join(output, "package.json"), JSON.stringify({ name: storeXpc ? "cosmaneura-scribe-store" : "cosmaneura-scribe-beta", productName: storeXpc ? "Cosmaneura Scribe Store" : "Cosmaneura Scribe Beta",
   version: release.marketingVersion, private: true, main: "main.cjs", type: "commonjs" }, null, 2) + "\n");
-await writeFile(join(output, "release-metadata.json"), JSON.stringify({ ...release, distribution: store ? "Apple distribution" : "Direct beta" }, null, 2) + "\n");
+await writeFile(join(output, "release-metadata.json"), JSON.stringify({
+  ...release, displayName: publicDisplayName, distribution: store ? "Apple distribution" : "Direct beta",
+}, null, 2) + "\n");
 const sourceFiles = [...new Set([...Object.keys(main.metafile.inputs), ...Object.keys(preload.metafile.inputs), ...Object.keys(factory.metafile.inputs)])].sort();
 const sourceSha256 = Object.fromEntries(await Promise.all(sourceFiles.map(async name => [name, hash(await readFile(join(repo, name)))])));
 sourceSha256["apps/desktop-companion/desktop-release.json"] = hash(await readFile(releasePath));

@@ -519,6 +519,8 @@ def test_disabled_desktop_candidate_preflights_synthetic_verified_inputs(poison)
             profile = json.loads((app / "Contents/Resources/app/provider-profile.json").read_text())
             assert profile["coreOrigin"] == STAGING_CORE and profile["enabled"] is False
             info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+            assert info["CFBundleName"] == "Cosmaneura Scribe Beta"
+            assert info["CFBundleDisplayName"] == "Cosmaneura Scribe for Mac S"
             assert info["CFBundleDisplayName"].endswith(" S")
 
 
