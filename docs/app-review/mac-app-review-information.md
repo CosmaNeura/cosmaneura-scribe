@@ -13,11 +13,9 @@ Refused under:
 | **2.1(a)** Performance — App Completeness | Error at launch | Separate launch-bug track (not this doc). **Root cause still unconfirmed.** |
 | **5.2.5** Legal — Intellectual Property | App name uses “Mac” inappropriately | Metadata rename in § Metadata (**Cosmas Scribe**) |
 
-**Wrong elsewhere:** PR #552’s
-`docs/codex-tasks/2026-11-11-apple-review-mac131-launch.md` (on branch
-`grok/scribe-mac-launch-recoverable`) still says **1.0 (131)** / **5 Nov 2026** /
-**macOS 27.0.1** — that build identity is **incorrect** relative to Connect.
-This docs-only PR does not edit that other branch. Repo
+**Related launch-track note:** PR #552 r2 (`c474837`) already records the same
+verified build facts (**1.0 (122)** / **10 Nov 2026** / **macOS 27.2**); only
+its filename still says `mac131`. Repo
 `apps/desktop-companion/desktop-release.json` still pins build **126** (assemble
 stamp ≠ rejected Connect build).
 
@@ -110,10 +108,14 @@ Apple approves the **exact binary** that ships. A **staging-sealed** build that
 Review approves would reach public customers still sealed to staging unless
 release is held manually and a **production** build is submitted afterwards.
 
+The **existing production Store build** is already sealed to
+`https://app.cosmaneura.com` / `https://clerk.cosmaneura.com`. It is **not** a
+staging Review candidate.
+
 | Option | What it means | Notes |
 | --- | --- | --- |
-| **1. Staging-sealed Review build** | Submit the staging package; keep App Store release **manual hold**; after approval, submit a separate production-sealed build for the public listing | Matches current staging-default packaging; needs a second submission for production |
-| **2. Production-sealed Review build** | Seal the Review binary to production Core/Clerk with a **synthetic** production account | Needs **John’s yes** per `AGENTS.md` (production package / live auth boundary) |
+| **1. Staging-sealed Review build** | Submit a **newly assembled** staging-sealed Store package; keep App Store release **manual hold**; after approval, submit a separate production-sealed build for the public listing | Cannot reuse the existing production Store binary; needs a new staging assemble + a later production submission |
+| **2. Production-sealed Review build** | Seal the Review binary to production Core/Clerk with a **synthetic** production account | Needs **John’s yes** per `AGENTS.md` (production package / live auth boundary). §2 Notes **WHAT THE APP DOES** and **NETWORK** must be **rewritten** for that binary (no “staging” wording) |
 
 **Do not choose for John.** Record his pick before Connect submit.
 
@@ -175,7 +177,7 @@ If you see practice setup or activation messages, the demo account was not pre-a
 PERMISSIONS (asked only when you set up recording, not at cold launch)
 • Microphone — records the clinician-selected microphone after consent.
 • Screen Recording (only if you choose “On a video call”) — captures audio from the meeting window you select after consent.
-In System Settings → Privacy & Security, the app appears as “Cosmaneura Scribe Store” (until the rename package ships). Allow that entry for Microphone (and Screen Recording if used), then return and choose “Check recording access.”
+In System Settings → Privacy & Security, the app appears as “<SYSTEM_SETTINGS_APP_NAME>”. Allow that entry for Microphone (and Screen Recording if used), then return and choose “Check recording access.”
 
 HOW TO RECORD A SYNTHETIC SAMPLE
 1. On Today’s patients, choose “+ Walk-in or new patient.”
@@ -184,7 +186,7 @@ HOW TO RECORD A SYNTHETIC SAMPLE
 4. If prompted, choose “Check recording access” / “Set up recording access” and allow Microphone.
 5. Read the consent line shown aloud (you may role-play the patient). Check “The patient said yes.”
 6. Choose “Start recording.” Speak a few invented sentences (no real clinical details).
-7. Choose “Finish visit.” Wait for save/upload. Optional: on Today’s patients, open More → Open the dashboard (opens CosmaNeura notes in a browser).
+7. Choose “Finish visit.” Wait for save/upload. Optional: on Today’s patients, open More → Open the dashboard (may require a second browser sign-in to CosmaNeura notes).
 
 NETWORK
 The app needs HTTPS to: staging Clerk (hosted sign-in), https://staging-app.cosmaneura.com (catalog, consent, session, upload authority), and one Azure Blob Storage origin for encrypted audio upload. Offline use is not supported for this demo.
@@ -203,10 +205,15 @@ Use only the Sign-in Required credentials in App Review Information. All names a
   `:134-138` (“Check access” / “Open workspace”). Account menu at `:95` is only
   Sign out, Cancel Scribe access, Get help — not dashboard.
 - Dashboard control on Today’s patients:
-  `apps/capture/src/provider/workspace.ts:348` (`More` → `Open the dashboard`).
-- System Settings display name:
-  `apps/capture/src/provider/preparation-controls.ts:14,75,80`
-  (`Cosmaneura Scribe Store` when `document.title` matches).
+  `apps/capture/src/provider/workspace.ts:348` (`More` → `Open the dashboard`);
+  opening it may require a second browser sign-in.
+- `<SYSTEM_SETTINGS_APP_NAME>`: fill from the **actual Review candidate** binary
+  as shown in System Settings. Use **Cosmas Scribe** once #558 is in that build.
+  `preparation-controls.ts:14` only compares `document.title` for in-app repair
+  copy — it does **not** prove the System Settings TCC label.
+- Mac has **no in-app account deletion**. **Cancel Scribe access** cancels Scribe
+  capture access only and must **not** be described to Apple as account deletion
+  (Account menu: `application.ts:95`).
 - Usage-description strings (packaging drafts, not a checked-in app
   `Info.plist` on this branch):
   `scripts/prepare-desktop-mas-variant.py:74-75` and
@@ -231,12 +238,14 @@ are instructions or placeholders — never commit real secrets.
 
 ### John decides — which binary Apple will approve (repeat of §1)
 
-Apple approves the exact binary that ships. Options (do not pick here):
+Apple approves the exact binary that ships. The existing production Store build
+is sealed to `app.cosmaneura.com` / `clerk.cosmaneura.com`. Options (do not pick
+here):
 
-1. **Staging-sealed** Review build + **manual release hold**, then a later
-   production submission; or
+1. **Newly assembled staging-sealed** Store package + **manual release hold**,
+   then a later production submission; or
 2. **Production-sealed** Review build with a synthetic account (**John’s yes**
-   per `AGENTS.md`).
+   per `AGENTS.md`) — rewrite §2 Notes WHAT/NETWORK (no “staging”).
 
 | Field | What to fill |
 | --- | --- |
