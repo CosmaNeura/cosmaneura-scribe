@@ -86,6 +86,9 @@ public enum NativeDesktopStoreContainer {
                 "com.apple.security.device.microphone"] : []
         // Apple adds this non-privileged reporting marker when re-signing for
         // TestFlight. It changes neither the role grants nor the App Group.
+        // get-task-allow / com.apple.security.get-task-allow are NOT tolerated:
+        // Apple's Mac App Store re-sign key for that marker is unproven in-repo
+        // (see docs/codex-tasks/2026-11-11-apple-store-entitlement-resign-notes.md).
         var reportingKeys: Set<String> = []
         if let reporting = claims["beta-reports-active"] {
             guard CFGetTypeID(reporting as CFTypeRef) == CFBooleanGetTypeID(),
