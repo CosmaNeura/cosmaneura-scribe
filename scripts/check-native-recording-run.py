@@ -226,6 +226,7 @@ def main() -> None:
                 common
                 + [
                     "-O",
+                    "-parse-as-library",
                     "-L",
                     str(target),
                     *libraries,
