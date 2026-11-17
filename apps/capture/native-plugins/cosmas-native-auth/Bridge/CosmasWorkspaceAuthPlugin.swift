@@ -569,6 +569,13 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                   call.getString("confirm") == "DELETE" else { return Self.reject(call) }
             self.initializeAuth()
             guard let auth = self.auth, auth.state().phase == .ready else { return Self.reject(call) }
+            // Refuse before origin/token/request while a recording is held or opening.
+            if Self.recordingBridge.holdsOrOpeningRecording {
+                guard let payload = AccountSelfDeleteContract.bridgePayload(for: .recordingActive)
+                else { return Self.reject(call) }
+                call.resolve(payload)
+                return
+            }
             let revision = auth.state().revision
             guard let configuration = Self.providerApplicationConfiguration(),
                   let origin = configuration["coreOrigin"] as? String,

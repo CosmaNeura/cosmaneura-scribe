@@ -11,6 +11,7 @@ describe("account self-delete renderer adapters", () => {
     expect(interpretAccountSelfDeleteBridge({ gone: true })).toEqual({ outcome: "gone" });
     expect(interpretAccountSelfDeleteBridge({ unavailable: true })).toEqual({ outcome: "unavailable" });
     expect(interpretAccountSelfDeleteBridge({ retryable: true })).toEqual({ outcome: "retryable" });
+    expect(interpretAccountSelfDeleteBridge({ recordingActive: true })).toEqual({ outcome: "recording_active" });
   });
 
   it("catches mutated bridge payloads before the Account UI treats them as success", () => {

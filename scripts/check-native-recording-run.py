@@ -276,6 +276,16 @@ def main() -> None:
                         "deleteAccount must fence origin before token "
                         f"before request in {relative}"
                     )
+                # iPhone handler must refuse a held/opening recording before token.
+                if relative.endswith("CosmasWorkspaceAuthPlugin.swift"):
+                    recording_idx = handler.find(
+                        "recordingBridge.holdsOrOpeningRecording"
+                    )
+                    if recording_idx < 0 or not (recording_idx < token_idx):
+                        raise SystemExit(
+                            "iOS deleteAccount must refuse held/opening "
+                            f"recording before token in {relative}"
+                        )
             results.append(
                 {
                     "name": "native-deleteAccount-handlers-wire-contract",

@@ -50,12 +50,17 @@ export interface AccountSelfDeleteRetryable {
   readonly outcome: "retryable";
 }
 
+export interface AccountSelfDeleteRecordingActive {
+  readonly outcome: "recording_active";
+}
+
 export type AccountSelfDeleteResult =
   | AccountSelfDeleteSuccess
   | AccountSelfDeleteUnauthorized
   | AccountSelfDeleteGone
   | AccountSelfDeleteUnavailable
-  | AccountSelfDeleteRetryable;
+  | AccountSelfDeleteRetryable
+  | AccountSelfDeleteRecordingActive;
 
 /** Authenticated Cosmas account deletion. Tokens stay in the native host. */
 export interface AccountSelfDeleteClient {
@@ -147,6 +152,7 @@ export function interpretAccountSelfDeleteBridge(value: unknown): AccountSelfDel
   if (row.gone === true && Object.keys(row).length === 1) return { outcome: "gone" };
   if (row.unavailable === true && Object.keys(row).length === 1) return { outcome: "unavailable" };
   if (row.retryable === true && Object.keys(row).length === 1) return { outcome: "retryable" };
+  if (row.recordingActive === true && Object.keys(row).length === 1) return { outcome: "recording_active" };
   if ((row.status === "deleted" || row.status === "already_deleted")
     && typeof row.practiceLeftOwnerless === "boolean"
     && typeof row.clerkIdentityRemoved === "boolean"
@@ -229,6 +235,12 @@ export function accountSelfDelete(
         if (result.outcome === "retryable") {
           publish({
             phase: "failed", confirmation: CONFIRM, error: MESSAGES.retryable, retryable: true, completion: null,
+          });
+          return;
+        }
+        if (result.outcome === "recording_active") {
+          publish({
+            phase: "failed", confirmation: CONFIRM, error: MESSAGES.recordingActive, retryable: false, completion: null,
           });
           return;
         }

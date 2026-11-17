@@ -113,11 +113,12 @@ describe("interpretAccountSelfDeleteBridge", () => {
     });
   });
 
-  it("maps flag payloads for 401/410/404/503", () => {
+  it("maps flag payloads for 401/410/404/503/recordingActive", () => {
     expect(interpretAccountSelfDeleteBridge({ unauthorized: true })).toEqual({ outcome: "unauthorized" });
     expect(interpretAccountSelfDeleteBridge({ gone: true })).toEqual({ outcome: "gone" });
     expect(interpretAccountSelfDeleteBridge({ unavailable: true })).toEqual({ outcome: "unavailable" });
     expect(interpretAccountSelfDeleteBridge({ retryable: true })).toEqual({ outcome: "retryable" });
+    expect(interpretAccountSelfDeleteBridge({ recordingActive: true })).toEqual({ outcome: "recording_active" });
   });
 
   it("rejects mutated or extra bridge keys", () => {
@@ -205,6 +206,22 @@ describe("accountSelfDelete", () => {
       confirmation: "DELETE",
       error: ACCOUNT_SELF_DELETE_MESSAGES.retryable,
       retryable: true,
+      completion: null,
+    });
+  });
+
+  it("recording_active keeps the session and shows the stop-first message", async () => {
+    const deleteAccount = vi.fn(async (): Promise<AccountSelfDeleteResult> => ({ outcome: "recording_active" }));
+    const { flow, clearLocalCredentials, closeWorkspace } = fixture({ client: { deleteAccount } });
+    flow.confirm("DELETE");
+    await flow.submit();
+    expect(closeWorkspace).not.toHaveBeenCalled();
+    expect(clearLocalCredentials).not.toHaveBeenCalled();
+    expect(flow.read()).toMatchObject({
+      phase: "failed",
+      confirmation: "DELETE",
+      error: ACCOUNT_SELF_DELETE_MESSAGES.recordingActive,
+      retryable: false,
       completion: null,
     });
   });

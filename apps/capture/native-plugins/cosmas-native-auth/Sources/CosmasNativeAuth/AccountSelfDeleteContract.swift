@@ -9,6 +9,8 @@ public enum AccountSelfDeleteContract {
         case gone
         case unavailable
         case retryable
+        /// Client-side refuse while a native recording entry is held or opening.
+        case recordingActive
         case rejected
     }
 
@@ -87,6 +89,7 @@ public enum AccountSelfDeleteContract {
         case .gone: return ["gone": true]
         case .unavailable: return ["unavailable": true]
         case .retryable: return ["retryable": true]
+        case .recordingActive: return ["recordingActive": true]
         case .rejected: return nil
         }
     }

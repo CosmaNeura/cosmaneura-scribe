@@ -104,6 +104,11 @@ struct CheckAccountSelfDelete {
                 origin: "https://staging-app.cosmaneura.com", statusCode: 503, body: nil),
             key: "retryable")
 
+        // Recording-active refuse payload (iOS deleteAccount before token/request).
+        try expectFlag(
+            AccountSelfDeleteContract.bridgePayload(for: .recordingActive),
+            key: "recordingActive")
+
         // 409 / 422 / malformed keep-session → rejected (nil payload).
         for code in [409, 422, 500, 502] {
             try require(AccountSelfDeleteContract.resolve(

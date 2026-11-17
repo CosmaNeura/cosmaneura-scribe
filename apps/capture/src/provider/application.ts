@@ -431,6 +431,10 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
       closeDeletionDialog = mountAccountSelfDeleteDialog(document.body, {
         client: {
           deleteAccount: async (request, signal) => {
+            // Re-check at submit: recording may have started after the dialog opened.
+            if (workflow.dataset.providerRecordingActive === "true") {
+              return { outcome: "recording_active" as const };
+            }
             const result = await client.deleteAccount(request, signal);
             if (result.outcome === "deleted") pendingNotice = "deleted";
             else if (result.outcome === "unauthorized") pendingNotice = "session_expired";

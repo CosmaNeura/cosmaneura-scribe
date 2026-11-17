@@ -95,6 +95,12 @@ private func recordingUUID(_ value: Any?) throws -> UUID {
     openingRevision == nil && (entry.map { [.sealed, .closed].contains($0.host.phase) && !$0.host.busy } ?? true)
   }
 
+  /// True while open() is in flight or a recording entry is still retained.
+  /// Account self-delete must refuse before minting a Bearer token.
+  var holdsOrOpeningRecording: Bool {
+    openingRevision != nil || entry != nil
+  }
+
   func recordReadyTiming(revision: String, milliseconds: Double) {
     guard milliseconds.isFinite, milliseconds >= 0, milliseconds <= 3_600_000,
       let selected = entry, selected.selection.revision == revision,
