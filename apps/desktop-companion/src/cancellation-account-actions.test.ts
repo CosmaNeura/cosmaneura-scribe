@@ -202,7 +202,7 @@ describe("desktop account self-delete IPC", () => {
       appointmentRef: "appointment_01j00000000000000000000000",
     };
     const progress = {
-      sessionId, uploaded: false, pendingSave: null as null,
+      sessionId, uploaded: false, pendingSave: null,
       admission: {
         key: sessionId, languageMode: "en-US+es-US" as const,
         attestation: {
