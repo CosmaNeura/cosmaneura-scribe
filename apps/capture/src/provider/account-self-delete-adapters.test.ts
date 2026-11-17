@@ -24,7 +24,10 @@ describe("account self-delete renderer adapters", () => {
 
   it("native iOS adapter path uses the same bridge interpreter", async () => {
     const native = {
-      deleteAccount: vi.fn(async (_request: { confirm: "DELETE" }) => ({ gone: true as const })),
+      deleteAccount: vi.fn(async (request: { confirm: "DELETE" }) => {
+        expect(request).toEqual({ confirm: "DELETE" });
+        return { gone: true as const };
+      }),
     };
     const value = await native.deleteAccount({ confirm: "DELETE" });
     expect(interpretAccountSelfDeleteBridge(value)).toEqual({ outcome: "gone" });
