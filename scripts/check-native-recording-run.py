@@ -249,13 +249,18 @@ def main() -> None:
                 text = (REPO / relative).read_text(encoding="utf-8")
                 if "AccountSelfDeleteContract.resolve(" not in text:
                     raise SystemExit(f"missing AccountSelfDeleteContract.resolve in {relative}")
-                if "deleteAccount" not in text:
+                # Scope the origin-before-token order check to the deleteAccount
+                # handler only — other methods also call auth.token earlier.
+                marker = 'func deleteAccount' if "func deleteAccount" in text else 'case "deleteAccount"'
+                handler_at = text.find(marker)
+                if handler_at < 0:
                     raise SystemExit(f"missing deleteAccount handler in {relative}")
-                origin_idx = text.find(
+                handler = text[handler_at:]
+                origin_idx = handler.find(
                     "AccountSelfDeleteContract.accountDeleteURL("
                 )
-                token_idx = text.find("auth.token(")
-                request_idx = text.find(
+                token_idx = handler.find("auth.token(")
+                request_idx = handler.find(
                     "AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest("
                 )
                 if origin_idx < 0 or token_idx < 0 or request_idx < 0:
