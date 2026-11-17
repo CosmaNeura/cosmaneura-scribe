@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ACCOUNT_SELF_DELETE_MESSAGES,
   accountSelfDelete,
   clearCachedProviderPreferences,
+  interpretAccountSelfDeleteBridge,
   interpretAccountSelfDeleteResponse,
   type AccountSelfDeleteHost,
   type AccountSelfDeleteResult,
@@ -69,11 +71,25 @@ describe("interpretAccountSelfDeleteResponse", () => {
     });
   });
 
-  it("maps 401 to unauthorized so the app signs out locally", () => {
+  it("maps 401 to unauthorized so the app signs out with session-expired copy", () => {
     expect(interpretAccountSelfDeleteResponse(401, null)).toEqual({ outcome: "unauthorized" });
   });
 
-  it("rejects 422 so the session stays signed in", () => {
+  it("maps 410 to gone so the app signs out with access-ended copy", () => {
+    expect(interpretAccountSelfDeleteResponse(410, null)).toEqual({ outcome: "gone" });
+  });
+
+  it("maps 404 to unavailable and keeps the session", () => {
+    expect(interpretAccountSelfDeleteResponse(404, null)).toEqual({ outcome: "unavailable" });
+  });
+
+  it("maps 503 to retryable and keeps the session", () => {
+    expect(interpretAccountSelfDeleteResponse(503, null)).toEqual({ outcome: "retryable" });
+  });
+
+  it("rejects 409 and 422 so the session stays signed in", () => {
+    expect(() => interpretAccountSelfDeleteResponse(409, { detail: "conflict" }))
+      .toThrow(/account_self_delete_http_409/);
     expect(() => interpretAccountSelfDeleteResponse(422, { detail: "confirm_required" }))
       .toThrow(/account_self_delete_http_422/);
   });
@@ -85,6 +101,31 @@ describe("interpretAccountSelfDeleteResponse", () => {
   it("rejects a 200 body that is not the locked Cosmas shape", () => {
     expect(() => interpretAccountSelfDeleteResponse(200, { status: "deleted" }))
       .toThrow(/account_self_delete_body/);
+  });
+});
+
+describe("interpretAccountSelfDeleteBridge", () => {
+  it("accepts the locked native success payload", () => {
+    expect(interpretAccountSelfDeleteBridge({
+      status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true,
+    })).toEqual({
+      outcome: "deleted", status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true,
+    });
+  });
+
+  it("maps flag payloads for 401/410/404/503", () => {
+    expect(interpretAccountSelfDeleteBridge({ unauthorized: true })).toEqual({ outcome: "unauthorized" });
+    expect(interpretAccountSelfDeleteBridge({ gone: true })).toEqual({ outcome: "gone" });
+    expect(interpretAccountSelfDeleteBridge({ unavailable: true })).toEqual({ outcome: "unavailable" });
+    expect(interpretAccountSelfDeleteBridge({ retryable: true })).toEqual({ outcome: "retryable" });
+  });
+
+  it("rejects mutated or extra bridge keys", () => {
+    expect(() => interpretAccountSelfDeleteBridge({ unauthorized: true, status: "deleted" }))
+      .toThrow(/account_self_delete_bridge/);
+    expect(() => interpretAccountSelfDeleteBridge({
+      status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true, extra: true,
+    })).toThrow(/account_self_delete_bridge/);
   });
 });
 
@@ -101,7 +142,7 @@ describe("accountSelfDelete", () => {
     expect(closeWorkspace).toHaveBeenCalledOnce();
     expect(clearLocalCredentials).toHaveBeenCalledOnce();
     expect(deleteAccount.mock.invocationCallOrder[0]).toBeLessThan(closeWorkspace.mock.invocationCallOrder[0]!);
-    expect(flow.read().phase).toBe("complete");
+    expect(flow.read()).toMatchObject({ phase: "complete", completion: "deleted" });
   });
 
   it("200 already_deleted also signs out and clears local state", async () => {
@@ -115,23 +156,61 @@ describe("accountSelfDelete", () => {
     flow.confirm("DELETE");
     await flow.submit();
     expect(clearLocalCredentials).toHaveBeenCalledOnce();
-    expect(flow.read().phase).toBe("complete");
+    expect(flow.read()).toMatchObject({ phase: "complete", completion: "deleted" });
   });
 
-  it("401 signs out locally because the session is already invalid", async () => {
+  it("401 signs out locally with session_expired completion, not deleted copy", async () => {
     const deleteAccount = vi.fn(async (): Promise<AccountSelfDeleteResult> => ({ outcome: "unauthorized" }));
     const { flow, clearLocalCredentials, closeWorkspace } = fixture({ client: { deleteAccount } });
     flow.confirm("DELETE");
     await flow.submit();
     expect(closeWorkspace).toHaveBeenCalledOnce();
     expect(clearLocalCredentials).toHaveBeenCalledOnce();
-    expect(flow.read().phase).toBe("complete");
+    expect(flow.read()).toMatchObject({ phase: "complete", completion: "session_expired" });
+  });
+
+  it("410 signs out locally with gone completion", async () => {
+    const deleteAccount = vi.fn(async (): Promise<AccountSelfDeleteResult> => ({ outcome: "gone" }));
+    const { flow, clearLocalCredentials } = fixture({ client: { deleteAccount } });
+    flow.confirm("DELETE");
+    await flow.submit();
+    expect(clearLocalCredentials).toHaveBeenCalledOnce();
+    expect(flow.read()).toMatchObject({ phase: "complete", completion: "gone" });
+  });
+
+  it("404 keeps the session and shows the unavailable message", async () => {
+    const deleteAccount = vi.fn(async (): Promise<AccountSelfDeleteResult> => ({ outcome: "unavailable" }));
+    const { flow, clearLocalCredentials, closeWorkspace } = fixture({ client: { deleteAccount } });
+    flow.confirm("DELETE");
+    await flow.submit();
+    expect(closeWorkspace).not.toHaveBeenCalled();
+    expect(clearLocalCredentials).not.toHaveBeenCalled();
+    expect(flow.read()).toMatchObject({
+      phase: "failed",
+      confirmation: "DELETE",
+      error: ACCOUNT_SELF_DELETE_MESSAGES.unavailable,
+      retryable: false,
+      completion: null,
+    });
+  });
+
+  it("503 keeps the session and marks the failure retryable", async () => {
+    const deleteAccount = vi.fn(async (): Promise<AccountSelfDeleteResult> => ({ outcome: "retryable" }));
+    const { flow, clearLocalCredentials } = fixture({ client: { deleteAccount } });
+    flow.confirm("DELETE");
+    await flow.submit();
+    expect(clearLocalCredentials).not.toHaveBeenCalled();
+    expect(flow.read()).toMatchObject({
+      phase: "failed",
+      confirmation: "DELETE",
+      error: ACCOUNT_SELF_DELETE_MESSAGES.retryable,
+      retryable: true,
+      completion: null,
+    });
   });
 
   it("422 keeps the session and does not clear credentials", async () => {
     const deleteAccount = vi.fn(async () => {
-      expect(() => interpretAccountSelfDeleteResponse(422, { detail: "confirm_required" }))
-        .toThrow(/account_self_delete_http_422/);
       throw new Error("account_self_delete_http_422");
     });
     const { flow, clearLocalCredentials, closeWorkspace } = fixture({ client: { deleteAccount } });
@@ -146,16 +225,27 @@ describe("accountSelfDelete", () => {
     });
   });
 
-  it("other Cosmas failures keep the session signed in", async () => {
-    const deleteAccount = vi.fn(async () => {
-      expect(() => interpretAccountSelfDeleteResponse(503, null)).toThrow(/account_self_delete_http_503/);
-      throw new Error("account_self_delete_http_503");
-    });
-    const { flow, clearLocalCredentials } = fixture({ client: { deleteAccount } });
+  it("still attempts sign-out when workspace close fails after server delete", async () => {
+    const closeWorkspace = vi.fn(async () => { throw new Error("close_failed"); });
+    const { flow, clearLocalCredentials } = fixture({ closeWorkspace });
     flow.confirm("DELETE");
     await flow.submit();
-    expect(clearLocalCredentials).not.toHaveBeenCalled();
-    expect(flow.read().phase).toBe("failed");
+    expect(clearLocalCredentials).toHaveBeenCalledOnce();
+    expect(flow.read().phase).toBe("complete");
+  });
+
+  it("surfaces local_clear_failed with Done/acknowledge when sign-out fails after server delete", async () => {
+    const clearLocalCredentials = vi.fn(async () => { throw new Error("sign_out_failed"); });
+    const { flow } = fixture({ clearLocalCredentials });
+    flow.confirm("DELETE");
+    await flow.submit();
+    expect(flow.read()).toMatchObject({
+      phase: "local_clear_failed",
+      completion: "local_clear_failed",
+      error: ACCOUNT_SELF_DELETE_MESSAGES.localClearFailed,
+    });
+    expect(flow.acknowledge()).toBe(true);
+    expect(flow.read().phase).toBe("closed");
   });
 
   it("cancel does nothing and never calls Cosmas", () => {

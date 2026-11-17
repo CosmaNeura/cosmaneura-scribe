@@ -64,6 +64,28 @@ describe("desktop account self-delete IPC", () => {
       expect(await f.send("delete_account", { confirm: "DELETE" }, crypto.randomUUID())).toMatchObject({ ok: false });
     } finally { await f.main.dispose(); }
   });
+  it("forwards unauthorized/gone/unavailable/retryable bridge flags without mutation", async () => {
+    for (const flag of ["unauthorized", "gone", "unavailable", "retryable"] as const) {
+      const deleteAccount = vi.fn(async () => ({ [flag]: true as const }));
+      const f = await fixture("ready", deleteAccount);
+      try {
+        expect(await f.send("delete_account", { confirm: "DELETE" })).toMatchObject({
+          ok: true,
+          result: { [flag]: true },
+        });
+        expect(deleteAccount).toHaveBeenCalledOnce();
+      } finally { await f.main.dispose(); }
+    }
+  });
+  it("rejects a mutated native success payload missing clerkIdentityRemoved", async () => {
+    const deleteAccount = vi.fn(async () => ({
+      status: "deleted" as const, practiceLeftOwnerless: false,
+    }));
+    const f = await fixture("ready", deleteAccount as never);
+    try {
+      expect(await f.send("delete_account", { confirm: "DELETE" })).toMatchObject({ ok: false });
+    } finally { await f.main.dispose(); }
+  });
   it("refuses delete_account while signed out or when native delete is unavailable", async () => {
     const signedOut = await fixture("signedOut", vi.fn(async () => ({ unauthorized: true as const })));
     try {

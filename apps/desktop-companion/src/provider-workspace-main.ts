@@ -142,11 +142,16 @@ export class DesktopProviderWorkspaceMain {
       const value = await this.host.session.deleteAccount({ confirm: "DELETE" });
       if (signal.aborted) throw unavailable();
       if (value?.unauthorized === true) return { unauthorized: true };
-      if (value?.status === "deleted" || value?.status === "already_deleted") {
+      if (value?.gone === true) return { gone: true };
+      if (value?.unavailable === true) return { unavailable: true };
+      if (value?.retryable === true) return { retryable: true };
+      if ((value?.status === "deleted" || value?.status === "already_deleted")
+        && typeof value.practiceLeftOwnerless === "boolean"
+        && typeof value.clerkIdentityRemoved === "boolean") {
         return {
           status: value.status,
-          practiceLeftOwnerless: value.practiceLeftOwnerless === true,
-          clerkIdentityRemoved: value.clerkIdentityRemoved === true,
+          practiceLeftOwnerless: value.practiceLeftOwnerless,
+          clerkIdentityRemoved: value.clerkIdentityRemoved,
         };
       }
       throw unavailable();

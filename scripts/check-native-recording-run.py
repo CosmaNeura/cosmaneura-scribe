@@ -18,6 +18,7 @@ MODULES = [
         [
             AUTH / "Sources/CosmasNativeAuth" / f"{name}.swift"
             for name in [
+                "AccountSelfDeleteContract",
                 "DesktopAuthProtocol",
                 "KeychainAccessBlock",
                 "NativeAuthAwait",
@@ -219,6 +220,59 @@ def main() -> None:
                 ],
             )
             run("mac-run-checks", [executable])
+            account_self_delete = str(target / "account-self-delete-checks")
+            run(
+                "mac-account-self-delete-build",
+                common
+                + [
+                    "-O",
+                    "-L",
+                    str(target),
+                    *libraries,
+                    "-Xlinker",
+                    "-rpath",
+                    "-Xlinker",
+                    str(target),
+                    "-o",
+                    account_self_delete,
+                    str(REPO / "scripts/standalone-provider/check-account-self-delete.swift"),
+                ],
+            )
+            run("mac-account-self-delete-checks", [account_self_delete])
+            # Both native deleteAccount handlers must share the contract resolve path.
+            for relative in (
+                "apps/capture/native-plugins/cosmas-native-auth/Bridge/CosmasWorkspaceAuthPlugin.swift",
+                "scripts/standalone-provider/DesktopProviderMain.swift",
+            ):
+                text = (REPO / relative).read_text(encoding="utf-8")
+                if "AccountSelfDeleteContract.resolve(" not in text:
+                    raise SystemExit(f"missing AccountSelfDeleteContract.resolve in {relative}")
+                if "deleteAccount" not in text:
+                    raise SystemExit(f"missing deleteAccount handler in {relative}")
+            results.append(
+                {
+                    "name": "native-deleteAccount-handlers-wire-contract",
+                    "command": ["source-fence", "AccountSelfDeleteContract.resolve"],
+                    "exit_code": 0,
+                    "log": "",
+                    "sha256": hashlib.sha256(b"AccountSelfDeleteContract.resolve").hexdigest(),
+                }
+            )
+            (out / "CHECKS.json").write_text(
+                json.dumps(
+                    {
+                        "commit": subprocess.check_output(
+                            ["git", "rev-parse", "HEAD"], cwd=REPO, text=True
+                        ).strip(),
+                        "synthetic_only": True,
+                        "ambient_audio": False,
+                        "results": results,
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+            print("native-deleteAccount-handlers-wire-contract: 0", flush=True)
             binding_executable = str(target / "binding-checks")
             run(
                 "mac-binding-build",

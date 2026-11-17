@@ -25,6 +25,9 @@ export interface NativeProviderSession {
    */
   deleteAccount?(request: { confirm: "DELETE" }): Promise<{
     readonly unauthorized?: true;
+    readonly gone?: true;
+    readonly unavailable?: true;
+    readonly retryable?: true;
     readonly status?: "deleted" | "already_deleted";
     readonly practiceLeftOwnerless?: boolean;
     readonly clerkIdentityRemoved?: boolean;

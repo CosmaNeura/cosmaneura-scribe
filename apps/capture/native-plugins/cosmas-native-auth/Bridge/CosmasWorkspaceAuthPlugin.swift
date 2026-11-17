@@ -560,9 +560,9 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         }
     }
 
-    /// Cosmas self-delete (T-REL-8a / PR #940 head de09c12):
+    /// Cosmas self-delete (T-REL-8a / PR #940):
     /// DELETE <coreOrigin>/v1/me/account with Bearer Clerk JWT and {"confirm":"DELETE"}.
-    /// Token never leaves native code.
+    /// Token never leaves native code. Origin allow-list matches Mac.
     @objc nonisolated public func deleteAccount(_ call: CAPPluginCall) {
         Task { @MainActor in
             guard Set(call.options.keys) == ["confirm"],
@@ -572,11 +572,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             let revision = auth.state().revision
             guard let configuration = Self.providerApplicationConfiguration(),
                   let origin = configuration["coreOrigin"] as? String,
-                  let url = URL(string: origin + "/v1/me/account"),
-                  origin == "https://staging-app.cosmaneura.com"
-                    || origin == "https://app.cosmaneura.com"
-                    || origin.hasPrefix("http://127.0.0.1:")
-                    || origin.hasPrefix("http://localhost:")
+                  let url = URL(string: origin + "/v1/me/account")
             else { return Self.reject(call) }
             do {
                 let token = try await auth.token(expectedRevision: revision)
@@ -588,30 +584,14 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                 request.httpBody = Data(#"{"confirm":"DELETE"}"#.utf8)
                 request.timeoutInterval = 30
                 let (data, response) = try await URLSession.shared.data(for: request)
-                guard let http = response as? HTTPURLResponse else {
-                    call.reject("Account deletion unavailable", "account_self_delete_failed")
-                    return
-                }
-                if http.statusCode == 401 {
-                    call.resolve(["unauthorized": true])
-                    return
-                }
-                guard http.statusCode == 200,
-                      let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      Set(object.keys) == ["status", "practice_left_ownerless", "clerk_identity_removed"],
-                      let status = object["status"] as? String,
-                      status == "deleted" || status == "already_deleted",
-                      let practiceLeftOwnerless = object["practice_left_ownerless"] as? Bool,
-                      let clerkIdentityRemoved = object["clerk_identity_removed"] as? Bool
+                guard let http = response as? HTTPURLResponse,
+                      let payload = AccountSelfDeleteContract.resolve(
+                        origin: origin, statusCode: http.statusCode, body: data)
                 else {
                     call.reject("Account deletion unavailable", "account_self_delete_failed")
                     return
                 }
-                call.resolve([
-                    "status": status,
-                    "practiceLeftOwnerless": practiceLeftOwnerless,
-                    "clerkIdentityRemoved": clerkIdentityRemoved,
-                ])
+                call.resolve(payload)
             } catch {
                 call.reject("Account deletion unavailable", "account_self_delete_failed")
             }

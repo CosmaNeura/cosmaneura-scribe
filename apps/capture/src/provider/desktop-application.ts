@@ -16,7 +16,7 @@ import { reference, type CoreCaptureScope } from "./core-client";
 import { parseCancellation } from "./cancellation";
 import { parseOpeningRecovery, parseOpeningReview } from "./opening-review";
 import type { ConsentPreparationRelease } from "./consent-preparation";
-import type { AccountSelfDeleteResult } from "./account-self-delete";
+import { interpretAccountSelfDeleteBridge, type AccountSelfDeleteResult } from "./account-self-delete";
 import { parseDesktopProviderEvent, sessionState, exact, object, uuid, jsonCopy, unavailable,
   type DesktopProviderMethod, type DesktopProviderPort, type DesktopProviderRequest } from "./desktop-host-protocol";
 
@@ -115,19 +115,9 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
     accountSelfDelete: {
       deleteAccount: async (body, signal): Promise<AccountSelfDeleteResult> => {
         if (body.confirm !== "DELETE") throw unavailable();
-        const value = object(await request("delete_account", { confirm: "DELETE" }, null, null, signal));
-        if (value.unauthorized === true) return { outcome: "unauthorized" };
-        if ((value.status === "deleted" || value.status === "already_deleted")
-          && typeof value.practiceLeftOwnerless === "boolean"
-          && typeof value.clerkIdentityRemoved === "boolean") {
-          return {
-            outcome: "deleted",
-            status: value.status,
-            practiceLeftOwnerless: value.practiceLeftOwnerless,
-            clerkIdentityRemoved: value.clerkIdentityRemoved,
-          };
-        }
-        throw unavailable();
+        return interpretAccountSelfDeleteBridge(
+          object(await request("delete_account", { confirm: "DELETE" }, null, null, signal)),
+        );
       },
     },
     supportsRecorderStopReauthentication: true,

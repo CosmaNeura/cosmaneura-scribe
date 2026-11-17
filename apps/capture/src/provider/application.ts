@@ -27,8 +27,8 @@ export interface ProviderApplicationHost {
   readonly recordingOpen?: (listener: () => void) => Promise<PluginListenerHandle>;
   /**
    * Cosmas self-delete client (DELETE /v1/me/account). When present, Account
-   * shows Delete account and does not offer Cancel Scribe access beside it.
-   * Existing users are unchanged until they open Account and confirm Delete.
+   * shows Delete account beside Cancel Scribe access. Existing users are
+   * unchanged until they open Account and confirm Delete.
    */
   readonly accountSelfDelete?: AccountSelfDeleteClient;
   /** Returns the current authorized provider workflow, never credentials. */
@@ -56,7 +56,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   let disposed = false, busy = false, stopUnconfirmed = false, accessClosed = false, logoutPending = false;
   let operations = 0, signingOut = false;
   let closeDeletionDialog: (() => void) | undefined;
-  let accountDeletedNotice = false;
+  let accountNotice: "deleted" | "session_expired" | "gone" | null = null;
   let recorderStopUnconfirmed = false;
   let cancelDialog: (() => void) | undefined;
   let cancellationReceipt: CancellationReceipt | null = null, cancellationCheckedRevision: string | null = null;
@@ -104,17 +104,21 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     if (notice) {
       if (state === null) title.textContent = "Session unavailable";
       message.textContent = notice;
-    } else if (accountDeletedNotice && phase === "signedOut") {
-      title.textContent = "Account deleted";
-      message.textContent = "Your Cosmaneura account has been deleted. You are signed out.";
+    } else if (accountNotice && phase === "signedOut") {
+      if (accountNotice === "deleted") {
+        title.textContent = "Account deleted";
+        message.textContent = "Your Cosmaneura account has been deleted. You are signed out.";
+      } else if (accountNotice === "session_expired") {
+        title.textContent = "Session expired";
+        message.textContent = "Your session has expired. You are signed out.";
+      } else {
+        title.textContent = "Access ended";
+        message.textContent = "This account no longer has access. You are signed out.";
+      }
     }
-    // Delete account is the Apple 5.1.1(v) path. When it is wired, do not also
-    // offer Cancel Scribe access in Account (one clear destructive path).
-    // Existing cancellation receipts still recover via status checks below.
-    const accountActions = host.accountSelfDelete
-      ? `${button("sign-out", "Sign out")}${button("delete-account", "Delete account")}<p data-provider-name></p>`
-      : `${button("sign-out", "Sign out")}<p data-provider-name></p>${host.cancellation ? button("cancel-scribe", cancellationReceipt ? "Cancellation status" : "Cancel Scribe access") : ""}`;
-    actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><div class="provider-account-panel" role="group" aria-label="Account options">${accountActions}<a href="mailto:dev@cosmaneura.com">Get help</a></div></details>`
+    // Keep Cancel Scribe access / Cancellation status exactly as today, next to
+    // Delete account when self-delete is wired.
+    actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><div class="provider-account-panel" role="group" aria-label="Account options">${button("sign-out", "Sign out")}${host.accountSelfDelete ? button("delete-account", "Delete account") : ""}<p data-provider-name></p>${host.cancellation ? button("cancel-scribe", cancellationReceipt ? "Cancellation status" : "Cancel Scribe access") : ""}<a href="mailto:dev@cosmaneura.com">Get help</a></div></details>`
       : phase === "signingIn" ? button("sign-out", "Sign out") : "";
     const providerName = actions.querySelector<HTMLElement>("[data-provider-name]"); if (providerName) providerName.textContent = state?.providerDisplayName ?? "Your account";
     recovery.innerHTML = "";
@@ -211,7 +215,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
       ...(typeof value.providerDisplayName === "string" && value.providerDisplayName.length <= 200 ? { providerDisplayName: value.providerDisplayName } : {}) };
     if (value.phase === "signedOut") logoutPending = false;
     if (value.phase === "signOutPending") logoutPending = true;
-    if (value.phase !== "signedOut") accountDeletedNotice = false;
+    if (value.phase !== "signedOut") accountNotice = null;
     if (scope && (value.phase !== "ready" || value.revision !== scope.revision)) {
       accessClosed = true; invalidate(); closeInBackground();
     }
@@ -410,8 +414,17 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
       const menu = actions.querySelector<HTMLDetailsElement>(".provider-account-menu");
       if (menu) menu.open = false;
       closeDeletionDialog?.();
+      let pendingNotice: "deleted" | "session_expired" | "gone" = "deleted";
       closeDeletionDialog = mountAccountSelfDeleteDialog(document.body, {
-        client,
+        client: {
+          deleteAccount: async (request, signal) => {
+            const result = await client.deleteAccount(request, signal);
+            if (result.outcome === "deleted") pendingNotice = "deleted";
+            else if (result.outcome === "unauthorized") pendingNotice = "session_expired";
+            else if (result.outcome === "gone") pendingNotice = "gone";
+            return result;
+          },
+        },
         sameAccountSession: () => state?.phase === "ready" && state.revision === revision,
         closeWorkspace: close,
         clearLocalCredentials: async () => {
@@ -419,12 +432,17 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
           logoutPending = true;
           accessClosed = true;
           invalidate();
+          // Always attempt sign-out even when workspace close fails.
+          await close().catch(() => undefined);
           const before = observations;
-          const results = await Promise.allSettled([host.session.signOut(), close()]);
-          if (results[0].status === "fulfilled") {
-            if (before === observations) accept(results[0].value);
-          } else throw new Error("account_self_delete_local_clear_failed");
-          accountDeletedNotice = true;
+          try {
+            const signedOut = await host.session.signOut();
+            if (before === observations) accept(signedOut);
+          } catch {
+            render();
+            throw new Error("account_self_delete_local_clear_failed");
+          }
+          accountNotice = pendingNotice;
           await read();
           render();
         },

@@ -95,6 +95,9 @@ export class NativeProviderClient implements NativeProviderSession {
   /** Cosmas DELETE /v1/me/account for the signed-in caller. Token stays native. */
   async deleteAccount(request: { confirm: "DELETE" }): Promise<{
     readonly unauthorized?: true;
+    readonly gone?: true;
+    readonly unavailable?: true;
+    readonly retryable?: true;
     readonly status?: "deleted" | "already_deleted";
     readonly practiceLeftOwnerless?: boolean;
     readonly clerkIdentityRemoved?: boolean;
@@ -102,10 +105,14 @@ export class NativeProviderClient implements NativeProviderSession {
     requireMain();
     if (request.confirm !== "DELETE") throw unavailable();
     const reply = object(await this.request("deleteAccount", { confirm: "DELETE" }, undefined, 35_000));
-    if (reply.unauthorized === true) return { unauthorized: true };
+    if (reply.unauthorized === true && Object.keys(reply).length === 1) return { unauthorized: true };
+    if (reply.gone === true && Object.keys(reply).length === 1) return { gone: true };
+    if (reply.unavailable === true && Object.keys(reply).length === 1) return { unavailable: true };
+    if (reply.retryable === true && Object.keys(reply).length === 1) return { retryable: true };
     if ((reply.status === "deleted" || reply.status === "already_deleted")
       && typeof reply.practiceLeftOwnerless === "boolean"
-      && typeof reply.clerkIdentityRemoved === "boolean") {
+      && typeof reply.clerkIdentityRemoved === "boolean"
+      && Object.keys(reply).sort().join(",") === "clerkIdentityRemoved,practiceLeftOwnerless,status") {
       return {
         status: reply.status,
         practiceLeftOwnerless: reply.practiceLeftOwnerless,

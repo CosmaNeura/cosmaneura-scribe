@@ -141,7 +141,7 @@ import ScribeStorePipe
             return self.state(auth.state())
         case "deleteAccount":
             // Cosmas T-REL-8a (PR #940): DELETE /v1/me/account for the signed-in
-            // caller only. Token stays in this native process; no target user id.
+            // caller only. Token stays in this native process; shared origin fence.
             guard Set(payload.keys) == ["confirm"], payload["confirm"] as? String == "DELETE"
             else { throw ProviderNativeError.invalidRequest }
             guard auth.state().phase == .ready else { throw ProviderNativeError.unavailable }
@@ -159,21 +159,11 @@ import ScribeStorePipe
             request.httpBody = Data(#"{"confirm":"DELETE"}"#.utf8)
             request.timeoutInterval = 30
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse else { throw ProviderNativeError.response }
-            if http.statusCode == 401 { return ["unauthorized": true] }
-            guard http.statusCode == 200,
-                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  Set(object.keys) == ["status", "practice_left_ownerless", "clerk_identity_removed"],
-                  let status = object["status"] as? String,
-                  status == "deleted" || status == "already_deleted",
-                  let practiceLeftOwnerless = object["practice_left_ownerless"] as? Bool,
-                  let clerkIdentityRemoved = object["clerk_identity_removed"] as? Bool
+            guard let http = response as? HTTPURLResponse,
+                  let payload = AccountSelfDeleteContract.resolve(
+                    origin: origin, statusCode: http.statusCode, body: data)
             else { throw ProviderNativeError.response }
-            return [
-                "status": status,
-                "practiceLeftOwnerless": practiceLeftOwnerless,
-                "clerkIdentityRemoved": clerkIdentityRemoved,
-            ]
+            return payload
         case "prepareProviderSignIn":
             guard Set(payload.keys) == ["preparationId", "revision", "workspaceId", "bindingRef"],
                   let preparation = payload["preparationId"] as? String, let revision = payload["revision"] as? String,
@@ -317,14 +307,7 @@ import ScribeStorePipe
         guard let auth = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any],
               let frontend = auth["frontendOrigin"] as? String
         else { return nil }
-        switch frontend {
-        case "https://resolved-emu-53.clerk.accounts.dev":
-            return "https://staging-app.cosmaneura.com"
-        case "https://clerk.cosmaneura.com":
-            return "https://app.cosmaneura.com"
-        default:
-            return nil
-        }
+        return AccountSelfDeleteContract.coreOrigin(forFrontendOrigin: frontend)
     }
     private func state(_ value: NativeAuthState) -> [String: Any] {
         var payload: [String: Any] = ["phase": value.phase.rawValue, "revision": value.revision]

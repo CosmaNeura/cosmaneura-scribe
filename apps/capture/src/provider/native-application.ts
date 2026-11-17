@@ -7,7 +7,7 @@ import { subscribeIOSRecordingOpen } from "./recording-open";
 import type { ConsentPreparationRelease } from "./consent-preparation";
 import { nativeScribeCancellation } from "./native-cancellation";
 import { activateNativeScribe } from "./native-activation";
-import type { AccountSelfDeleteResult } from "./account-self-delete";
+import { interpretAccountSelfDeleteBridge, type AccountSelfDeleteResult } from "./account-self-delete";
 
 /** Standalone iOS startup after the host's upload/Core configuration is supplied.
  * Reuses the registered native sign-in/out UI and existing complete provider
@@ -47,16 +47,7 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
           if (signal?.aborted) throw new Error("account_self_delete_aborted");
           const value = await native.deleteAccount!({ confirm: "DELETE" });
           if (signal?.aborted) throw new Error("account_self_delete_aborted");
-          if (value?.unauthorized === true) return { outcome: "unauthorized" };
-          if (value?.status === "deleted" || value?.status === "already_deleted") {
-            return {
-              outcome: "deleted",
-              status: value.status,
-              practiceLeftOwnerless: value.practiceLeftOwnerless === true,
-              clerkIdentityRemoved: value.clerkIdentityRemoved === true,
-            };
-          }
-          throw new Error("account_self_delete_unconfirmed");
+          return interpretAccountSelfDeleteBridge(value);
         },
       },
     } : {}),

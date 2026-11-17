@@ -36,6 +36,9 @@ const accountSelfDelete = {
     if (options.has("delete-pending")) await new Promise(resolve => { releaseDelete = resolve; });
     if (options.has("delete-fail")) throw new Error("Synthetic Cosmas delete unavailable");
     if (options.has("delete-unauthorized")) return { outcome: "unauthorized" };
+    if (options.has("delete-gone")) return { outcome: "gone" };
+    if (options.has("delete-unavailable")) return { outcome: "unavailable" };
+    if (options.has("delete-retryable")) return { outcome: "retryable" };
     return {
       outcome: "deleted",
       status: "deleted",
@@ -44,9 +47,15 @@ const accountSelfDelete = {
     };
   },
 };
+const cancellation = {
+  status: async () => null,
+  load: async () => { throw new Error("No cancellation load in account fixture"); },
+  submit: async () => { throw new Error("No cancellation submit in account fixture"); },
+};
 const dispose = mountProviderApplication(document.querySelector("#provider"), {
   session,
   accountSelfDelete,
+  cancellation,
   connect: async signal => {
     stats.connections += 1;
     signal.addEventListener("abort", () => { stats.aborts += 1; }, { once: true });

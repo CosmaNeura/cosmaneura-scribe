@@ -1,4 +1,9 @@
-import { accountSelfDelete, type AccountSelfDeleteHost, type AccountSelfDeleteState } from "./account-self-delete";
+import {
+  ACCOUNT_SELF_DELETE_MESSAGES,
+  accountSelfDelete,
+  type AccountSelfDeleteHost,
+  type AccountSelfDeleteState,
+} from "./account-self-delete";
 import "./account-self-delete-dialog.css";
 
 /** Full-screen confirm for Account > Delete account (Apple 5.1.1(v)). */
@@ -10,7 +15,7 @@ export function mountAccountSelfDeleteDialog(parent: HTMLElement, host: AccountS
   dialog.innerHTML = `<section>
     <h1 id="scribe-account-self-delete-title">Delete your account?</h1>
     <p>This permanently deletes your whole Cosmaneura sign-in, including Cosmas web access, and your personal Scribe data on this account. This cannot be undone.</p>
-    <p>Your practice and your colleagues' data are not deleted.</p>
+    <p>Your practice and your colleagues' data are not deleted. Clinical records stay with the practice under its retention policy and are not deleted by this action.</p>
     <label data-confirmation-label>Type DELETE to confirm
       <input data-confirmation autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Type DELETE to confirm">
     </label>
@@ -18,36 +23,38 @@ export function mountAccountSelfDeleteDialog(parent: HTMLElement, host: AccountS
     <div class="scribe-self-delete-actions">
       <button data-cancel type="button">Cancel</button>
       <button data-submit type="button" disabled>Delete account</button>
+      <button data-done type="button" hidden>Done</button>
+      <button data-retry type="button" hidden>Try again</button>
     </div>
   </section>`;
   const input = dialog.querySelector<HTMLInputElement>("[data-confirmation]")!;
   const label = dialog.querySelector<HTMLElement>("[data-confirmation-label]")!;
   const cancel = dialog.querySelector<HTMLButtonElement>("[data-cancel]")!;
   const submit = dialog.querySelector<HTMLButtonElement>("[data-submit]")!;
+  const done = dialog.querySelector<HTMLButtonElement>("[data-done]")!;
+  const retry = dialog.querySelector<HTMLButtonElement>("[data-retry]")!;
   const status = dialog.querySelector<HTMLElement>("[data-status]")!;
   let disposed = false;
 
   const render = (state: AccountSelfDeleteState): void => {
     if (disposed) return;
-    const editable = state.phase === "confirming" || state.phase === "failed";
+    const editable = state.phase === "confirming" || (state.phase === "failed" && state.completion === null);
+    const finished = state.phase === "complete" || state.phase === "local_clear_failed";
     label.hidden = !editable;
-    input.disabled = state.phase !== "confirming" && state.phase !== "failed";
+    input.disabled = !editable;
     if (input.value !== state.confirmation) input.value = state.confirmation;
-    submit.disabled = !editable || state.confirmation !== "DELETE";
-    submit.hidden = state.phase === "complete" || state.phase === "clearing";
-    cancel.hidden = state.phase === "submitting" || state.phase === "clearing" || state.phase === "complete";
+    submit.hidden = finished || state.phase === "clearing" || state.phase === "submitting" || state.retryable;
+    submit.disabled = !editable || state.confirmation !== "DELETE" || state.retryable;
+    cancel.hidden = state.phase === "submitting" || state.phase === "clearing" || finished;
+    retry.hidden = !(state.phase === "failed" && state.retryable);
+    done.hidden = !finished;
     status.dataset.kind = state.error ? "error" : "";
     status.textContent = state.phase === "submitting" ? "Deleting your Cosmaneura account…"
       : state.phase === "clearing" ? "Clearing this device and signing out…"
-      : state.phase === "complete" ? "Your account has been deleted. You are signed out."
+      : state.phase === "complete" && state.completion === "deleted" ? ACCOUNT_SELF_DELETE_MESSAGES.deleted
+      : state.phase === "complete" && state.completion === "session_expired" ? ACCOUNT_SELF_DELETE_MESSAGES.sessionExpired
+      : state.phase === "complete" && state.completion === "gone" ? ACCOUNT_SELF_DELETE_MESSAGES.gone
       : state.error ?? "";
-    if (state.phase === "complete") {
-      cancel.hidden = true;
-      submit.hidden = false;
-      submit.disabled = false;
-      submit.textContent = "Done";
-      label.hidden = true;
-    }
   };
 
   const flow = accountSelfDelete(host, render);
@@ -62,13 +69,16 @@ export function mountAccountSelfDeleteDialog(parent: HTMLElement, host: AccountS
 
   input.addEventListener("input", () => flow.confirm(input.value));
   cancel.addEventListener("click", () => { if (flow.cancel()) dispose(); });
-  submit.addEventListener("click", () => {
-    if (flow.read().phase === "complete") { dispose(); return; }
-    void flow.submit();
-  });
+  submit.addEventListener("click", () => { void flow.submit(); });
+  retry.addEventListener("click", () => { void flow.submit(); });
+  done.addEventListener("click", () => { if (flow.acknowledge()) dispose(); });
   dialog.addEventListener("cancel", event => {
     event.preventDefault();
-    if (flow.read().phase === "complete") { dispose(); return; }
+    const phase = flow.read().phase;
+    if (phase === "complete" || phase === "local_clear_failed") {
+      if (flow.acknowledge()) dispose();
+      return;
+    }
     if (flow.cancel()) dispose();
   });
   parent.append(dialog);
