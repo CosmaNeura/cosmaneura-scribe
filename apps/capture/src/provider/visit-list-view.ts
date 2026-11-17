@@ -27,14 +27,14 @@ export function visitStatus(status: ProviderEncounter["status"]): { label: strin
 export function visitRow(encounter: ProviderEncounter, status = encounter.status): string {
   const stamp = encounterTimestamp(encounter.detail), state = visitStatus(status);
   const time = stamp === null ? "" : new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(stamp);
-  const pending = status === "processing";
   const action = status === "draft_ready" ? "open-draft" : "open";
-  const label = (status === "draft_ready" || status === "recording_saved") ? "Open note" : status === "paused" ? "Resume" : "Start";
+  const label = status === "draft_ready" ? "Open note" : status === "recording_saved" ? "View transcript"
+    : status === "processing" ? "Open visit" : status === "paused" ? "Resume" : "Start";
   return `<li data-visit-ref="${escapeText(encounter.appointmentRef)}" data-visit-time="${stamp ?? ""}">
     <time class="provider-visit-time">${escapeText(time)}</time>
     <div class="provider-visit-name"><strong>${escapeText(encounter.identity?.name ?? encounter.patientName ?? encounter.title)}</strong><span class="provider-visit-inline-time">${escapeText(time)}</span>
       <span class="provider-visit-status" data-tone="${state.tone}">${state.tone === "waiting" ? '<i aria-hidden="true"></i>' : ""}${state.label}</span></div>
-    ${pending ? '<span class="provider-visit-wait">Preparing…</span>' : `<button class="provider-visit-action${status === "draft_ready" ? " provider-open-note" : " provider-primary"}" data-workspace-action="${action}" data-appointment="${escapeText(encounter.appointmentRef)}">${label}</button>`}
+    <button class="provider-visit-action${status === "draft_ready" ? " provider-open-note" : " provider-primary"}" data-workspace-action="${action}" data-appointment="${escapeText(encounter.appointmentRef)}">${label}</button>
   </li>`;
 }
 

@@ -34,7 +34,7 @@ To emit the dormant host artifacts with existing tooling, run from the repositor
 root: `node scripts/build-desktop-provider-host.mjs <provider-build-directory> <new-output-directory>`.
 The output explicitly has `launch_ready: false`: it contains no Electron runtime,
 actual `provider-host.mjs`, native helper/configuration or signed app bundle.
-Electron 44.4.3 is now approved and installed as a development dependency in this
+Electron 44.9.1 is now approved and installed as a development dependency in this
 checkout. The builder above still emits host files only; it does not copy the
 runtime into a signed app or supply the missing native/backend factory.
 Read the [applied runtime packet](../../docs/beta/SCRIBE_DESKTOP_RUNTIME_PACKET_20260922.md)

@@ -1,10 +1,14 @@
-"""Explicit production Core-authority backend; the legacy registry stays intact."""
+"""Explicit profile-bound Core-authority backend; the legacy registry stays intact."""
 
+import asyncio
 import inspect
 import re
 from typing import cast
 from uuid import uuid4, uuid5
 
+from cosmaneura_scribe.provider_account_setup import ProviderAccountSetupRequired
+from cosmaneura_scribe.provider_activation_transport import ProviderActivationTransport
+from cosmaneura_scribe.provider_cancellation_transport import ProviderCancellationTransport
 from cosmaneura_scribe.provider_context_transport import ProviderContextTransport
 from cosmaneura_scribe.provider_core_transport import (
     AuthorizedCoreProvider,
@@ -23,6 +27,7 @@ from fastapi.routing import APIRoute
 from receiver import (
     _LIMITS,
     _PREFIX,
+    CORE_STAGING_PERSONAL,
     AuthenticationFailed,
     ClerkTokenVerifier,
     ProviderReceiver,
@@ -50,14 +55,15 @@ class CoreContextReceiver(ProviderReceiver):
         if (
             engine is not None
             or profile.identity_profile
-            not in {"clerk-organization-v1", "core-production-personal-v1"}
+            not in {"clerk-organization-v1", CORE_STAGING_PERSONAL, "core-production-personal-v1"}
             or not isinstance(verifier, ClerkTokenVerifier)
-            or verifier.core_provider_session
+            or (profile.identity_profile == CORE_STAGING_PERSONAL)
+            != (verifier.core_provider_session is True)
             or (profile.identity_profile == "core-production-personal-v1")
             != (getattr(verifier, "production_core_personal_session", False) is True)
             or verifier._settings != settings
         ):
-            raise ValueError("core_context_requires_production_organization")
+            raise ValueError("core_context_requires_matching_identity_profile")
         # None is never a database fallback: every registry entry point below
         # is replaced or denied, and this mode never creates a SQL engine.
         super().__init__(profile, cast(Engine, None), settings, verifier, workload_token, **kwargs)
@@ -111,8 +117,36 @@ class CoreContextReceiver(ProviderReceiver):
         finally:
             await transport.close()
 
+    async def activation(self, authorization, body, key):
+        transport = ProviderActivationTransport(
+            self.profile.core_origin,
+            self._verify,
+            self.workload_token,
+            transport=self.core_http,
+            connections=self.core_connections,
+        )
+        try:
+            return await transport.request(authorization, body, key)
+        finally:
+            await transport.close()
+
     async def encounter_account(self, authorization, *, bind):
         return (await self._context(authorization, "connection"))[0]
+
+    async def cancellation(self, authorization, body, key):
+        # Cancellation is account-level. Neither a current encounter nor a
+        # processing-enabled Core connection is needed to recover own status.
+        transport = ProviderCancellationTransport(
+            self.profile.core_origin,
+            self._verify,
+            self.workload_token,
+            transport=self.core_http,
+            connections=self.core_connections,
+        )
+        try:
+            return await transport.request(authorization, body, key)
+        finally:
+            await transport.close()
 
     @staticmethod
     def legacy_workspace_exists(workspace_id, bind):
@@ -144,6 +178,7 @@ class CoreContextReceiver(ProviderReceiver):
                 return await self.encounter_account(authorization, bind=None)
 
             version = "1"
+            initial = None
             if self.native_visit_actions_v2_enabled:
                 initial = await fresh()
                 version = "2" if initial.native_visit_actions_v2 else "1"
@@ -156,7 +191,7 @@ class CoreContextReceiver(ProviderReceiver):
                 version=version,
             )
             try:
-                return await transport.request(body, key)
+                return await transport.request(body, key, before=initial)
             finally:
                 await transport.close()
         if body.get("action") not in {
@@ -172,11 +207,7 @@ class CoreContextReceiver(ProviderReceiver):
         if body["action"] == "lookup":
             _uuid(body.get("workspace_id"))
         account, value = await self._context(authorization, "catalog")
-        rows = [self.core_entry(row) for row in value["encounters"]]
-        if len({row["workspaceId"] for row in rows}) != len(rows) or len(
-            {row["appointmentRef"] for row in rows}
-        ) != len(rows):
-            raise ProviderCoreUnavailable("core_provider_context_unconfirmed")
+        rows = self._catalog_rows(value)
         current = await self.encounter_account(authorization, bind=None)
         if account != current:
             raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
@@ -188,28 +219,46 @@ class CoreContextReceiver(ProviderReceiver):
             **({"native_visit_actions_v2": True} if account.native_visit_actions_v2 else {}),
         }
         if body["action"] == "lookup":
-            wanted = str(_uuid(body.get("workspace_id")))
-            matches = [
-                raw
-                for raw, row in zip(value["encounters"], rows, strict=True)
-                if row["workspaceId"] == wanted
-            ]
-            if len(matches) != 1:
-                raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
             result.pop("encounters")
-            result["encounter"] = matches[0]
+            result["encounter"] = self._catalog_match(value, rows, body.get("workspace_id"))
         return result
 
-    async def _selected_current(self, authorization, revision, workspace_id):
-        account = await self.encounter_account(authorization, bind=None)
-        value = await self.encounters(
-            authorization,
-            {"action": "lookup", "workspace_id": str(workspace_id), "request_nonce": str(uuid4())},
-            str(uuid4()),
-        )
-        row = self.core_entry(value["encounter"])
-        if await self.encounter_account(authorization, bind=None) != account:
+    def _catalog_rows(self, value):
+        rows = [self.core_entry(row) for row in value["encounters"]]
+        if len({row["workspaceId"] for row in rows}) != len(rows) or len(
+            {row["appointmentRef"] for row in rows}
+        ) != len(rows):
+            raise ProviderCoreUnavailable("core_provider_context_unconfirmed")
+        return rows
+
+    @staticmethod
+    def _catalog_match(value, rows, workspace_id):
+        wanted = str(_uuid(workspace_id))
+        matches = [
+            raw
+            for raw, row in zip(value["encounters"], rows, strict=True)
+            if row["workspaceId"] == wanted
+        ]
+        if len(matches) != 1:
             raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+        return matches[0]
+
+    async def _selected_current(self, authorization, revision, workspace_id, account=None):
+        _, context, display = await self._current_selection(
+            authorization, revision, workspace_id, account
+        )
+        return context, display
+
+    async def _current_selection(self, authorization, revision, workspace_id, account=None):
+        # Core derives the account again while answering the catalog read, so
+        # that reply is itself the current-account check for the selection.
+        current, value = await self._context(authorization, "catalog")
+        if account is not None and current != account:
+            raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+        account = current
+        row = self.core_entry(
+            self._catalog_match(value, self._catalog_rows(value), str(workspace_id))
+        )
         selection = CoreProviderSelection(
             recovery_scope=account.recovery_scope,
             authorization_revision=uuid5(account.recovery_scope, str(revision)),
@@ -218,7 +267,11 @@ class CoreContextReceiver(ProviderReceiver):
             actor_ref=account.actor_ref,
             tenant_ref=account.tenant_ref,
         )
-        return AuthorizedCoreProvider(selection, account.user_token), self.core_display(row)
+        return (
+            account,
+            AuthorizedCoreProvider(selection, account.user_token),
+            self.core_display(row),
+        )
 
     def identity(self, *args, **kwargs):
         raise ProviderCoreUnavailable("core_registry_backend_unavailable", 403)
@@ -227,6 +280,28 @@ class CoreContextReceiver(ProviderReceiver):
 
     def app(self):
         app = super().app()
+
+        async def activation(request: Request):
+            try:
+                revision = _uuid(request.headers.get("x-scribe-native-revision"))
+                body = await _read(request, _LIMITS["activation"])
+                result = await self.activation(
+                    request.headers.get("authorization", ""),
+                    body,
+                    request.headers.get("idempotency-key", ""),
+                )
+                return _reply(200, {"revision": str(revision), **result})
+            except ProviderAccountSetupRequired as error:
+                return _reply(409, error.body(str(revision)))
+            except ProviderCoreUnavailable as error:
+                return _reply(error.status, {"detail": error.code})
+            except Exception:
+                return _reply(403, {"detail": "provider_request_denied"})
+
+        app.router.routes.insert(
+            0,
+            APIRoute(_PREFIX + "activation", activation, methods=["POST"], include_in_schema=False),
+        )
 
         async def catalog(request: Request):
             try:
@@ -254,18 +329,82 @@ class CoreContextReceiver(ProviderReceiver):
                         ),
                         "account": value["account"],
                         "recoveryScope": value["recoveryScope"],
-                        "environment": "Production",
+                        "environment": (
+                            "Staging"
+                            if self.profile.identity_profile == CORE_STAGING_PERSONAL
+                            else "Production"
+                        ),
                         **(
-                            {"native_visit_actions_v2": True}
+                            {"native_visit_actions_v2": True, "native_create_opening_v1": True}
                             if value.get("native_visit_actions_v2") is True
                             else {}
                         ),
                     },
                 )
+            except ProviderAccountSetupRequired as error:
+                return _reply(409, error.body(str(revision)))
             except ProviderCoreUnavailable as error:
                 return _reply(error.status, {"code": error.code})
             except Exception:
                 return _reply(403, {"code": "provider_request_denied"})
+
+        async def create_and_open(request: Request):
+            try:
+                revision = _uuid(request.headers.get("x-scribe-native-revision"))
+                body = await _read(request, _LIMITS["encounters"])
+                authorization = request.headers.get("authorization", "")
+                key = request.headers.get("idempotency-key", "")
+                has_opening = "opening_nonce" in body
+                opening = body.pop("opening_nonce", None)
+                if has_opening:
+                    _require(
+                        self.native_visit_actions_v2_enabled and body.get("action") == "create"
+                    )
+                    opening = str(_uuid(opening))
+                    _require(opening == key == body.get("creation_key"))
+                async with asyncio.timeout(30):
+                    result = await self.encounters(authorization, body, key)
+                    if opening is not None:
+                        _require(result.get("version") == "2")
+                        created = result["encounter"]
+                        mounted = await self.native_core_read(
+                            authorization,
+                            revision,
+                            "mount",
+                            {
+                                "workspace_id": str(_uuid(created["workspace_id"])),
+                                "opening_nonce": opening,
+                            },
+                            str(uuid4()),
+                        )
+                        # Both existing operations perform their full current-user
+                        # checks. Bind the composed reply to the exact created chart;
+                        # failure leaves the original durable creation key retryable.
+                        _require(
+                            mounted["recoveryScope"] == result["recoveryScope"]
+                            and mounted["appointmentRef"] == created["appointment_ref"]
+                            and mounted["encounter"]["patientRef"] == created["patient_ref"]
+                        )
+                        result = {**result, "opening": mounted}
+                _require(self.enabled and self.encounter_creation_enabled)
+                return _reply(200, {"revision": str(revision), **result})
+            except TimeoutError:
+                return _reply(503, {"detail": "provider_request_unavailable"})
+            except ProviderCoreUnavailable as error:
+                return _reply(error.status, {"detail": error.code})
+            except Exception:
+                return _reply(403, {"detail": "provider_request_denied"})
+
+        if self.encounter_creation_enabled:
+            app.router.routes.insert(
+                0,
+                APIRoute(
+                    _PREFIX + "encounters",
+                    create_and_open,
+                    methods=["POST"],
+                    include_in_schema=False,
+                ),
+            )
 
         if self.encounter_creation_enabled:
 
@@ -297,13 +436,16 @@ class CoreContextReceiver(ProviderReceiver):
                             raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
                         return account
 
-                    initial = await fresh()
                     mount = None
+                    if not self.enabled or not self.encounter_creation_enabled:
+                        raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
                     if action in {"source-start", "source-start-ready"}:
-                        context, _ = await self._selected_current(
+                        initial, context, _ = await self._current_selection(
                             authorization, revision, _uuid(body.get("workspace_id"))
                         )
                         mount = CoreProviderMount(context.selection, body.get("binding_ref"))
+                    else:
+                        initial = await fresh()
                     transport = ProviderNativeWorkflowTransport(
                         self.profile.core_origin,
                         fresh,
@@ -318,7 +460,12 @@ class CoreContextReceiver(ProviderReceiver):
                                 if field in body:
                                     _require(requested is None and body.pop(field) is True)
                                     requested = field
-                        result = await transport.workflow(action, body, key, mount=mount)
+                        # The catalog reply itself supplies current account and
+                        # exact selection for source calls. Each transport still
+                        # re-checks after credential I/O and before publication.
+                        result = await transport.workflow(
+                            action, body, key, mount=mount, before=initial
+                        )
                     finally:
                         await transport.close()
                     if requested:
@@ -339,6 +486,7 @@ class CoreContextReceiver(ProviderReceiver):
                                     "operation": {"kind": requested},
                                 },
                                 str(uuid4()),
+                                before=initial,
                             )
                             receipt = metadata["receipt"]
                             session = (
@@ -350,7 +498,6 @@ class CoreContextReceiver(ProviderReceiver):
                             result[requested] = receipt
                         finally:
                             await native.close()
-                    await fresh()
                     return _reply(200, result)
                 except ProviderCoreUnavailable as error:
                     return _reply(error.status, {"detail": error.code})

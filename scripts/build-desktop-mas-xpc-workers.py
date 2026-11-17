@@ -12,13 +12,23 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "standalone-provider"))
+from packaging_guard import preflight_compile_environment, preflight_tree  # noqa: E402
 
 GROUP = "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store"
 
 
 def build(output: Path, native_auth: Path) -> None:
     repo = Path(__file__).resolve().parents[1]
+    preflight_compile_environment()
+    preflight_tree(
+        repo / "apps/desktop-companion/native/ScribeDesktopAudio",
+        "Store audio build metadata",
+    )
+    preflight_tree(native_auth, "Store native auth build metadata")
     output = output.absolute()
     output.mkdir(mode=0o700)  # Existing output always fails; no replacement.
     module = repo / "apps/desktop-companion/native/ScribeDesktopAudio/Sources/ScribeStorePipe"

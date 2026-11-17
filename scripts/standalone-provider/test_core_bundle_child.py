@@ -173,3 +173,25 @@ def test_root_identity_cannot_start_a_scribe_child(monkeypatch):
     monkeypatch.setattr(child, "load_environment", lambda *_: pytest.fail("no configuration load"))
     with pytest.raises(child.BundleUnavailable, match="^scribe_core_bundle_worker_unavailable$"):
         child.worker_main("speech")
+
+
+def test_optional_bundle_refuses_multi_tenant_before_temp_or_runtime(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(child.os, "geteuid", lambda: 10001)
+    monkeypatch.setattr(child.os, "getegid", lambda: 10001)
+    monkeypatch.setattr(child, "load_environment", lambda *_: {})
+    monkeypatch.setattr(
+        child,
+        "CapturedWorkerSettings",
+        lambda: SimpleNamespace(configured_capture_tenant_ids=frozenset({uuid4(), uuid4()})),
+    )
+    monkeypatch.setattr(
+        child,
+        "WORKER_TEMP",
+        SimpleNamespace(
+            mkdir=lambda **_: pytest.fail("multi-tenant bundle must not initialize resources")
+        ),
+    )
+    with pytest.raises(child.BundleUnavailable, match="^scribe_core_bundle_worker_unavailable$"):
+        child.worker_main("speech")

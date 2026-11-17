@@ -2,6 +2,8 @@
 
 import hashlib
 import importlib.util
+import json
+import plistlib
 import stat
 import tempfile
 import unittest
@@ -23,6 +25,14 @@ class StoreBridgePlacementTests(unittest.TestCase):
         self.application = self.root / "Synthetic.app"
         self.macos = self.application / "Contents/MacOS"
         self.macos.mkdir(parents=True)
+        resources = self.application / "Contents/Resources/app"
+        auth_info = resources / "native/ScribeDesktopProvider.app/Contents/Info.plist"
+        auth_info.parent.mkdir(parents=True)
+        (resources / "provider-profile.json").write_text(
+            json.dumps({"schema": 1, "enabled": True, "coreOrigin": "https://staging-app.cosmaneura.com",
+                        "uploadOrigins": ["https://synthblob01.blob.core.windows.net"]}) + "\n"
+        )
+        auth_info.write_bytes(plistlib.dumps({"CosmasNativeAuth": {"enabled": True}}))
         self.source = self.root / "unsigned-bridge"
         self.payload = b"synthetic unsigned bridge bytes; never executed\n"
         self.source.write_bytes(self.payload)
@@ -59,7 +69,7 @@ class StoreBridgePlacementTests(unittest.TestCase):
         self.assertTrue(self.target.is_symlink())
 
     def test_stale_resource_copy_is_refused_before_new_write(self):
-        self.old.parent.mkdir(parents=True)
+        self.old.parent.mkdir(parents=True, exist_ok=True)
         self.old.write_bytes(b"old synthetic resource bridge")
         with self.assertRaises(ValueError):
             XPC.place_store_bridge(self.application, self.source)
@@ -67,7 +77,7 @@ class StoreBridgePlacementTests(unittest.TestCase):
         self.assertEqual(self.old.read_bytes(), b"old synthetic resource bridge")
 
     def test_dangling_stale_resource_link_is_also_refused(self):
-        self.old.parent.mkdir(parents=True)
+        self.old.parent.mkdir(parents=True, exist_ok=True)
         self.old.symlink_to(self.root / "missing")
         with self.assertRaises(ValueError):
             XPC.place_store_bridge(self.application, self.source)
@@ -95,6 +105,17 @@ class StoreBridgePlacementTests(unittest.TestCase):
         alias.symlink_to(self.application, target_is_directory=True)
         with self.assertRaises(ValueError):
             XPC.place_store_bridge(alias, self.source)
+        self.assertFalse(self.target.exists())
+
+    def test_disabled_auth_package_is_refused_before_bridge_write(self):
+        resources = self.application / "Contents/Resources/app"
+        (resources / "provider-profile.json").write_text(
+            json.dumps({"schema": 1, "enabled": False, "coreOrigin": "https://staging-app.cosmaneura.com",
+                        "uploadOrigins": []}) + "\n"
+        )
+        with self.assertRaises(ValueError) as raised:
+            XPC.place_store_bridge(self.application, self.source)
+        self.assertIn("enabled=true", str(raised.exception))
         self.assertFalse(self.target.exists())
 
 

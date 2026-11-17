@@ -9,6 +9,7 @@ import type { RuntimeDiagnostic } from "./runtime-diagnostics.js";
 interface Input { readonly id: string; readonly uid: string; readonly label: string; readonly kind: AudioInputDevice["kind"] }
 interface Options {
   readonly helperPath: string; readonly helperSha256: string;
+  readonly helperHashAlgorithm?: "macho-store-v1";
   readonly isSessionActive: () => boolean;
   /** Fixed numeric lifecycle metadata; never a device UID or permission grant. */
   readonly diagnostics?: RuntimeDiagnostic;

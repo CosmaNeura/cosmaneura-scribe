@@ -4,12 +4,21 @@ import { mountProviderWorkspace, type ProviderWorkspaceHost } from "./workspace"
 import type { NativeProviderSession, ProviderSessionPhase, ProviderSessionState } from "./native-plugin";
 import scribeIcon from "../../public/icon.svg?raw";
 import "./application.css";
+import { openCancellationDialog } from "./cancellation-dialog";
+import type { CancellationReceipt, ScribeCancellation } from "./cancellation";
+import { ProviderSetupRequired, type ProviderSetup } from "./account-setup";
 import { clearCachedProviderPreferences, type AccountSelfDeleteClient } from "./account-self-delete";
 import { mountAccountSelfDeleteDialog } from "./account-self-delete-dialog";
 
 export type { ProviderSessionState } from "./native-plugin";
 export interface ProviderApplicationHost {
   readonly session: NativeProviderSession;
+  /** Account-level authenticated request/status; independent of visit mounts. */
+  readonly cancellation?: ScribeCancellation;
+  /** Fixed native account-level destination; no URL is supplied by the UI. */
+  readonly openDashboard?: (signal: AbortSignal) => Promise<void>;
+  readonly openPracticeSetup?: (signal: AbortSignal) => Promise<void>;
+  readonly activateScribe?: (signal: AbortSignal, revision: string) => Promise<void>;
   /** Trusted host supports volatile, same-account native cessation recovery. */
   readonly supportsRecorderStopReauthentication?: true;
   /** Main may own a preparation before the renderer obtains its recorder. */
@@ -17,8 +26,9 @@ export interface ProviderApplicationHost {
   /** PHI-free native link request; only existing recording navigation is allowed. */
   readonly recordingOpen?: (listener: () => void) => Promise<PluginListenerHandle>;
   /**
-   * Optional Cosmas self-delete client (POST /account/delete). When present,
-   * Account shows Delete account. Existing users are unchanged until they confirm.
+   * Cosmas self-delete client (DELETE /v1/me/account). When present, Account
+   * shows Delete account and does not offer Cancel Scribe access beside it.
+   * Existing users are unchanged until they open Account and confirm Delete.
    */
   readonly accountSelfDelete?: AccountSelfDeleteClient;
   /** Returns the current authorized provider workflow, never credentials. */
@@ -46,8 +56,15 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   let disposed = false, busy = false, stopUnconfirmed = false, accessClosed = false, logoutPending = false;
   let operations = 0, signingOut = false;
   let closeDeletionDialog: (() => void) | undefined;
+  let accountDeletedNotice = false;
   let recorderStopUnconfirmed = false;
+  let cancelDialog: (() => void) | undefined;
+  let cancellationReceipt: CancellationReceipt | null = null, cancellationCheckedRevision: string | null = null;
+  let cancellationCheck: AbortController | undefined;
   let notice = "", polling: Promise<void> | undefined, disposal: Promise<void> | undefined;
+  let setup: ProviderSetup | undefined, setupAbort: AbortController | undefined;
+  let activationAttemptedRevision: string | null = null, practiceHandoffRevision: string | null = null;
+  let practiceReturned = false;
   root.classList.add("provider-application");
   root.innerHTML = `<header class="provider-session-header"><div class="provider-brand"><span class="provider-brand-icon" aria-hidden="true">${scribeIcon}</span><strong>Scribe</strong></div><div data-session-actions></div></header>
     <section class="provider-session-status" aria-live="polite"><h1 data-session-title></h1><p data-session-message></p>
@@ -75,17 +92,29 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     if (disposed) return;
     const phase = state?.phase ?? (notice ? "unavailable" : "loading");
     const shown: Record<ProviderSessionPhase, [string, string]> = {
-      disabled: ["Setup required", "This installation has not been connected to your practice."],
+      disabled: ["Setup required", "This installation is not ready for sign-in. Contact support if you need help."],
       loading: ["Opening Scribe", "Checking your secure session…"],
       signedOut: ["Be present. Leave with your note.", "Scribe records with consent and helps you prepare a visit note for review in the CosmaNeura dashboard."],
       signingIn: ["Complete sign-in", "Finish signing in using the secure sign-in window."],
       ready: [scope?.unmount && !scope.abort.signal.aborted ? "" : "Your workspace", ""],
       signOutPending: ["Sign-out needs attention", "Your workspace is closed. Retry sign-out to finish."],
-      unavailable: ["Session unavailable", "Your workspace is closed. Check your session or sign out to sign in again."],
+      unavailable: ["Session unavailable", "Scribe could not open your session. Try again, or quit and reopen Scribe."],
     };
     [title.textContent, message.textContent] = shown[phase];
-    if (notice) message.textContent = notice;
-    actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><div class="provider-account-panel" role="group" aria-label="Account options">${button("sign-out", "Sign out")}${host.accountSelfDelete ? button("delete-account", "Delete account") : ""}<p data-provider-name></p><a href="mailto:dev@cosmaneura.com">Get help</a></div></details>`
+    if (notice) {
+      if (state === null) title.textContent = "Session unavailable";
+      message.textContent = notice;
+    } else if (accountDeletedNotice && phase === "signedOut") {
+      title.textContent = "Account deleted";
+      message.textContent = "Your Cosmaneura account has been deleted. You are signed out.";
+    }
+    // Delete account is the Apple 5.1.1(v) path. When it is wired, do not also
+    // offer Cancel Scribe access in Account (one clear destructive path).
+    // Existing cancellation receipts still recover via status checks below.
+    const accountActions = host.accountSelfDelete
+      ? `${button("sign-out", "Sign out")}${button("delete-account", "Delete account")}<p data-provider-name></p>`
+      : `${button("sign-out", "Sign out")}<p data-provider-name></p>${host.cancellation ? button("cancel-scribe", cancellationReceipt ? "Cancellation status" : "Cancel Scribe access") : ""}`;
+    actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><div class="provider-account-panel" role="group" aria-label="Account options">${accountActions}<a href="mailto:dev@cosmaneura.com">Get help</a></div></details>`
       : phase === "signingIn" ? button("sign-out", "Sign out") : "";
     const providerName = actions.querySelector<HTMLElement>("[data-provider-name]"); if (providerName) providerName.textContent = state?.providerDisplayName ?? "Your account";
     recovery.innerHTML = "";
@@ -100,16 +129,37 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         message.textContent += " Sign in with the same account to finish closing your workspace.";
         recovery.innerHTML += button("sign-in-stop", recorderStopUnconfirmed ? "Sign in to finish stopping" : "Sign in to finish closing");
       }
+    } else if (phase === "ready" && cancellationReceipt) {
+      title.textContent = "Scribe access is read-only";
+      message.textContent = cancellationReceipt.phase === "read-only-export"
+        ? `You can no longer start visits or create new notes in Scribe. Your read-only/export window ends ${new Date(cancellationReceipt.export_until).toLocaleDateString()}. Your Cosmaneura sign-in stays active.`
+        : "Your export window has ended. Starting visits and creating new notes remain disabled. Record destruction and its certificate have not been completed.";
+      recovery.innerHTML = (cancellationReceipt.phase === "read-only-export" && host.openDashboard ? button("dashboard", "Open dashboard to read or export") : "")
+        + button("check-cancellation", "Refresh access status");
     } else if (logoutPending) {
       title.textContent = "Sign-out needs attention";
       message.textContent = "Your workspace is closed. Retry sign-out to finish.";
       recovery.innerHTML = button("sign-out", "Retry sign out");
+    } else if (phase === "ready" && setup) {
+      title.textContent = setup === "practice" ? "Complete practice setup" : "Finish Scribe activation";
+      if (!notice) message.textContent = setup === "practice"
+        ? "Use the same account to join or create your practice and complete setup. Recording stays closed until access is confirmed."
+        : "Your practice is ready. Complete activation to open Scribe. Recording stays closed until access is confirmed.";
+      recovery.innerHTML = setup === "practice"
+        ? (host.openPracticeSetup ? button("practice-setup", "Complete practice setup") : "") + button("open", "Check access")
+        : (host.activateScribe ? button("activate", "Retry activation") : button("open", "Check access"));
     } else if (phase === "signedOut") recovery.innerHTML = button("sign-in", "Sign in");
     else if (phase === "signOutPending") recovery.innerHTML = button("sign-out", "Retry sign out");
-    else if (phase === "unavailable") recovery.innerHTML = button("check", "Check session") + button("sign-out", "Sign out");
-    else if (phase === "disabled") recovery.innerHTML = button("check", "Check session");
+    else if (phase === "unavailable" && state?.phase === "unavailable") {
+      recovery.innerHTML = button("check", "Try again") + button("sign-in", "Sign in") + button("sign-out", "Sign out");
+    } else if (phase === "unavailable") recovery.innerHTML = button("check", "Try again");
+    else if (phase === "disabled") recovery.innerHTML = button("check", "Try again");
     else if (phase === "ready" && (!scope || scope.abort.signal.aborted)) {
-      recovery.innerHTML = button("open", "Open workspace");
+      if (host.cancellation && cancellationCheckedRevision !== state?.revision) {
+        title.textContent = "Check Scribe access";
+        if (!notice) message.textContent = "Checking whether recording or read-only access is available for your account.";
+        recovery.innerHTML = button("open", "Check access");
+      } else recovery.innerHTML = button("open", "Open workspace");
     }
     root.setAttribute("aria-busy", String(busy));
   };
@@ -141,7 +191,9 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     const valid = value && ["disabled", "loading", "signedOut", "signingIn", "ready", "signOutPending", "unavailable"].includes(value.phase)
       && isUuid(value.revision);
     if (!valid) {
-      closeDeletionDialog?.(); closeDeletionDialog = undefined;
+      // Keep the post-delete done dialog while local sign-out is finishing.
+      if (!logoutPending) { closeDeletionDialog?.(); closeDeletionDialog = undefined; }
+      setupAbort?.abort(); setup = undefined; practiceHandoffRevision = null;
       state = null; accessClosed = true; notice = "Your secure session could not be verified.";
       invalidate(); closeInBackground(); render(); return;
     }
@@ -149,11 +201,17 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     // Native polling still observes revocation, but an identical observation
     // must not replace focused controls or retry a previously failed close.
     if (!changed) return;
-    closeDeletionDialog?.(); closeDeletionDialog = undefined;
+    if (!logoutPending) { closeDeletionDialog?.(); closeDeletionDialog = undefined; }
+    setupAbort?.abort(); setupAbort = undefined; setup = undefined;
+    activationAttemptedRevision = null; practiceHandoffRevision = null; practiceReturned = false;
+    cancelDialog?.(); cancelDialog = undefined;
+    cancellationCheck?.abort(); cancellationCheck = undefined;
+    cancellationCheckedRevision = null; cancellationReceipt = null;
     state = { phase: value.phase, revision: value.revision,
       ...(typeof value.providerDisplayName === "string" && value.providerDisplayName.length <= 200 ? { providerDisplayName: value.providerDisplayName } : {}) };
     if (value.phase === "signedOut") logoutPending = false;
     if (value.phase === "signOutPending") logoutPending = true;
+    if (value.phase !== "signedOut") accountDeletedNotice = false;
     if (scope && (value.phase !== "ready" || value.revision !== scope.revision)) {
       accessClosed = true; invalidate(); closeInBackground();
     }
@@ -172,6 +230,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
       } catch {
         if (!disposed && before === observations) {
           closeDeletionDialog?.(); closeDeletionDialog = undefined;
+          setupAbort?.abort(); setup = undefined; practiceHandoffRevision = null;
           state = null;
           accessClosed = true; invalidate(); closeInBackground();
           notice = "Your secure session could not be checked. Your workspace is closed.";
@@ -180,10 +239,41 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
       } finally { polling = undefined; }
     })();
   };
+  const checkCancellation = async (): Promise<boolean> => {
+    if (!host.cancellation) return true;
+    const expected = state;
+    if (expected?.phase !== "ready") return false;
+    cancellationCheck?.abort();
+    const abort = new AbortController(); cancellationCheck = abort;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const receipt = await Promise.race([host.cancellation.status(abort.signal), new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => { abort.abort(); reject(new Error("scribe_cancellation_status_timeout")); }, 5000);
+      })]);
+      if (disposed || abort.signal.aborted || state?.phase !== "ready" || state.revision !== expected.revision) return false;
+      if (cancellationReceipt && receipt === null) throw new Error("scribe_cancellation_receipt_unconfirmed");
+      cancellationReceipt = receipt; cancellationCheckedRevision = expected.revision;
+      if (receipt) { accessClosed = true; recordingOpenPending = false; await close(); render(); return false; }
+      return true;
+    } catch {
+      if (!disposed && state?.phase === "ready" && state.revision === expected.revision) {
+        accessClosed = true; cancellationCheckedRevision = null;
+        notice = "Scribe access could not be checked. Recording stays closed. Retry the access check or sign out."; render();
+      }
+      return false;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      abort.abort(); if (cancellationCheck === abort) cancellationCheck = undefined;
+    }
+  };
   const open = async (): Promise<void> => {
     await close();
     await read();
     if (disposed || !listener || logoutPending || state?.phase !== "ready") return;
+    notice = "Checking Scribe access…"; render();
+    if (!await checkCancellation()) return;
+    if (disposed || logoutPending || state?.phase !== "ready") return;
+    setup = undefined;
     const owned: Scope = { abort: new AbortController(), revision: state.revision, connecting: Promise.resolve() };
     scope = owned; accessClosed = false;
     notice = "Connecting your workspace…"; render();
@@ -200,13 +290,35 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         }, { once: true });
         owned.unmount = mountProviderWorkspace(workflow, connection.workspace);
         notice = "";
-      } catch {
+      } catch (error) {
+        if (disposed || owned.abort.signal.aborted || state?.phase !== "ready" || state.revision !== owned.revision) return;
         owned.abort.abort(); accessClosed = true;
-        notice = "Your workspace could not be opened. Check your connection and try again.";
+        if (error instanceof ProviderSetupRequired) {
+          setup = error.setup; notice = ""; recordingOpenPending = false;
+        } else notice = "Your workspace could not be opened. Check your connection and try again.";
       }
     });
     await owned.connecting;
     if (owned.abort.signal.aborted) await close();
+    if (!disposed && !logoutPending && sessionState()?.phase === "ready" && sessionState()?.revision === owned.revision
+      && setup === "activation" && host.activateScribe && activationAttemptedRevision !== owned.revision) {
+      activationAttemptedRevision = owned.revision;
+      const abort = new AbortController(); setupAbort?.abort(); setupAbort = abort;
+      notice = "Activating Scribe… Recording stays closed while access is checked."; render();
+      try {
+        await host.activateScribe(abort.signal, owned.revision);
+        await read();
+        if (disposed || abort.signal.aborted || logoutPending || sessionState()?.phase !== "ready"
+          || sessionState()?.revision !== owned.revision) return;
+        setup = undefined;
+        await open(); // A fresh authorized connection is required after the write.
+      } catch (error) {
+        if (!disposed && !abort.signal.aborted && sessionState()?.phase === "ready" && sessionState()?.revision === owned.revision) {
+          if (error instanceof ProviderSetupRequired && error.setup === "practice") { setup = "practice"; notice = ""; }
+          else notice = "Scribe activation could not be confirmed. Recording stays closed. Retry activation or sign out.";
+        }
+      } finally { abort.abort(); if (setupAbort === abort) setupAbort = undefined; }
+    }
     render();
     flushRecordingOpen();
   };
@@ -217,6 +329,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     notice = ""; render();
     try {
       if (action === "sign-out") {
+        setupAbort?.abort(); practiceHandoffRevision = null;
         logoutPending = true;
         accessClosed = true; invalidate();
         // Persist native logout intent even if the recorder's stop fails. A
@@ -250,7 +363,32 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         if (before === observations) accept(value);
         await read();
         if (state?.phase === "ready") await open();
-      } else if (action === "open") await open();
+      } else if (action === "cancel-scribe") {
+        if (state?.phase !== "ready" || !host.cancellation) return;
+        cancelDialog?.();
+        cancelDialog = openCancellationDialog(root, host.cancellation, close, receipt => {
+          accessClosed = true; cancellationReceipt = receipt; cancellationCheckedRevision = state?.revision ?? null;
+          recordingOpenPending = false;
+          notice = receipt.phase === "read-only-export"
+            ? "Scribe cancellation is recorded. You can no longer start visits or create new notes. Existing records remain available during your read-only/export window."
+            : "Your export window has ended. Starting visits and creating new notes remain disabled. Record destruction has not been completed.";
+          render();
+        }, host.openDashboard);
+      } else if (action === "dashboard") {
+        if (state?.phase !== "ready" || cancellationReceipt?.phase !== "read-only-export" || !host.openDashboard) return;
+        await host.openDashboard(new AbortController().signal);
+      } else if (action === "practice-setup") {
+        if (state?.phase !== "ready" || setup !== "practice" || !host.openPracticeSetup || cancellationReceipt || stopUnconfirmed) return;
+        const revision = state.revision, abort = new AbortController(); setupAbort = abort;
+        practiceHandoffRevision = revision; practiceReturned = false;
+        try { await host.openPracticeSetup(abort.signal); }
+        catch (error) { if (practiceHandoffRevision === revision) practiceHandoffRevision = null; throw error; }
+        finally { if (setupAbort === abort) setupAbort = undefined; }
+      } else if (action === "activate") {
+        if (setup !== "activation" || cancellationReceipt || stopUnconfirmed) return;
+        activationAttemptedRevision = null; await open();
+      } else if (action === "check-cancellation") { await checkCancellation(); }
+      else if (action === "open") await open();
       else if (action === "check") await read();
     } catch {
       if (!stopUnconfirmed) notice = "This action could not be confirmed. Check your session and try again.";
@@ -258,6 +396,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
       operations -= 1; busy = operations > 0;
       if (action === "sign-out") signingOut = false;
       render();
+      recheckPractice();
     }
   };
   const clicked = (event: Event): void => {
@@ -285,7 +424,9 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
           if (results[0].status === "fulfilled") {
             if (before === observations) accept(results[0].value);
           } else throw new Error("account_self_delete_local_clear_failed");
+          accountDeletedNotice = true;
           await read();
+          render();
         },
       });
       return;
@@ -311,7 +452,17 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     menu.open = false;
     menu.querySelector("summary")?.focus();
   };
-  const resume = (): void => { if (document.visibilityState === "visible") void read(); };
+  const recheckPractice = (): void => {
+    if (!disposed && !busy && !logoutPending && !stopUnconfirmed && !cancellationReceipt && setup === "practice"
+      && practiceReturned && practiceHandoffRevision === sessionState()?.revision && sessionState()?.phase === "ready") {
+      practiceHandoffRevision = null; practiceReturned = false; void perform("open");
+    }
+  };
+  const resume = (): void => {
+    if (document.visibilityState !== "visible") return;
+    if (practiceHandoffRevision !== null) practiceReturned = true;
+    void read().then(recheckPractice);
+  };
   const sessionState = (): ProviderSessionState | null => state;
   root.addEventListener("click", clicked);
   root.addEventListener("toggle", accountToggled, true);
@@ -345,8 +496,9 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   })();
   return (): Promise<void> => {
     if (disposal) return disposal;
-    disposed = true; invalidate(); clearInterval(timer); headerObserver.disconnect();
+    disposed = true; setupAbort?.abort(); cancellationCheck?.abort(); cancelDialog?.();
     closeDeletionDialog?.(); closeDeletionDialog = undefined;
+    invalidate(); clearInterval(timer); headerObserver.disconnect();
     root.removeEventListener("click", clicked);
     root.removeEventListener("toggle", accountToggled, true);
     document.removeEventListener("scroll", accountScrolled, true);

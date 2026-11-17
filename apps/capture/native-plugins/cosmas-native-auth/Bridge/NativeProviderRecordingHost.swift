@@ -60,6 +60,8 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   private let makeSource: SourceFactory
   private let makeRun: RunFactory
   private let now: @MainActor () -> Date
+  private let deferInitialSourcePreparation: Bool
+  private var freshInitialStart = false
   private var cipher: NativeRecordingEncryption?
   private var source: (any NativeProviderMicrophoneSource)?
   private var run: (any NativeProviderRecordingInterval)?
@@ -91,7 +93,8 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     requireCurrent: @escaping @MainActor () throws -> Void,
     recoverSources: @escaping @MainActor () async throws -> Void,
     makeSource: @escaping SourceFactory, makeRun: @escaping RunFactory,
-    now: @escaping @MainActor () -> Date = { Date() }
+    now: @escaping @MainActor () -> Date = { Date() },
+    deferInitialSourcePreparation: Bool = false
   ) {
     self.scope = scope
     self.service = service
@@ -102,6 +105,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     self.makeSource = makeSource
     self.makeRun = makeRun
     self.now = now
+    self.deferInitialSourcePreparation = deferInitialSourcePreparation
     #if os(iOS)
       if let selected = AppleMicrophoneCheck.shared.selectedPreference {
         input.select(selected.0, uid: selected.1)
@@ -132,9 +136,9 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
       scope: scope, recoveryScope: recoveryScope, service: service, records: records)
   }
 
-  /// Opens authorized key custody. An unused visit stays in the existing
-  /// opening state until unissued source metadata is prepared; permission and
-  /// source authorization remain exclusively in the deliberate start path.
+  /// Opens authorized key/window custody. Only a deliberate first Start may
+  /// defer source preparation, and only with native proof of a newly created
+  /// flow. Idle prewarming and recovered custody keep their existing path.
   func open() async throws {
     guard !retired else { throw ProviderNativeError.unavailable }
     if let opening { return try await opening.value }
@@ -162,6 +166,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
           return
         }
         let freshFlow = try await flow.takeFreshInitialWindowProof()
+        freshInitialStart = deferInitialSourcePreparation && freshFlow != nil
         try await initialWindow?.initialize(freshFlow: freshFlow)
         cipher = try await binding.open()
         try current(ticket)
@@ -205,7 +210,8 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
       saved.committedPlaintextBytes < NativeRecordingFlowOwner.maximumPlaintextBytes
     else { throw ProviderNativeError.unavailable }
     try current(generation)
-    if phase == .ready, saved.committedChunks == 0, saved.committedPlaintextBytes == 0 {
+    if phase == .ready, saved.committedChunks == 0, saved.committedPlaintextBytes == 0,
+      !(freshInitialStart && source == nil) {
       guard let ready = source as? any NativeProviderReadyMicrophoneSource,
         let expiry = ready.preparationExpiresAt, expiry > now() else {
         readySourceRefresh?.cancel()
@@ -260,6 +266,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
         let checkpointID = UUID()
         self.saved = try await flow.beginSource(checkpoint: checkpointID)
         sourceCheckpoint = checkpointID
+        freshInitialStart = false
         try current(ticket)
         // Retain the original source proof even if graph construction fails.
         // No discarded constructor error may orphan stop-only custody.
@@ -514,7 +521,9 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
           checkpoint: checkpoint, ticket: ticket, reportStartup: false)
         if phase == .opening, checkpoint.committedChunks == 0,
           checkpoint.committedPlaintextBytes == 0 {
-          try await prepareReadySource(lease: lease, batch: batch, ticket: ticket)
+          if !freshInitialStart {
+            try await prepareReadySource(lease: lease, batch: batch, ticket: ticket)
+          }
           try current(ticket)
           phase = .ready
         }

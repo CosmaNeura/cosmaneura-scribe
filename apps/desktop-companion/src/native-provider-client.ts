@@ -16,6 +16,11 @@ interface Pending {
   cleanup(): void;
 }
 
+/** Local queue capacity, not a native response or an authentication failure. */
+class NativeProviderQueuePressure extends Error {
+  constructor() { super("provider_native_unavailable"); }
+}
+
 /** Fixed, verified native helper. No token or endpoint enters the renderer API. */
 export class NativeProviderClient implements NativeProviderSession {
   private readonly child: Child;
@@ -65,7 +70,7 @@ export class NativeProviderClient implements NativeProviderSession {
     });
   }
 
-  static async open(options: { helperPath: string; helperSha256: string; diagnostics?: RuntimeDiagnostic }): Promise<NativeProviderClient> {
+  static async open(options: { helperPath: string; helperSha256: string; helperHashAlgorithm?: "macho-store-v1"; diagnostics?: RuntimeDiagnostic }): Promise<NativeProviderClient> {
     requireMain(); await verifyNativeHelper(options);
     const owner = new NativeProviderClient(options.helperPath, options.diagnostics ?? NO_DIAGNOSTICS);
     try {
@@ -73,7 +78,11 @@ export class NativeProviderClient implements NativeProviderSession {
       owner.poll = setInterval(() => {
         if (owner.checking || owner.signal.aborted) return;
         owner.checking = true;
-        void owner.getState().catch(() => owner.fail()).finally(() => { owner.checking = false; });
+        void owner.getState().catch(error => {
+          // Existing calls keep their deadlines. Retry this observation next
+          // tick; a local capacity refusal says nothing about native auth.
+          if (!(error instanceof NativeProviderQueuePressure)) owner.fail();
+        }).finally(() => { owner.checking = false; });
       }, 1_000);
       return owner;
     } catch { await owner.dispose(); throw unavailable(); }
@@ -83,16 +92,39 @@ export class NativeProviderClient implements NativeProviderSession {
   async getState(): Promise<ProviderSessionState> { return this.readState("getState", 35_000); }
   async signIn(): Promise<ProviderSessionState> { return this.readState("signIn", 185_000); }
   async signOut(): Promise<ProviderSessionState> { return this.readState("signOut", 35_000); }
+  /** Cosmas DELETE /v1/me/account for the signed-in caller. Token stays native. */
+  async deleteAccount(request: { confirm: "DELETE" }): Promise<{
+    readonly unauthorized?: true;
+    readonly status?: "deleted" | "already_deleted";
+    readonly practiceLeftOwnerless?: boolean;
+    readonly clerkIdentityRemoved?: boolean;
+  }> {
+    requireMain();
+    if (request.confirm !== "DELETE") throw unavailable();
+    const reply = object(await this.request("deleteAccount", { confirm: "DELETE" }, undefined, 35_000));
+    if (reply.unauthorized === true) return { unauthorized: true };
+    if ((reply.status === "deleted" || reply.status === "already_deleted")
+      && typeof reply.practiceLeftOwnerless === "boolean"
+      && typeof reply.clerkIdentityRemoved === "boolean") {
+      return {
+        status: reply.status,
+        practiceLeftOwnerless: reply.practiceLeftOwnerless,
+        clerkIdentityRemoved: reply.clerkIdentityRemoved,
+      };
+    }
+    throw unavailable();
+  }
   addListener(_event: "authStateChanged", listener: (state: ProviderSessionState) => void): Promise<{ remove(): Promise<void> }> {
     this.listeners.add(listener);
     return Promise.resolve({ remove: () => { this.listeners.delete(listener); return Promise.resolve(); } });
   }
 
-  request(method: "getState" | "signIn" | "signOut" | "providerRequest" | "providerInitialWindow" | "providerInitialWindowAbandon" | "sourcePrepare" | "sourcePrepareForStart"
+  request(method: "getState" | "signIn" | "signOut" | "deleteAccount" | "providerRequest" | "providerInitialWindow" | "providerInitialWindowAbandon" | "sourcePrepare" | "sourcePrepareForStart"
     | "sourceAuthorize" | "sourceRelease" | "sourceStopped" | "sourcePreparationRelease" | "prepareProviderSignIn" | "abandonProviderSignIn", payload: Record<string, unknown>, signal?: AbortSignal,
     timeout = 35_000): Promise<unknown> {
     requireMain();
-    if (this.signal.aborted || signal?.aborted || this.pending.size >= 8) return Promise.reject(unavailable());
+    if (this.signal.aborted || signal?.aborted) return Promise.reject(unavailable());
+    if (this.pending.size >= 8) return Promise.reject(new NativeProviderQueuePressure());
     const id = crypto.randomUUID(), bytes = Buffer.from(JSON.stringify({ id, method, payload }) + "\n");
     if (bytes.length > MAX_REQUEST_FRAME) { bytes.fill(0); return Promise.reject(unavailable()); }
     return new Promise((resolve, reject) => {

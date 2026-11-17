@@ -82,7 +82,8 @@ for (const completed of [false, true]) {
     if (completed) {
       await page.getByRole("button", { name: "Save and review", exact: true }).click();
       await expect(page.getByRole("heading", { name: "Saved for review", exact: true })).toBeVisible();
-      expect(await page.evaluate(() => window.noteLab.dashboardOpens)).toBe(1);
+      // Save and review no longer opens the dashboard; that stays an explicit action.
+      expect(await page.evaluate(() => window.noteLab.dashboardOpens)).toBe(0);
     }
     const refresh = page.getByRole("button", { name: "Refresh current visit", exact: true });
     await expect(refresh).toBeVisible(); await expect(refresh).toBeEnabled(); await refresh.click();

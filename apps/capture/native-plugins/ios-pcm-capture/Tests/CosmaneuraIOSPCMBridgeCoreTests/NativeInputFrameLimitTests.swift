@@ -45,7 +45,7 @@ private final class InjectedAudioDriver: PCMAudioDriving, @unchecked Sendable {
     let current = try #require(lock.withLock { callbacks })
     let receipt = current.frames(frames)
     #expect(receipt.accepted)
-    await receipt.waitUntilConsumed()
+    try await PCMTestWait.until("native input frame consumed") { receipt.isConsumed }
   }
 
   func freezeInput(sessionID: UInt64) async throws { lock.withLock { callbacks = nil } }
@@ -87,7 +87,7 @@ private struct CounterSink: PCMEmissionSink {
   func terminated(_ code: PCMTerminationCode) {}
 }
 
-@Suite(.serialized)
+@Suite(.serialized, .timeLimit(.minutes(1)))
 struct NativeInputFrameLimitTests {
   @Test func acceptedDurationAdvancesBeforeChunkCommitAndIncludesOnlyRealResampledTail() async throws {
     let encounter = ConsentedSyntheticEncounter(), audio = InjectedAudioDriver()

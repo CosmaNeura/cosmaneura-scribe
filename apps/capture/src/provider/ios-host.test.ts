@@ -106,6 +106,29 @@ const preparation = { mode: "configured_core" as const, schemaVersion: 2 as cons
   leaseIdempotencyKey: null, leaseRequest: null };
 
 describe("native provider host composition", () => {
+  it("renders the freshly authorized startup catalog without a second request, then refreshes from Core", async () => {
+    const f = connection(), read = vi.fn(async () => [{ ...f.mount.encounter, title: "Fresh server title" }]);
+    const host = createProviderIOSHost({ ...f.backend, listEncounters: read }, undefined, [f.mount.encounter]);
+    expect(await host.listEncounters(f.abort.signal)).toEqual([f.mount.encounter]);
+    expect(read).not.toHaveBeenCalled();
+    expect((await host.listEncounters(f.abort.signal))[0]?.title).toBe("Fresh server title");
+    expect(read).toHaveBeenCalledOnce();
+  });
+  it("refreshes an initial catalog if workspace mounting was delayed", async () => {
+    const f = connection(), read = vi.fn(f.backend.listEncounters);
+    const now = vi.spyOn(performance, "now").mockReturnValue(100);
+    const host = createProviderIOSHost({ ...f.backend, listEncounters: read }, undefined, [f.mount.encounter]);
+    now.mockReturnValue(5100);
+    await host.listEncounters(f.abort.signal);
+    expect(read).toHaveBeenCalledOnce();
+  });
+  it.each(["connection", "navigation"])("never exposes a startup catalog after %s cancellation", async kind => {
+    const f = connection(), navigation = new AbortController(), read = vi.fn(f.backend.listEncounters);
+    const host = createProviderIOSHost({ ...f.backend, listEncounters: read }, undefined, [f.mount.encounter]);
+    (kind === "connection" ? f.abort : navigation).abort();
+    await expect(host.listEncounters(navigation.signal)).rejects.toThrow();
+    expect(read).not.toHaveBeenCalled();
+  });
   it("forwards saved playback through the exact mounted surface and refuses it after teardown", async () => {
     const play = vi.fn<NonNullable<AuthorizedProviderIOSMount["playPassage"]>>(async () => null), g = connection({ playPassage: play });
     const encounter = await g.openAny(), passage = crypto.randomUUID(), signal = new AbortController().signal;
@@ -472,14 +495,18 @@ describe("native provider selection and ownership", () => {
     await resources.deactivate();
   });
 
-  it("selects the native controller for a new visit without creating a legacy source or scanning its audio", async () => {
+  it.each([false, true])("opens native custody without starting audio (explicit first Start=%s)", async initialStart => {
     const nativeRecorder = recordingFixture(session), service = connection({ nativeRecording: nativeRecorder.port });
-    const encounter = await service.openAny(), resources = await encounter.recorder(session, service.abort.signal);
+    const opened = vi.spyOn(nativeRecorder.port, "open");
+    const encounter = await service.openAny(), resources = await encounter.recorder(session, service.abort.signal,
+      ...(initialStart ? [{ initialStart: true as const }] : []));
     if (!("controller" in resources)) throw new Error("Expected native recorder");
     expect(resources.captureMode).toBe("native_microphone");
     expect(sourceFactory.createProviderIOSCaptureSource).not.toHaveBeenCalled();
     expect(native.list).not.toHaveBeenCalled();
     expect(nativeRecorder.commands).toHaveLength(0);
+    expect(opened.mock.calls[0]).toHaveLength(initialStart ? 3 : 2);
+    if (initialStart) expect(opened).toHaveBeenCalledWith(session, expect.any(String), { initialStart: true });
     await resources.deactivate();
   });
 

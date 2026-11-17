@@ -36,7 +36,7 @@ for (const width of [1280, 390]) {
       expect(await page.evaluate(() => window.startupLab.startCalls)).toBe(1);
       await expect(progress.getByRole("status")).toHaveText("Start canceledRecording has not started. Start when ready.");
       await expect(controls.getByRole("button", { name: "Start recording", exact: true })).toBeInViewport();
-      await expect(controls.getByRole("button", { name: "Finish recording", exact: true })).toBeHidden();
+      await expect(controls.getByRole("button", { name: "Finish visit", exact: true })).toBeHidden();
       await page.screenshot({ path: testInfo.outputPath("native-start-cancelled.png"), fullPage: true });
     });
     await test.step("resume", async () => {
@@ -50,12 +50,12 @@ for (const width of [1280, 390]) {
         await expect(controls.getByRole("heading", { name: "Checking microphone", exact: true })).toBeVisible();
         await expect(controls.getByText("Waiting for microphone signal. Say a few words and watch the bars. Audio input is not confirmed yet.", { exact: true })).toBeVisible();
         await expect(progress.locator('[role="status"]')).toBeHidden();
-        await expect(controls.getByRole("button", { name: "Finish recording", exact: true })).toBeInViewport();
+        await expect(controls.getByRole("button", { name: "Finish visit", exact: true })).toBeInViewport();
         await page.screenshot({ path: testInfo.outputPath("native-armed-no-input.png"), fullPage: true });
       }
       await page.getByRole("button", { name: "Pause", exact: true }).click();
       await expect(progress.getByRole("status")).toHaveText("PausedNo audio is being recorded.");
-      await expect(controls.getByRole("button", { name: "Finish recording", exact: true })).toBeInViewport();
+      await expect(controls.getByRole("button", { name: "Finish visit", exact: true })).toBeInViewport();
       await page.screenshot({ path: testInfo.outputPath("native-paused.png"), fullPage: true });
     });
     expect(await page.evaluate(() => globalThis.__startupMediaCalls)).toBe(0);

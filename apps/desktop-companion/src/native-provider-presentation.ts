@@ -19,6 +19,7 @@ export interface NativePresentationOptions {
   readonly enabled?: boolean;
   readonly helperPath: string;
   readonly helperSha256: string;
+  readonly helperHashAlgorithm?: "macho-store-v1";
   readonly isSessionActive: () => boolean;
   /** Exact main-owned CGWindowID; never a renderer visibility assertion. */
   readonly primaryWindowId?: () => number | null;

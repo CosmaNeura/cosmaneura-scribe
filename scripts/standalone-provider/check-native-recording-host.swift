@@ -41,6 +41,11 @@ import Security
     var failSeal = false, failInventory = false, loseSealReply = false
     var failCheckpoint = false, failPassage = false
     var passageGate: PassageGate?
+    func hasSourceCheckpoint() throws -> Bool {
+      try rows.filter { $0.key.hasPrefix("scribe-native-flow:") }.values.contains {
+        (try JSONSerialization.jsonObject(with: $0.data) as? [String: Any])?["sourceCheckpoint"] is String
+      }
+    }
     func read(key: String) throws -> NativeRecordingStoredRecord {
       guard let row = rows[key] else { throw NativeRecordingFailure.storageUnavailable }
       return row
@@ -305,7 +310,7 @@ import Security
     }
     func host(
       service override: (any NativeProviderRecordingHost.Service)? = nil,
-      now: @escaping @MainActor () -> Date = { Date() }
+      now: @escaping @MainActor () -> Date = { Date() }, initialStart: Bool = false
     ) -> NativeProviderRecordingHost {
       NativeProviderRecordingHost(
         scope: scope, recoveryScope: recovery, service: override ?? service, records: records,
@@ -336,12 +341,95 @@ import Security
             records: self.records, prior: prior, batch: batch)
           self.runs.append(run)
           return run
-        }, now: now)
+        }, now: now, deferInitialSourcePreparation: initialStart)
     }
   }
 
   static func run() async throws -> Int {
     var checks = 0
+    let microphoneCases: [(String?, String?, Bool)] = [
+      ("com.cosmaneura.scribe.beta", "core-staging-https-v1", true),
+      ("com.cosmaneura.scribe", "core-staging-https-v1", false),
+      ("com.cosmaneura.scribe.beta", "core-production-https-v1", false),
+      (nil, "core-staging-https-v1", false), ("com.cosmaneura.scribe.beta", nil, false),
+    ]
+    for (bundle, profile, allowed) in microphoneCases {
+      try check(NativeProviderRecordingSelection.permitsEarlyMicrophone(
+        bundleIdentifier: bundle, receiverProfile: profile) == allowed)
+      checks += 1
+    }
+    do {
+      let f = try Fixture(), host = f.host(initialStart: true)
+      try await host.open()
+      try check(host.phase == .ready && f.sources.isEmpty && f.runs.isEmpty)
+      let issues = await f.service.issues, reservations = await f.service.reservations
+      try check(issues == 1 && reservations == 1)
+      try await host.start()
+      try check(f.sources.count == 1 && f.sources[0].preparations == 0 && f.sources[0].issued == 1)
+      try check(try f.records.hasSourceCheckpoint())
+      try await host.pause()
+      try await host.start()
+      try check(f.sources.count == 2 && f.runs[1].first > 0)
+      try await host.close(); checks += 5
+    }
+    do {
+      let f = try Fixture(), host = f.host(initialStart: true)
+      try await host.open(); try await host.close()
+      try check(f.sources.isEmpty && f.runs.isEmpty)
+      // Renderer intent cannot claim a fresh flow after reopen, even without PCM.
+      let reopened = f.host(initialStart: true)
+      try await reopened.open()
+      try check(f.sources.count == 1 && f.sources[0].preparations == 1)
+      try await reopened.close(); checks += 2
+    }
+    for fault in ["authority", "checkpoint", "constructor"] {
+      let f = try Fixture(), host = f.host(initialStart: true)
+      try await host.open()
+      f.deny = fault == "authority"
+      f.records.failCheckpoint = fault == "checkpoint"
+      f.failFactory = fault == "constructor"
+      f.failSourceStop = fault == "constructor"
+      try await rejects { try await host.start() }
+      try check(f.runs.isEmpty)
+      if fault == "constructor" {
+        let persisted = try f.records.hasSourceCheckpoint()
+        try check(f.sources.count == 1 && f.sources[0].issued == 0 && persisted)
+        try check(host.phase == .stopPending && !f.sources[0].confirmed)
+        f.sources[0].failStop = false
+      } else { try check(f.sources.isEmpty) }
+      f.deny = false; f.records.failCheckpoint = false
+      try await host.close(); checks += 2
+    }
+    do {
+      let f = try Fixture()
+      var now = Date()
+      let host = f.host(now: { now }, initialStart: true)
+      await f.service.configure(now: now)
+      try await host.open()
+      now = now.addingTimeInterval(901)
+      await f.service.configure(now: now)
+      try await host.start()
+      try check(await f.service.renewals == 1)
+      try check(f.sources.count == 1 && f.sources[0].recordingPreparation.leaseGeneration == 2)
+      try check(f.sources[0].preparations == 0 && host.phase == .recording)
+      try await host.close(); checks += 3
+    }
+    do {
+      let f = try Fixture(), host = f.host(initialStart: true)
+      await f.service.configure(hold: true)
+      let opening = Task { try await host.open() }
+      try await wait { await f.service.pending != nil }
+      let closing = Task { try await host.close() }
+      try await wait { host.requiresReopen }
+      await f.service.release()
+      try await rejects { try await opening.value }
+      try await closing.value
+      try check(f.sources.isEmpty && f.runs.isEmpty && host.phase == .closed)
+      let reopened = f.host(initialStart: true)
+      try await reopened.open()
+      try check(f.sources.count == 1 && f.sources[0].preparations == 1)
+      try await reopened.close(); checks += 2
+    }
     do {
       let f = try Fixture(), host = f.host()
       try await host.open()
@@ -1052,6 +1140,14 @@ import Security
         try await rejects { _ = try NativeProviderRecordingSelection(missing) }
       }
       var extra = raw
+      try check(try NativeProviderRecordingSelection(raw).initialStart == false)
+      extra["initialStart"] = true
+      try check(try NativeProviderRecordingSelection(extra).initialStart)
+      for bad in [false, 1, "true", NSNull()] as [Any] {
+        extra["initialStart"] = bad
+        try await rejects { _ = try NativeProviderRecordingSelection(extra) }
+      }
+      extra = raw
       extra["audio"] = Data()
       try await rejects { _ = try NativeProviderRecordingSelection(extra) }
       var invalid = raw

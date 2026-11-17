@@ -34,6 +34,7 @@ public enum PCMTerminationCode: String, Sendable {
   case bufferOverflow = "ios_pcm_buffer_overflow"
   case outputLimitExceeded = "ios_pcm_output_limit_exceeded"
   case sinkFailed = "ios_pcm_sink_failed"
+  case authorityHoldExpired = "ios_capture_authority_hold_expired"
 }
 
 public enum PCMAudioEvent: Sendable {
@@ -71,6 +72,10 @@ public struct PCMConfiguration: Equatable, Sendable {
   public let authority: PCMSourceAuthority?
   /// Native encrypted owner only; the legacy/JavaScript bridge keeps discard.
   public let preserveInterruptedTail: Bool
+  /// Starts the source before its authority exists. Audio stays in the chunk
+  /// accumulator, never reaching the sink, until bound; unbound at this deadline,
+  /// it is erased. Shorter than one chunk, so no full packet can wait for a sink.
+  public let authorityHoldNanoseconds: UInt64?
 
   public init(
     targetFramesPerChunk: Int,
@@ -78,7 +83,8 @@ public struct PCMConfiguration: Equatable, Sendable {
     maximumInputFramesPerBuffer: Int = 4_096,
     heartbeatTimeoutNanoseconds: UInt64 = 15_000_000_000,
     authority: PCMSourceAuthority? = nil,
-    preserveInterruptedTail: Bool = false
+    preserveInterruptedTail: Bool = false,
+    authorityHoldNanoseconds: UInt64? = nil
   ) throws {
     guard targetFramesPerChunk > 0,
       targetFramesPerChunk <= Self.maximumTargetFramesPerChunk,
@@ -91,7 +97,11 @@ public struct PCMConfiguration: Equatable, Sendable {
       targetFramesPerChunk <= Int.max / 2,
       maximumChunks <= Int.max / targetFramesPerChunk,
       authority == nil || maximumChunks <= authority!.hardMaximumChunks,
-      !preserveInterruptedTail || authority != nil
+      !preserveInterruptedTail || authority != nil || authorityHoldNanoseconds != nil,
+      authorityHoldNanoseconds == nil
+        || (authority == nil && authorityHoldNanoseconds! > 0
+          && authorityHoldNanoseconds!
+            < UInt64(targetFramesPerChunk) * 1_000_000_000 / UInt64(Self.sampleRateHz))
     else {
       throw PCMFailure(.invalidConfiguration)
     }
@@ -101,6 +111,7 @@ public struct PCMConfiguration: Equatable, Sendable {
     self.heartbeatTimeoutNanoseconds = heartbeatTimeoutNanoseconds
     self.authority = authority
     self.preserveInterruptedTail = preserveInterruptedTail
+    self.authorityHoldNanoseconds = authorityHoldNanoseconds
   }
 }
 
@@ -274,19 +285,24 @@ public struct PCMAudioCallbacks: Sendable {
 }
 
 /// Synchronous admission prevents a driver from queuing transferred audio
-/// outside the state actor. A driver must await an accepted receipt before it
-/// offers another buffer; rejection has already cleared the offered buffer.
+/// outside the state actor. A driver must observe consumption of an accepted
+/// receipt before offering another buffer; rejection has cleared the buffer.
 public struct PCMFrameAdmission: Sendable {
   public let accepted: Bool
   private let receipt: PCMFrameReceipt?
 
   init(
     accepted: Bool,
-    completion: Task<Void, Never>? = nil,
     release: (@Sendable () -> Void)? = nil
   ) {
     self.accepted = accepted
-    receipt = completion.map { PCMFrameReceipt(completion: $0, release: release) }
+    receipt = accepted ? PCMFrameReceipt(release: release) : nil
+  }
+
+  /// Called by the consumer after clearing the transferred frames and finishing
+  /// their processing. Driver waiter scheduling must not hold admission open.
+  func finishConsumption() {
+    receipt?.finishConsumption()
   }
 
   public func waitUntilConsumed() async {
@@ -299,26 +315,38 @@ public struct PCMFrameAdmission: Sendable {
 }
 
 private final class PCMFrameReceipt: @unchecked Sendable {
-  private let completion: Task<Void, Never>
   private let release: (@Sendable () -> Void)?
   private let lock = NSLock()
   private var consumed = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
 
-  init(completion: Task<Void, Never>, release: (@Sendable () -> Void)?) {
-    self.completion = completion
+  init(release: (@Sendable () -> Void)?) {
     self.release = release
   }
 
   func waitUntilConsumed() async {
-    await completion.value
-    lock.withLock {
-      guard !consumed else { return }
+    await withCheckedContinuation { continuation in
+      let resumeNow = lock.withLock {
+        if consumed { return true }
+        waiters.append(continuation)
+        return false
+      }
+      if resumeNow { continuation.resume() }
+    }
+  }
+
+  func finishConsumption() {
+    let pending = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+      guard !consumed else { return [] }
       // The production release only clears the core's synchronous admission
       // flag. Observers must not see that release without consumed=true, and
       // copied receipt waiters must not return while release is still running.
       release?()
       consumed = true
+      defer { waiters.removeAll() }
+      return waiters
     }
+    for waiter in pending { waiter.resume() }
   }
 
   var isConsumed: Bool { lock.withLock { consumed } }
@@ -327,7 +355,8 @@ private final class PCMFrameReceipt: @unchecked Sendable {
 public protocol PCMAudioDriving: Sendable {
   /// Must honor cancellation. `freezeInput` invalidates a pending start and
   /// returns only when no new callback can begin for this session. The driver
-  /// must await every accepted frame receipt before offering another buffer.
+  /// must observe completed consumption of each accepted receipt before it
+  /// offers another buffer; an unconsumed overlap is never queued.
   func start(
     sessionID: UInt64,
     callbacks: PCMAudioCallbacks,

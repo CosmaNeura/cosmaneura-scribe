@@ -18,6 +18,7 @@ import { CoreCaptureBff, CoreCaptureClient } from "./core-client";
 import { NativeProviderWorkspaceJournal } from "./workspace-journal";
 import type { AuthorizedProviderEncounter, ProviderRecorderResources, ProviderWorkspaceHost } from "./workspace";
 import type { ConsentPreparationRelease } from "./consent-preparation";
+import type { ProviderEncounter } from "./workspace-contracts";
 
 /** Supplied by the existing authenticated Core/native connection, never by a form. */
 export interface AuthorizedProviderIOSMount extends Omit<AuthorizedProviderEncounter, "journal" | "reviewJournal" | "recorder"> {
@@ -38,16 +39,25 @@ export interface PreparedProviderIOSCapture {
   readonly captureAuthorizedUntil: string;
   readonly firstSequenceNumber?: number;
 }
-export interface ProviderIOSBackend extends Pick<ProviderWorkspaceHost, "signal" | "listEncounters" | "createEncounter" | "encounterSetup" | "account" | "providerDisplayName" | "activeRecording" | "recordReadyDiagnostic"> {
+export interface ProviderIOSBackend extends Pick<ProviderWorkspaceHost, "signal" | "listEncounters" | "createEncounter" | "encounterSetup" | "account" | "providerDisplayName" | "activeRecording" | "recordReadyDiagnostic" | "entryTiming"> {
   readonly openEncounter: (appointmentRef: string, signal: AbortSignal) => Promise<AuthorizedProviderIOSMount>;
 }
 
 /** Compose the real native recorder and recovery stores with the existing Core host.
  * This neither creates an identity nor substitutes a transport for Core authority.
  */
-export function createProviderIOSHost(backend: ProviderIOSBackend, consentPreparation?: ConsentPreparationRelease): ProviderWorkspaceHost {
+export function createProviderIOSHost(backend: ProviderIOSBackend, consentPreparation?: ConsentPreparationRelease,
+  initialCatalog?: readonly ProviderEncounter[], entryStartedAt?: number, draftConsent = false): ProviderWorkspaceHost {
   requireNative();
+  // Startup already classified access using this catalog. Hand that fresh read
+  // to the first list render once; later navigation and refresh read Core again.
+  // The snapshot never supplies mount or capture authority.
+  let firstCatalog = initialCatalog;
+  const initialDeadline = performance.now() + 5000;
   return {
+    ...(draftConsent ? { draftConsentPreparation: true as const } : {}),
+    ...(backend.entryTiming ? { entryTiming: backend.entryTiming } : {}),
+    ...(entryStartedAt !== undefined ? { entryStartedAt } : {}),
     ...(consentPreparation ? { consentPreparation } : {}),
     ...(backend.recordReadyDiagnostic ? { recordReadyDiagnostic: backend.recordReadyDiagnostic } : {}),
     get providerDisplayName() { return backend.signal.aborted ? undefined : backend.providerDisplayName; },
@@ -56,7 +66,16 @@ export function createProviderIOSHost(backend: ProviderIOSBackend, consentPrepar
     signal: backend.signal,
     audioPreflight: signal => openIOSAudioPreflight(signal, undefined, backend.signal),
     ...(backend.activeRecording ? { activeRecording: signal => backend.activeRecording!(signal) } : {}),
-    listEncounters: signal => backend.listEncounters(signal),
+    listEncounters: signal => {
+      if (signal.aborted || backend.signal.aborted) {
+        firstCatalog = undefined;
+        return Promise.reject(unavailable());
+      }
+      const catalog = firstCatalog;
+      firstCatalog = undefined;
+      if (catalog && performance.now() < initialDeadline) return Promise.resolve(catalog);
+      return backend.listEncounters(signal);
+    },
     createEncounter: signal => backend.createEncounter(signal),
     openEncounter: async (appointmentRef, signal) => {
       const opened = await backend.openEncounter(appointmentRef, signal);
@@ -95,14 +114,14 @@ export function createProviderIOSHost(backend: ProviderIOSBackend, consentPrepar
         reviewJournal: sessionId => {
           current(); return new NativeCreatorReviewJournal(SecureQueue, mount.recoveryScope, sessionId);
         },
-        recorder: (sessionId, recorderSignal) => openRecorder(mount, sessionId, recorderSignal, current),
+        recorder: (sessionId, recorderSignal, options) => openRecorder(mount, sessionId, recorderSignal, current, options),
       };
     },
   };
 }
 
 async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string, signal: AbortSignal,
-  currentEncounter: () => void): Promise<ProviderRecorderResources | PreparedProviderRecorder> {
+  currentEncounter: () => void, options?: { readonly initialStart: true }): Promise<ProviderRecorderResources | PreparedProviderRecorder> {
   uuid(sessionId); requireNative();
   const current = (): void => {
     currentEncounter();
@@ -149,6 +168,7 @@ async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string
     if (mount.nativeRecording && !active && !preparing && !keyState && !legacyKey) {
       const ownedFlow = flow;
       const native = await connectNativeProviderRecorder({ sessionId, port: mount.nativeRecording,
+        ...(options?.initialStart ? { initialStart: true as const } : {}),
         bff: new CoreCaptureBff(new CoreCaptureClient(mount.scope, mount.request, signal), sessionId),
         queueStorage: nativeQueue, uploadTarget: mount.uploadTarget, signal });
       let released = false, releasing: Promise<void> | null = null;

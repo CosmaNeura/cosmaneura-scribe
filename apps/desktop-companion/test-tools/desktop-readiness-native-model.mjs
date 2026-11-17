@@ -25,7 +25,7 @@ export async function createReadinessNativeModel({ model, sessionId, consentReco
         const expiresAt = new Date(Math.min(now() + 15_000, owner.deadline)).toISOString();
         return { schemaVersion: 1, decision: "authorized", ...owner.grant,
             issuedAt: new Date(now()).toISOString(), expiresAt,
-            captureCapability: { capabilityId: crypto.randomUUID(), secret: "invented-benchmark-capability", expiresAt } };
+            captureCapability: { capabilityId: crypto.randomUUID(), secret: "your-invented-benchmark-capability", expiresAt } };
     };
     const native = { signal, isReady: () => !signal.aborted,
         getState: async () => ({ phase: "ready", revision }),

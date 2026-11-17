@@ -14,6 +14,7 @@ from uuid import UUID, uuid4, uuid5
 import httpx
 from pydantic import SecretStr
 
+from .provider_account_setup import checked_setup
 from .provider_core_connections import ProviderCoreConnections
 from .provider_core_transport import (
     ProviderCoreUnavailable,
@@ -108,16 +109,23 @@ class ProviderContextTransport:
                             "core_provider_access_unavailable", response.status_code
                         )
                     core_wire_require(
-                        response.status_code == 200
+                        response.status_code in {200, 409}
                         and response.headers.get("content-type", "").split(";", 1)[0]
-                        == "application/json"
+                        == (
+                            "application/problem+json"
+                            if response.status_code == 409
+                            else "application/json"
+                        )
                         and response.headers.get("cache-control") == "no-store"
-                        and response.headers.get("x-cosmaneura-record-version") == "1"
+                        and response.headers.get_list("x-cosmaneura-record-version") == ["1"]
                         and not response.headers.get_list("set-cookie")
                     )
                     raw = bytearray()
                     async for chunk in response.aiter_bytes():
-                        core_wire_require(len(raw) + len(chunk) <= MAX_RESPONSE_BYTES)
+                        core_wire_require(
+                            len(raw) + len(chunk)
+                            <= (1024 if response.status_code == 409 else MAX_RESPONSE_BYTES)
+                        )
                         raw.extend(chunk)
                 value = core_wire_object(
                     json.loads(
@@ -126,6 +134,10 @@ class ProviderContextTransport:
                         parse_constant=lambda _: core_wire_require(False),
                     )
                 )
+                if response.status_code == 409:
+                    setup = checked_setup(value, nonce)
+                    core_wire_require(await self.verify(token) == before)
+                    raise setup
                 core_wire_require(
                     set(value)
                     == {

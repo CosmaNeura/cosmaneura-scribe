@@ -289,6 +289,10 @@ def worker_main(stage: Literal["speech", "translation"]) -> None:
             return
         os.environ.update(environment)
         settings = CapturedWorkerSettings()
+        # The optional bundled runner still supports only an explicit singleton.
+        # Multi-practice scheduling belongs to the separate cohort job entrypoint.
+        if len(settings.configured_capture_tenant_ids) != 1:
+            raise ValueError
         if stage == "speech":
             WORKER_TEMP.mkdir(mode=0o700, exist_ok=True)
             if (

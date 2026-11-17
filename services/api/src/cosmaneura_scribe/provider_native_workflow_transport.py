@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import re
 from datetime import UTC, datetime, timedelta
@@ -32,12 +33,14 @@ from .provider_core_transport import (
 from .provider_core_transport import (
     core_wire_uuid as uuid,
 )
+from .provider_encounter_transport import ProviderEncounterAccount
 from .provider_native_core_transport import (
     PATH,
     ProviderNativeCoreTransport,
 )
 from .provider_performance import observe_core_response
 from .source_start_contract import (
+    SourceStartCapability,
     SourceStartIntent,
     SourceStartReceipt,
     SourceStartRetirementReceipt,
@@ -70,7 +73,10 @@ class ProviderNativeWorkflowTransport(ProviderNativeCoreTransport):
         key: str,
         *,
         mount: CoreProviderMount | None = None,
+        before: ProviderEncounterAccount | None = None,
     ) -> dict[str, object]:
+        """`before` is the caller's account snapshot when no I/O separates it
+        from this call; the dispatch and publication checks still follow."""
         require(
             action
             in {
@@ -90,7 +96,7 @@ class ProviderNativeWorkflowTransport(ProviderNativeCoreTransport):
             isinstance(binding, str)
             and re.fullmatch(r"scribe_capture_binding_[0-7][0-9a-hjkmnp-tv-z]{25}", binding)
         )
-        sequence = intent = authorize_nonce = None
+        sequence = intent = authorize_nonce = source_intent = None
         if action in {"source-start", "source-start-ready"}:
             require(mount is not None)
             assert mount is not None
@@ -104,13 +110,14 @@ class ProviderNativeWorkflowTransport(ProviderNativeCoreTransport):
             else:
                 require(set(payload) == SCOPE | {"operation"})
                 operation = obj(payload["operation"])
-                # The native owner retains the original proof and intent keys.
-                # Initial authorization belongs to the checked pair endpoint.
+                # Ready preparation carries no start authority. Its separate
+                # native authorization uses the same Core checks as the pair.
                 require(
                     set(operation) == {"kind", "action", "payload"}
                     and operation.get("kind") == "source_start"
-                    and operation.get("action") in {"stop", "cancel"}
+                    and operation.get("action") in {"prepare", "authorize", "stop", "cancel"}
                 )
+                source_intent = SourceStartIntent.model_validate(operation["payload"])
         elif action == "capture-operations":
             require(set(payload) == SCOPE | {"operation"})
             require(obj(payload["operation"]).get("kind") in OPERATIONS)
@@ -155,7 +162,8 @@ class ProviderNativeWorkflowTransport(ProviderNativeCoreTransport):
             async with asyncio.timeout(
                 100 if action in {"capture-notes", "capture-admissions"} else 60
             ):
-                before = await self.fresh()
+                if before is None:
+                    before = await self.fresh()
                 if mount is not None:
                     require(
                         (before.actor_ref, before.tenant_ref, before.recovery_scope)
@@ -200,7 +208,7 @@ class ProviderNativeWorkflowTransport(ProviderNativeCoreTransport):
                         response.headers.get_list("x-cosmaneura-native-capture-version") == ["1"]
                         and response.headers.get("content-type", "").split(";", 1)[0]
                         == "application/json"
-                        and response.headers.get("cache-control", "").lower() == "no-store"
+                        and _has_no_store_directive(response.headers.get("cache-control", ""))
                         and not response.headers.get_list("set-cookie")
                     )
                     raw = bytearray()
@@ -270,21 +278,53 @@ class ProviderNativeWorkflowTransport(ProviderNativeCoreTransport):
                     if action == "capture-notes":
                         require(receipt.get("session_id") == payload["expected_session_id"])
                     if action == "source-start":
-                        source_intent = SourceStartIntent.model_validate(
-                            obj(payload["operation"])["payload"]
-                        )
-                        terminal = (
-                            SourceStartRetirementReceipt.model_validate(receipt)
-                            if receipt.get("state") == "unstarted"
-                            else SourceStartReceipt.model_validate(receipt)
-                        )
-                        require(
-                            terminal.state in {"cancelled", "stopped", "expired", "unstarted"}
-                            and terminal.creator_actor_id == before.actor_ref
-                        )
+                        assert source_intent is not None
+                        source_action = obj(payload["operation"])["action"]
+                        now = datetime.now(UTC)
+                        if source_action == "authorize":
+                            decision = SourceStartCapability.model_validate(receipt)
+                            checked_source = decision.receipt
+                            require(
+                                checked_source.state == "issued"
+                                and checked_source.issued_at is not None
+                                and checked_source.expires_at is not None
+                                and checked_source.issued_at <= now + timedelta(seconds=5)
+                                and checked_source.issued_at < checked_source.preparation_expires_at
+                                and now
+                                < checked_source.expires_at
+                                <= checked_source.capture_authorized_until
+                                and timedelta(0)
+                                < checked_source.expires_at - checked_source.issued_at
+                                <= timedelta(seconds=15)
+                                and hmac.compare_digest(
+                                    decision.secret.get_secret_value().encode("utf-8"),
+                                    source_intent.owner_proof.get_secret_value().encode("ascii"),
+                                )
+                            )
+                        elif source_action == "prepare":
+                            checked_source = SourceStartReceipt.model_validate(receipt)
+                            require(
+                                checked_source.state == "prepared"
+                                and checked_source.issued_at is None
+                                and checked_source.expires_at is None
+                                and now
+                                < checked_source.preparation_expires_at
+                                <= checked_source.capture_authorized_until
+                            )
+                        else:
+                            checked_source = (
+                                SourceStartRetirementReceipt.model_validate(receipt)
+                                if receipt.get("state") == "unstarted"
+                                else SourceStartReceipt.model_validate(receipt)
+                            )
+                            require(
+                                checked_source.state
+                                in {"cancelled", "stopped", "expired", "unstarted"}
+                            )
+                        require(checked_source.creator_actor_id == before.actor_ref)
                         require(
                             all(
-                                getattr(terminal, field) == getattr(source_intent, field)
+                                getattr(checked_source, field) == getattr(source_intent, field)
                                 for field in (
                                     "attempt_id",
                                     "source",
@@ -296,16 +336,15 @@ class ProviderNativeWorkflowTransport(ProviderNativeCoreTransport):
                                 )
                             )
                         )
-                        if isinstance(terminal, SourceStartRetirementReceipt):
-                            require(terminal.owner_proof_sha256 == source_intent.proof_digest)
-                if await self.fresh() != before:
-                    raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+                        if isinstance(checked_source, SourceStartRetirementReceipt):
+                            require(checked_source.owner_proof_sha256 == source_intent.proof_digest)
                 if sequence is not None:
                     assert mount is not None and intent is not None and authorize_nonce is not None
                     result = source_start_reply(
                         mount, sequence, result, intent, authorize_nonce, datetime.now(UTC)
                     )
-                # Publication is separately fenced after parsing/pair validation.
+                # One publication check after parsing and pair validation. Both are
+                # local, so a second adjacent check could observe nothing new.
                 if await self.fresh() != before:
                     raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
                 return result
@@ -313,6 +352,25 @@ class ProviderNativeWorkflowTransport(ProviderNativeCoreTransport):
             raise
         except Exception:
             raise ProviderCoreUnavailable("core_provider_request_unconfirmed") from None
+
+
+def _has_no_store_directive(value: str) -> bool:
+    """Recognize the directive without splitting quoted extension values."""
+    start, quoted, escaped, found = 0, False, False, False
+    for index, character in enumerate(value):
+        if quoted:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                quoted = False
+        elif character == '"':
+            quoted = True
+        elif character == ",":
+            found |= value[start:index].strip(" \t").lower() == "no-store"
+            start = index + 1
+    return not quoted and (found or value[start:].strip(" \t").lower() == "no-store")
 
 
 def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:

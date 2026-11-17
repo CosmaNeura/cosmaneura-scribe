@@ -1,6 +1,6 @@
 """Safety checks use only disposable plist/JSON fixtures; no audio or Appium session."""
-import copy
 import contextlib
+import copy
 import io
 import json
 import plistlib
@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
 import lab
 
 

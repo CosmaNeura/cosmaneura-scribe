@@ -3,6 +3,14 @@ import Foundation
 /// Durable, bounded numeric diagnostics for the already-observed native request.
 /// This accepts no body, credential, identifier, URL, header, or error string.
 /// Writes run off the request path and never change its result or authority.
+enum ProviderEntryTimingPhase: String, CaseIterable, Sendable {
+    case appToPatients = "app-to-patients"
+    case patientForm = "patient-form"
+    case patientToConsent = "patient-to-consent"
+    case patientToVisitReady = "patient-to-visit-ready"
+    case consentToRecordReady = "consent-to-record-ready"
+}
+
 final class ProviderNativeTimingJournal: @unchecked Sendable {
     static let maximumEntries = 128
     static let maximumBytes = 65_536
@@ -60,6 +68,19 @@ final class ProviderNativeTimingJournal: @unchecked Sendable {
         guard (server?.values.allSatisfy { $0.isFinite && (0...3_600_000).contains($0) } ?? true),
             (core?.values.allSatisfy { $0.isFinite && (0...9_600_000).contains($0) } ?? true)
             else { return }
+        append(action: timing.action.rawValue, token: timing.tokenMilliseconds,
+            receiver: timing.receiverMilliseconds, total: timing.totalMilliseconds,
+            status: timing.status, completed: timing.completed, server: server, core: core)
+    }
+
+    func recordEntry(_ phase: ProviderEntryTimingPhase, milliseconds: Double) {
+        guard milliseconds.isFinite, (0...600_000).contains(milliseconds) else { return }
+        append(action: "ui." + phase.rawValue, token: 0, receiver: nil,
+            total: Int(milliseconds.rounded()), status: nil, completed: true, server: nil, core: nil)
+    }
+
+    private func append(action: String, token: Int, receiver: Int?, total: Int, status: Int?,
+                        completed: Bool, server: [String: Double]?, core: [String: Double]?) {
         admission.withLock {
             guard let target = destination else { return }
             guard pending < Self.maximumPending else {
@@ -67,9 +88,9 @@ final class ProviderNativeTimingJournal: @unchecked Sendable {
             }
             pending += 1
             let entry = Entry(monotonic_ns: String(DispatchTime.now().uptimeNanoseconds),
-                utc: Date(), action: timing.action.rawValue,
-                token_ms: timing.tokenMilliseconds, receiver_ms: timing.receiverMilliseconds,
-                total_ms: timing.totalMilliseconds, status: timing.status, completed: timing.completed,
+                utc: Date(), action: action,
+                token_ms: token, receiver_ms: receiver,
+                total_ms: total, status: status, completed: completed,
                 server_ms: server, core_ms: core, core_response_start_only: core == nil ? nil : true,
                 core_nonadditive: core == nil ? nil : true, dropped_events: dropped)
             queue.async { [self] in

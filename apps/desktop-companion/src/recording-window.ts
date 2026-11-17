@@ -21,7 +21,7 @@ export interface RecordingWindowPort {
 
 /** Main-only window presentation. It never reads a renderer visibility claim,
  * dispatches recording, or grants authority. Native code verifies the OS ID and
- * coverage; the normal-order main window cannot replace its status panel. */
+ * coverage before the normal-order main window may replace its status panel. */
 export class MainRecordingWindow implements DesktopRecordingWindow {
   private compact = false;
   private usable = true;

@@ -1,6 +1,6 @@
 import { webcrypto } from "node:crypto";
 import { Capacitor } from "@capacitor/core";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Surface } from "./test-workspace-surface";
 import { mountProviderWorkspace, type ProviderWorkspaceHost } from "./workspace";
 import type { ProviderCaptureBinding, ProviderRecorderSnapshot } from "../provider-binding";
@@ -43,7 +43,9 @@ class CommandSurface extends Surface {
 function gate<T>() { let resolve!: (v: T) => void, reject!: (reason: Error) => void;
   const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; }
 const disposers: (() => Promise<void>)[] = [];
-afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+// Exercise the enabled fixture before its fixed rollout expiry on every calendar date.
+beforeEach(() => vi.setSystemTime(new Date("2026-10-31T12:00:00Z")));
+afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
 const sid = "00000000-0000-4000-8000-000000000001", suffix = "01j" + "0".repeat(23);
 const ref = "appointment_" + suffix;
 function fixture(options: { preparing?: boolean; admission?: Promise<void>; acquisition?: Promise<void>; release?: boolean; saved?: JournalSnapshot; metadataClose?: Promise<void>; journalSave?: Promise<void>;
@@ -145,6 +147,8 @@ it("starts initial Record measurement before admission when consent-only prepara
   f.start.mockImplementation(async () => { now = 6200; f.recording(); }); now = 4200; admission.resolve();
   await vi.waitFor(() => expect(f.recordReadyDiagnostic).toHaveBeenCalledOnce());
   expect(f.recordReadyDiagnostic.mock.calls).toEqual([[6000]]);
+  expect(f.recorder.mock.calls[0]).toHaveLength(3);
+  expect(f.recorder).toHaveBeenCalledWith(sid, expect.any(AbortSignal), { initialStart: true });
 });
 it("never exports a queued Record cancelled before delayed admission finishes", async () => {
   const admission = gate<void>(), f = fixture({ admission: admission.promise, timing: true }); await f.opened();
@@ -158,6 +162,7 @@ it("checkbox alone prepares exactly once and never invokes any recording continu
   f.consent(true); await vi.waitFor(() => expect(f.app.bindProvider).toHaveBeenCalledOnce());
   expect(f.request.mock.calls.filter(([p]) => p.endsWith("capture-admissions"))).toHaveLength(1);
   expect(f.recorder).toHaveBeenCalledOnce(); expect(f.start).not.toHaveBeenCalled(); expect(f.app.startFromProviderAction).not.toHaveBeenCalled();
+  expect(f.recorder.mock.calls[0]).toHaveLength(2);
   expect(f.controller.selectAudioInput).toHaveBeenCalledWith("microphone-fixture");
   await f.binding()!.controller.startRecording(); expect(f.start).toHaveBeenCalledOnce();
 });

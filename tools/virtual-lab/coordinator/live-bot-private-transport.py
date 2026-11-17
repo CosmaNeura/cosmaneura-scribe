@@ -4,13 +4,11 @@ Selection is a protected, root-reviewed sibling file. Existing retained Azure
 user-token validation is mandatory. No generic command, endpoint or credential
 can be supplied by the observation caller. Terminal/control output is discarded.
 """
-from datetime import datetime, UTC
 import errno
 import hashlib
 import importlib.util
 import json
 import os
-from pathlib import Path
 import pty
 import re
 import select
@@ -19,6 +17,8 @@ import subprocess
 import sys
 import termios
 import time
+from datetime import UTC, datetime
+from pathlib import Path
 
 MAX_LINE = 262144
 MAX_BOOT_BYTES = 262144

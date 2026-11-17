@@ -181,13 +181,18 @@ def profile_input():
     }
 
 
-def test_owner_input_projection_stays_disabled_and_preserves_source(tmp_path):
+def test_owner_input_projection_stays_disabled_and_preserves_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCRIBE_FOUNDER_PRODUCTION_UNLOCK", "1")
     source = tmp_path / "owner.json"
     raw = json.dumps(profile_input()).encode()
     source.write_bytes(raw)
     output = tmp_path / "new-output"
-    prepare(source, output)
+    prepare(source, output, i_am_john_unlocking_production=True)
     assert source.read_bytes() == raw
+    assert (
+        plistlib.loads((output / "ios-info-fragment.plist").read_bytes())["CFBundleDisplayName"]
+        == "Scribe P"
+    )
     projected = project(profile_input())
     assert projected["receiver"]["enabled"] is False and projected["desktop"]["enabled"] is False
     assert projected["ios"]["CosmasNativeAuth"]["enabled"] is False
@@ -198,7 +203,7 @@ def test_owner_input_projection_stays_disabled_and_preserves_source(tmp_path):
     assert projected["desktop"]["workspaceId"] == projected["receiver"]["beta_box_id"]
     assert json.loads((output / "status.json").read_text())["production_qualified"] is False
     with pytest.raises(FileExistsError):
-        prepare(source, output)
+        prepare(source, output, i_am_john_unlocking_production=True)
 
 
 def test_owner_projection_rejects_staging_key_and_active_input():
@@ -218,13 +223,14 @@ def test_owner_projection_rejects_staging_key_and_active_input():
         project(value)
 
 
-def test_explicit_client_enablement_leaves_receiver_and_source_disabled(tmp_path):
+def test_explicit_client_enablement_leaves_receiver_and_source_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCRIBE_FOUNDER_PRODUCTION_UNLOCK", "1")
     value = profile_input()
     source = tmp_path / "owner.json"
     original = json.dumps(value).encode()
     source.write_bytes(original)
     output = tmp_path / "enabled-client-projection"
-    prepare(source, output, enable_clients=True)
+    prepare(source, output, enable_clients=True, i_am_john_unlocking_production=True)
     ios = plistlib.loads((output / "ios-info-fragment.plist").read_bytes())
     desktop = json.loads((output / "desktop-profile.json").read_bytes())
     receiver = json.loads((output / "receiver-profile.json").read_bytes())

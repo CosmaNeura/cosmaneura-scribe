@@ -10,7 +10,7 @@ import { NativeClockMapper, parseNativeTimingSample, type NativeTimingSample, ty
 
 export type NativeRecordingCommand = "read" | "start" | "pause" | "seal" | "close" | "input";
 export interface NativeRecordingPort {
-  open: (sessionId: string, requestId: string) => Promise<unknown>;
+  open: (sessionId: string, requestId: string, options?: { readonly initialStart: true }) => Promise<unknown>;
   command(this: void, request: { requestId: string; recorderId: string; kind: NativeRecordingCommand; input?: MicrophoneInput; inputId?: string }): Promise<unknown>;
 }
 export interface NativeRecordingState {
@@ -33,7 +33,7 @@ export interface NativeRecordingState {
  * queue uploader and the existing Core completion/review interface. */
 export async function connectNativeProviderRecorder(options: {
   sessionId: string; port: NativeRecordingPort; bff: CaptureBff; queueStorage: CaptureQueueStorage;
-  uploadTarget: CiphertextUploadTarget; signal: AbortSignal;
+  uploadTarget: CiphertextUploadTarget; signal: AbortSignal; initialStart?: true;
 }): Promise<PreparedProviderRecorder> {
   const { sessionId, port, signal } = options;
   uuid(sessionId);
@@ -194,7 +194,8 @@ export async function connectNativeProviderRecorder(options: {
   // Even an unsuccessful open returns its retained handle for explicit recovery
   // and close. Do not drop that ownership by throwing before the UI receives it.
   const openSentAtRendererMs = performance.now();
-  accept(await port.open(sessionId, openingId), openingId, false, openSentAtRendererMs);
+  accept(await (options.initialStart ? port.open(sessionId, openingId, { initialStart: true })
+    : port.open(sessionId, openingId)), openingId, false, openSentAtRendererMs);
   if (!state) throw failure();
   let timer: ReturnType<typeof setInterval> | undefined;
   const stopPolling = (): void => { clearInterval(timer); timer = undefined; document.removeEventListener("visibilitychange", visible); };

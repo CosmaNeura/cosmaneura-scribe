@@ -2,13 +2,14 @@
  * Cosmas self-delete client contract for T-REL-8b / Apple 5.1.1(v).
  *
  * Locked against CosmaNeura/cosmaneura PR #940
- * (branch grok/rel8-self-delete-account, head de09c12 / T-REL-8a):
+ * (branch grok/rel8-self-delete-account / T-REL-8a, contract on that branch):
  *   DELETE <api>/v1/me/account
  *   Authorization: Bearer <Clerk JWT>  (native-owned session token)
- *   JSON body: { "confirm": "DELETE" }  (no other fields)
+ *   JSON body: { "confirm": "DELETE" }  (no other fields; no target user id)
+ *   Identity comes only from the verified token — deletes only the signed-in caller.
  *   200 + status "deleted"|"already_deleted" → success, then clear local and sign out
  *   401 → clear local and sign out (session already invalid)
- *   422 or anything else → error, stay signed in
+ *   422 / 404 / anything else → error, stay signed in
  *
  * Existing live users: nothing changes unless they open Account and confirm Delete.
  */

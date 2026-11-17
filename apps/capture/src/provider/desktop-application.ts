@@ -13,8 +13,10 @@ import { assertProgress, type JournalSnapshot } from "./workspace-journal";
 import { parsePendingReviewDecision } from "../../../review-ui/src/creator-review-journal";
 import { connectDesktopRecorderView, type DesktopRecorderPort } from "./desktop-recorder-view";
 import { reference, type CoreCaptureScope } from "./core-client";
+import { parseCancellation } from "./cancellation";
 import { parseOpeningRecovery, parseOpeningReview } from "./opening-review";
 import type { ConsentPreparationRelease } from "./consent-preparation";
+import type { AccountSelfDeleteResult } from "./account-self-delete";
 import { parseDesktopProviderEvent, sessionState, exact, object, uuid, jsonCopy, unavailable,
   type DesktopProviderMethod, type DesktopProviderPort, type DesktopProviderRequest } from "./desktop-host-protocol";
 
@@ -97,6 +99,37 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
     return before === observations ? emitState(value) : state!;
   };
   const host: ProviderApplicationHost = {
+    openDashboard: async signal => { await request("open_dashboard", {}, null, null, signal); },
+    cancellation: {
+      status: async signal => {
+        const value = await request("cancellation", { action: "status" }, null, null, signal);
+        if (value === null) return null;
+        const result = parseCancellation(value); if (result.action === "preview") throw unavailable(); return result;
+      },
+      load: async signal => parseCancellation(await request("cancellation", { action: "load" }, null, null, signal)),
+      submit: async (preview, signal) => {
+        const result = parseCancellation(await request("cancellation", { action: "submit", preview }, null, null, signal));
+        if (result.action === "preview") throw unavailable(); return result;
+      },
+    },
+    accountSelfDelete: {
+      deleteAccount: async (body, signal): Promise<AccountSelfDeleteResult> => {
+        if (body.confirm !== "DELETE") throw unavailable();
+        const value = object(await request("delete_account", { confirm: "DELETE" }, null, null, signal));
+        if (value.unauthorized === true) return { outcome: "unauthorized" };
+        if ((value.status === "deleted" || value.status === "already_deleted")
+          && typeof value.practiceLeftOwnerless === "boolean"
+          && typeof value.clerkIdentityRemoved === "boolean") {
+          return {
+            outcome: "deleted",
+            status: value.status,
+            practiceLeftOwnerless: value.practiceLeftOwnerless,
+            clerkIdentityRemoved: value.clerkIdentityRemoved,
+          };
+        }
+        throw unavailable();
+      },
+    },
     supportsRecorderStopReauthentication: true,
     supportsWorkspaceCloseReauthentication: true,
     session: {
@@ -211,12 +244,18 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
           if (!Array.isArray(values) || values.length > 1000) throw unavailable();
           const rawInfo = await send("encounter_setup", { action: "info" }, null, operationSignal);
           const scoped = typeof rawInfo === "object" && rawInfo !== null && "existingPatientOnly" in rawInfo;
-          const info = exact(rawInfo, ["enabled", "account", ...(scoped ? ["existingPatientOnly"] : [])]);
+          const explicitEnvironment = typeof rawInfo === "object" && rawInfo !== null && "environment" in rawInfo;
+          const info = exact(rawInfo, ["enabled", "account", ...(scoped ? ["existingPatientOnly"] : []),
+            ...(explicitEnvironment ? ["environment"] : [])]);
           if (scoped && info.existingPatientOnly !== true) throw unavailable();
           current(operationSignal);
           if (typeof info.enabled !== "boolean") throw unavailable();
+          const environment = explicitEnvironment ? info.environment : scoped ? "Production" : "Staging";
+          if (environment !== "Staging" && environment !== "Production"
+            || scoped && environment !== "Production" || explicitEnvironment && info.account === null) throw unavailable();
+          const nextAccount = info.account === null ? undefined : parseProviderAccount(info.account, environment);
           creationEnabled = info.enabled; existingPatientOnly = scoped;
-          account = info.account === null ? undefined : parseProviderAccount(info.account, scoped ? "Production" : "Staging");
+          account = nextAccount;
           return values.map(encounter);
         },
         createEncounter: async operationSignal => { await send("create", {}, null, operationSignal); current(operationSignal); },

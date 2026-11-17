@@ -14,8 +14,11 @@
     static func make(
       connection: NativeProviderConnection, auth: NativeWorkspaceAuth,
       recovery: NativeSourceRecovery, workspaceID: UUID, bindingRef: String,
-      sessionID: UUID, revision: String, authorizationID: UUID? = nil
+      sessionID: UUID, revision: String, authorizationID: UUID? = nil, initialStart: Bool = false
     ) async throws -> NativeProviderRecordingHost {
+      let settings = Bundle.main.object(forInfoDictionaryKey: "ScribeProviderReceiver") as? [String: Any]
+      let earlyMicrophone = NativeProviderRecordingSelection.permitsEarlyMicrophone(
+        bundleIdentifier: Bundle.main.bundleIdentifier, receiverProfile: settings?["profile"] as? String)
       let mount = try connection.recordingMount(
         workspaceID: workspaceID, bindingRef: bindingRef, revision: revision)
       let prepared = try authorizationID.flatMap {
@@ -70,6 +73,8 @@
               if permission.currentPermission() == .granted { return true }
               return await permission.requestPermission() == .granted
             },
+            confirmListening: { ScribeRecordingHaptic.confirmListening() },
+            opensBeforeAuthorization: earlyMicrophone,
             makeRecorder: { validate, finalize in
               try NativeEncryptedPCMRecorder(
                 encryption: encryption, recoveryScope: mount.recoveryScope, records: records,
@@ -87,7 +92,7 @@
                   }
                 })
             })
-        })
+        }, deferInitialSourcePreparation: initialStart)
     }
   }
 #endif

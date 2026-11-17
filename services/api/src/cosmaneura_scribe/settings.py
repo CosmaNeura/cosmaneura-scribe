@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     configured_capture_enabled: bool = False
     # Owner: Scribe; same configured cohort, initially dark; review 2026-09-30.
     configured_capture_continuation_enabled: bool = False
+    # This bounds configured admission; it never registers or authorizes a tenant.
+    configured_capture_multi_tenant_enabled: bool = False
     configured_capture_tenant_ids: frozenset[UUID] = frozenset[UUID]()
     # Owner: Scribe; cohort: none (dark); review by 2026-09-30.
     beta_preview_host_enabled: bool = False
@@ -237,10 +239,12 @@ class Settings(BaseSettings):
             not self.derived_writer_database_permissions_enabled
             or self.database_transcription_principal_name is None
             or self.database_translation_principal_name is None
-            or len(self.configured_capture_tenant_ids) != 1
+            or not self.configured_capture_tenant_ids
             or self.transcription_job_enabled
         ):
-            raise ValueError("configured worker permissions require separate roles and one cohort")
+            raise ValueError(
+                "configured worker permissions require separate roles and explicit cohort"
+            )
         if self.master_platform_handoff_enabled:
             if self.master_platform_base_url is None or self.master_platform_scope is None:
                 raise ValueError(
@@ -271,10 +275,15 @@ class Settings(BaseSettings):
             raise ValueError(
                 "capture_protocol_enabled requires workflow authentication and PostgreSQL"
             )
-        if len(self.configured_capture_tenant_ids) > 1 or any(
+        cohort_limit = 32 if self.configured_capture_multi_tenant_enabled else 1
+        if len(self.configured_capture_tenant_ids) > cohort_limit or any(
             tenant.int == 0 for tenant in self.configured_capture_tenant_ids
         ):
-            raise ValueError("configured capture supports one explicit nonzero tenant")
+            raise ValueError(
+                "configured capture supports at most 32 explicit nonzero tenants"
+                if self.configured_capture_multi_tenant_enabled
+                else "configured capture supports one explicit nonzero tenant"
+            )
         if self.configured_capture_enabled and (
             not self.capture_protocol_enabled or not self.configured_capture_tenant_ids
         ):

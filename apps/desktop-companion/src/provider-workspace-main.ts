@@ -16,9 +16,13 @@ import type { PatientSelection } from "../../capture/src/provider/visit-features
 import { assertPendingPatientMatch, type PatientMatchJournal } from "../../capture/src/provider/patient-match-journal";
 import { NO_DIAGNOSTICS, type RuntimeDiagnostic, type RuntimeTimingEvent } from "./runtime-diagnostics.js";
 import { nativeRecordingConfirmed, validRecordReadyDuration } from "../../capture/src/provider/record-ready-timing";
+import { parseCancellation, type ScribeCancellation } from "../../capture/src/provider/cancellation";
 
 export interface DesktopProviderMainHost {
   readonly session: NativeProviderSession;
+  readonly cancellation?: ScribeCancellation;
+  /** Trusted fixed account dashboard, independent of a visit connection. */
+  readonly openDashboard?: (signal: AbortSignal) => Promise<void>;
   /** Main-only complete provider workspace; never forward this object to preload. */
   connect(signal: AbortSignal): Promise<{ readonly workspace: ProviderWorkspaceHost<DesktopProviderRecorder>; dispose(): Promise<void> }>;
 }
@@ -112,6 +116,41 @@ export class DesktopProviderWorkspaceMain {
   }
   private async dispatch(request: DesktopProviderRequest, signal: AbortSignal): Promise<unknown> {
     const payload = request.payload;
+    if (request.method === "open_dashboard") {
+      if (request.connectionId !== null || request.encounterId !== null || !this.host.openDashboard) throw unavailable();
+      exact(payload, []);
+      const state = await this.readSession(); if (state?.phase !== "ready" || signal.aborted) throw unavailable();
+      await this.host.openDashboard(signal); return null;
+    }
+    if (request.method === "cancellation") {
+      if (request.connectionId !== null || request.encounterId !== null || !this.host.cancellation) throw unavailable();
+      const state = await this.readSession(); if (state?.phase !== "ready") throw unavailable();
+      if (payload.action === "status") { exact(payload, ["action"]); return this.host.cancellation.status(signal); }
+      if (payload.action === "load") { exact(payload, ["action"]); return this.host.cancellation.load(signal); }
+      exact(payload, ["action", "preview"]); if (payload.action !== "submit") throw unavailable();
+      const preview = parseCancellation(payload.preview); if (preview.action !== "preview") throw unavailable();
+      await this.closeConnection(); // A renderer cannot bypass stop-before-request.
+      return this.host.cancellation.submit(preview, signal);
+    }
+    if (request.method === "delete_account") {
+      if (request.connectionId !== null || request.encounterId !== null
+        || typeof this.host.session.deleteAccount !== "function") throw unavailable();
+      exact(payload, ["confirm"]); if (payload.confirm !== "DELETE") throw unavailable();
+      const state = await this.readSession(); if (state?.phase !== "ready" || signal.aborted) throw unavailable();
+      await this.closeConnection(); // Stop recording before destructive account deletion.
+      if (signal.aborted) throw unavailable();
+      const value = await this.host.session.deleteAccount({ confirm: "DELETE" });
+      if (signal.aborted) throw unavailable();
+      if (value?.unauthorized === true) return { unauthorized: true };
+      if (value?.status === "deleted" || value?.status === "already_deleted") {
+        return {
+          status: value.status,
+          practiceLeftOwnerless: value.practiceLeftOwnerless === true,
+          clerkIdentityRemoved: value.clerkIdentityRemoved === true,
+        };
+      }
+      throw unavailable();
+    }
     if (["session_read", "sign_in", "sign_out", "connect"].includes(request.method)) {
       if (request.connectionId !== null || request.encounterId !== null) throw unavailable();
       exact(payload, []);
@@ -158,7 +197,10 @@ export class DesktopProviderWorkspaceMain {
             const workspace = connection.value!.workspace, setup = workspace.encounterSetup;
             let result: unknown;
             if (payload.action === "info") {
-              exact(payload, ["action"]); result = { enabled: !!setup, account: workspace.account ?? null, ...(setup?.existingPatientOnly ? { existingPatientOnly: true } : {}) };
+              exact(payload, ["action"]);
+              const account = workspace.account ?? null;
+              result = { enabled: !!setup, account, ...(account ? { environment: account.environment } : {}),
+                ...(setup?.existingPatientOnly ? { existingPatientOnly: true } : {}) };
             } else {
               if (!setup) throw unavailable();
               if (payload.action === "state") { exact(payload, ["action"]); result = await setup.state(linked); }

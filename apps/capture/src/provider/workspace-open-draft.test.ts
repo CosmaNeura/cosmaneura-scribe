@@ -173,3 +173,16 @@ it.each([0, 2])("preserves explicit normal note flow for %s templates and never 
   expect(f.request).toHaveBeenCalledTimes(count === 0 ? 1 : 2); expect(f.request.mock.calls[0]![1].action).toBe("templates");
   expect(f.recorder).not.toHaveBeenCalled();
 });
+
+it("opens a processing visit for current status without acquiring recording or preparing a note", async () => {
+  const view = parseCreatorReview({ schema_version: "1.0", session_id: id(2), status: "processing",
+    source: null, working: null, review_queue: null }, id(2));
+  const f = mount({ catalog: [{ ...encounter, status: "processing" }], view });
+  await vi.waitFor(() => expect(f.content.innerHTML).toContain("Open visit"));
+  await f.click("open");
+  expect(f.host.openEncounter).toHaveBeenCalledOnce();
+  expect(mounted).toHaveBeenCalledOnce();
+  expect(lastOptions().initialAction).toBeUndefined();
+  expect(f.recorder).not.toHaveBeenCalled(); expect(f.request).not.toHaveBeenCalled();
+  expect(f.journal.save).not.toHaveBeenCalled();
+});

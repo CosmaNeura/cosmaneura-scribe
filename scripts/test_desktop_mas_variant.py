@@ -16,6 +16,14 @@ SPEC.loader.exec_module(MAS)
 
 
 class DesktopMasVariantTests(unittest.TestCase):
+    def test_store_info_uses_public_display_name_without_mac(self):
+        # Source-only pin; this file is not collected by CI pytest.
+        source = (HERE / "prepare-desktop-mas-variant.py").read_text()
+        self.assertIn('"CFBundleName": "Cosmas Scribe"', source)
+        self.assertIn('"CFBundleDisplayName": "Cosmas Scribe"', source)
+        self.assertNotIn("for Mac", source)
+        self.assertNotRegex(source, r'"CFBundle(?:Name|DisplayName)":\s*"[^"]*[Mm]ac[^"]*"')
+
     def test_draft_store_claims_cannot_pass_the_existing_direct_distribution_checker(self):
         for name, expected in (("parent", HOST_CLAIMS), ("native-auth", PROVIDER_CLAIMS)):
             with self.subTest(name=name), self.assertRaises(ValueError):

@@ -60,15 +60,21 @@ def production_fixture(tmp_path: Path, *, enabled=True):
         production_inputs=inputs,
         production_native_build_receipt=build_path,
         enable_production_clients=enabled,
+        i_am_john_unlocking_production=True,
     )
     return module, args, value, build
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_production_assembly_binds_profiles_to_exact_native_helpers(tmp_path: Path, enabled):
+def test_production_assembly_binds_profiles_to_exact_native_helpers(
+    tmp_path: Path,
+    enabled,
+    monkeypatch,
+):
+    monkeypatch.setenv("SCRIBE_FOUNDER_PRODUCTION_UNLOCK", "1")
     module, args, value, _build = production_fixture(tmp_path, enabled=enabled)
     original = args.production_inputs.read_bytes()
-    module.assemble(args)
+    module.assemble(args, production_entry=True)
     ios = plistlib.loads((args.output / "ios/StandaloneBuildProfile.plist").read_bytes())
     desktop = json.loads((args.output / "desktop/provider-profile.json").read_bytes())
     auth = plistlib.loads(
@@ -76,6 +82,7 @@ def test_production_assembly_binds_profiles_to_exact_native_helpers(tmp_path: Pa
     )
     receipt = json.loads((args.output / "assembly.json").read_bytes())
     assert ios["CosmasNativeAuth"]["enabled"] is enabled
+    assert ios["CFBundleDisplayName"] == "Scribe P"
     assert ios["ScribeProviderApplication"] == {
         "profile": "core-production-organization-v1",
         "enabled": enabled,
@@ -99,7 +106,12 @@ def test_production_assembly_binds_profiles_to_exact_native_helpers(tmp_path: Pa
 @pytest.mark.parametrize(
     "change", ["helper", "compile", "lab", "source", "receipt", "mixed", "active-receiver"]
 )
-def test_production_assembly_rejects_unbound_or_mixed_inputs_before_copy(tmp_path: Path, change):
+def test_production_assembly_rejects_unbound_or_mixed_inputs_before_copy(
+    tmp_path: Path,
+    change,
+    monkeypatch,
+):
+    monkeypatch.setenv("SCRIBE_FOUNDER_PRODUCTION_UNLOCK", "1")
     module, args, value, build = production_fixture(tmp_path)
     if change == "helper":
         value["desktop_helpers"]["auth"]["sha256"] = "0" * 64
@@ -119,7 +131,7 @@ def test_production_assembly_rejects_unbound_or_mixed_inputs_before_copy(tmp_pat
     if args.production_native_build_receipt:
         args.production_native_build_receipt.write_text(json.dumps(build))
     with pytest.raises(ValueError):
-        module.assemble(args)
+        module.assemble(args, production_entry=True)
     assert not args.output.exists()
 
 
@@ -163,6 +175,7 @@ def test_audio_declaration_preserves_disabled_profile_and_identity(tmp_path: Pat
     assert produced["UIBackgroundModes"] == sorted(set((modes or []) + ["audio"]))
     assert produced["CosmasNativeAuth"] == profile["CosmasNativeAuth"]
     assert produced["CFBundleIdentifier"] == profile["CFBundleIdentifier"]
+    assert produced["CFBundleDisplayName"] == "Scribe S"
     assert produced["ScribeProviderApplication"] == {"enabled": False, "uploadOrigins": []}
     assert json.loads((args.output / "assembly.json").read_text())["installed"] is False
     assert (tmp_path / "profile.plist").read_bytes() == original

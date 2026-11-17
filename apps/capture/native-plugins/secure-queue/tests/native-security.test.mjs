@@ -73,8 +73,9 @@ test("isolates iOS Keychain integration tests in a simulator-only host", async (
   assert.doesNotMatch(hostedEntitlements, /\*/u);
   assert.doesNotMatch(productionProject, /SecureQueue(?:TestHost|HostedTests)/u);
   assert.doesNotMatch(productionPackage, /SecureQueue(?:TestHost|HostedTests)/u);
+  // App Debug/Release plus the recording-activity widget extension configs.
   const deploymentTargets = [...productionProject.matchAll(/IPHONEOS_DEPLOYMENT_TARGET = ([\d.]+);/gu)];
-  assert.equal(deploymentTargets.length, 4);
+  assert.equal(deploymentTargets.length, 6);
   assert.ok(deploymentTargets.every((target) => target[1] === "17.0"));
   assert.match(productionPackage, /platforms:\s*\[\.iOS\(\.v17\)\]/u);
   assert.doesNotMatch(swiftPackage, /\.testTarget\(/u);

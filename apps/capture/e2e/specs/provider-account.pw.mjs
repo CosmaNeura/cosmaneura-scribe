@@ -183,6 +183,11 @@ test("Settings > Delete account confirms against a synthetic Cosmas backend and 
   await expect(dialog.getByRole("button", { name: "Delete account", exact: true })).toBeDisabled();
   await dialog.getByLabel("Type DELETE to confirm").fill("DELETE");
   await dialog.getByRole("button", { name: "Delete account", exact: true }).click();
+  await expect(dialog.getByRole("status")).toContainText("You are signed out");
+  await expect(dialog.getByRole("button", { name: "Done", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Account deleted", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
   expect(await page.evaluate(() => window.accountLab.stats.deleteAccountCalls)).toBe(1);
   expect(await page.evaluate(() => window.accountLab.stats.signOutCalls)).toBe(1);

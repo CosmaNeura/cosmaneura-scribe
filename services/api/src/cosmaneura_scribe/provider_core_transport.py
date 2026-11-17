@@ -376,8 +376,12 @@ class ProviderCoreTransport:
             and type(expected_lease_generation) is int
             and intent.first_sequence_number == expected_first_sequence_number
             and intent.lease_generation == expected_lease_generation
-            and (expected_first_sequence_number == 0 and expected_lease_generation == 2
-                 or expected_first_sequence_number > 0 and expected_lease_generation >= 2)
+            and (
+                expected_first_sequence_number == 0
+                and expected_lease_generation == 2
+                or expected_first_sequence_number > 0
+                and expected_lease_generation >= 2
+            )
             and re.fullmatch(r"[A-Za-z0-9._~-]{16,160}", interaction_ref)
         )
         _secret(token)
@@ -387,7 +391,10 @@ class ProviderCoreTransport:
         opening.workload_headers = {"Authorization": "Bearer " + _secret(workload)}
         opening.context = await self._context(mount.selection)
         combined = await self._dispatch(
-            mount, "capture-operations", sequence, key,
+            mount,
+            "capture-operations",
+            sequence,
+            key,
             _NegotiatedMount(mount, token, interaction_ref, turn, opening),
         )
         result = source_start_reply(
@@ -822,7 +829,8 @@ class ProviderCoreTransport:
                         if (
                             path == _ROOT + "capture-notes"
                             and isinstance(payload, dict)
-                            and payload.get("action") == "template_preference"
+                            and cast(dict[str, object], payload).get("action")
+                            == "template_preference"
                             and response.status_code == 422
                         ):
                             # A legacy Core receiver does not recognize this optional
@@ -864,16 +872,21 @@ class ProviderCoreTransport:
                                 await self._context(selection)
                                 raise ProviderCoreUnavailable("core_provider_consent_required", 409)
                             if path == _ROOT + "capture-operations":
-                                operation_code = {
-                                    "CAPTURE_OPERATION_UNAVAILABLE": (
-                                        "core_provider_operation_unavailable",
-                                        409,
-                                    ),
-                                    "CAPTURE_OPERATION_CONFLICT": (
-                                        "core_provider_operation_conflict",
-                                        409,
-                                    ),
-                                }.get(failure.get("code"))
+                                failure_code = failure.get("code")
+                                operation_code = (
+                                    {
+                                        "CAPTURE_OPERATION_UNAVAILABLE": (
+                                            "core_provider_operation_unavailable",
+                                            409,
+                                        ),
+                                        "CAPTURE_OPERATION_CONFLICT": (
+                                            "core_provider_operation_conflict",
+                                            409,
+                                        ),
+                                    }.get(failure_code)
+                                    if isinstance(failure_code, str)
+                                    else None
+                                )
                                 if (
                                     operation_code is not None
                                     and failure.get("status") == 409

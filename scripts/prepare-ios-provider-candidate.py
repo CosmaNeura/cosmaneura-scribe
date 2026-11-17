@@ -11,11 +11,31 @@ import hashlib
 import json
 import plistlib
 import shutil
+import sys
 from pathlib import Path, PurePosixPath
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "standalone-provider"))
+from packaging_guard import (  # noqa: E402
+    STAGING_CORE,
+    environment_marker,
+    preflight_compile_environment,
+    preflight_tree,
+)
 
 
 def prepare(output: Path, native_source: Path, renderer: Path) -> None:
     repo = Path(__file__).resolve().parents[1]
+    preflight_compile_environment()
+    preflight_tree(repo / "apps/capture/ios", "iOS scaffold configuration")
+    preflight_tree(renderer, "iOS renderer payload")
+    for name in (
+        "cosmas-native-auth",
+        "ios-pcm-capture",
+        "ios-pcm-capacitor",
+        "native-recording",
+        "secure-queue",
+    ):
+        preflight_tree(native_source / name, "iOS native plugin configuration")
     receipt = json.loads((native_source / "source-manifest.json").read_text())
     for relative, expected in receipt["files"].items():
         reference = PurePosixPath(relative)
@@ -28,10 +48,19 @@ def prepare(output: Path, native_source: Path, renderer: Path) -> None:
         raise ValueError("Built renderer and a new review output directory are required")
     output.mkdir(parents=True, mode=0o700)
     capture = output / "apps/capture"
-    shutil.copytree(repo / "apps/capture/ios", capture / "ios",
-                    ignore=shutil.ignore_patterns("xcuserdata", ".swiftpm", "Package.resolved"))
+    shutil.copytree(
+        repo / "apps/capture/ios",
+        capture / "ios",
+        ignore=shutil.ignore_patterns("xcuserdata", ".swiftpm", "Package.resolved"),
+    )
     plugins = capture / "native-plugins"
-    for name in ("cosmas-native-auth", "ios-pcm-capture", "ios-pcm-capacitor", "native-recording", "secure-queue"):
+    for name in (
+        "cosmas-native-auth",
+        "ios-pcm-capture",
+        "ios-pcm-capacitor",
+        "native-recording",
+        "secure-queue",
+    ):
         shutil.copytree(native_source / name, plugins / name)
     app = capture / "ios/App/App"
     shutil.copytree(renderer, app / "public")
@@ -39,41 +68,86 @@ def prepare(output: Path, native_source: Path, renderer: Path) -> None:
     profile = plistlib.loads(profile_path.read_bytes())
     profile["CosmasNativeAuth"] = {"enabled": False}
     profile["ScribeProviderApplication"] = {"enabled": False, "uploadOrigins": []}
+    profile["CFBundleDisplayName"] = "Scribe " + environment_marker(STAGING_CORE)
     profile_path.write_bytes(plistlib.dumps(profile, sort_keys=False))
-    (app / "config.xml").write_text('<?xml version="1.0"?><widget id="com.cosmaneura.capture" version="1.0"/>\n')
-    (app / "capacitor.config.json").write_text(json.dumps({
-        "appId": "com.cosmaneura.capture", "appName": "Scribe", "webDir": "public", "loggingBehavior": "none",
-        "packageClassList": ["SecureQueuePlugin", "CosmasWorkspaceAuthPlugin", "IOSPCMCapacitorPlugin"],
-    }, indent=2) + "\n")
+    (app / "config.xml").write_text(
+        '<?xml version="1.0"?><widget id="com.cosmaneura.capture" version="1.0"/>\n'
+    )
+    (app / "capacitor.config.json").write_text(
+        json.dumps(
+            {
+                "appId": "com.cosmaneura.capture",
+                "appName": "Scribe",
+                "webDir": "public",
+                "loggingBehavior": "none",
+                "packageClassList": [
+                    "SecureQueuePlugin",
+                    "CosmasWorkspaceAuthPlugin",
+                    "IOSPCMCapacitorPlugin",
+                ],
+            },
+            indent=2,
+        )
+        + "\n"
+    )
     package = capture / "ios/App/CapApp-SPM/Package.swift"
     source = package.read_text()
-    dependency = '        .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.5.1"),'
+    dependency = (
+        '        .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", '
+        'exact: "8.5.1"),'
+    )
     product = '                .product(name: "Capacitor", package: "capacitor-swift-pm"),'
     if source.count(dependency) != 1 or source.count(product) != 1:
         raise ValueError("Capacitor source scaffold changed")
-    source = source.replace(dependency, dependency + '\n'
-        '        .package(name: "CosmasNativeAuthQualification", path: "../../../native-plugins/cosmas-native-auth"),\n'
-        '        .package(name: "CosmaneuraIOSPCMCapacitor", path: "../../../native-plugins/ios-pcm-capacitor"),')
-    source = source.replace(product, product + '\n'
-        '                .product(name: "CosmasWorkspaceAuthPlugin", package: "CosmasNativeAuthQualification"),\n'
-        '                .product(name: "CosmaneuraIOSPCMCapacitor", package: "CosmaneuraIOSPCMCapacitor"),')
+    source = source.replace(
+        dependency,
+        dependency + "\n"
+        '        .package(name: "CosmasNativeAuthQualification", '
+        'path: "../../../native-plugins/cosmas-native-auth"),\n'
+        '        .package(name: "CosmaneuraIOSPCMCapacitor", '
+        'path: "../../../native-plugins/ios-pcm-capacitor"),',
+    )
+    source = source.replace(
+        product,
+        product + "\n"
+        '                .product(name: "CosmasWorkspaceAuthPlugin", '
+        'package: "CosmasNativeAuthQualification"),\n'
+        '                .product(name: "CosmaneuraIOSPCMCapacitor", '
+        'package: "CosmaneuraIOSPCMCapacitor"),',
+    )
     package.write_text(source)
     # Explicit native class references prevent linker stripping, and registration
     # uses the same native owners as the qualified provider bridge.
     delegate = app / "SceneDelegate.swift"
-    source = delegate.read_text().replace("import Capacitor", "import Capacitor\nimport CosmasWorkspaceAuthPlugin\nimport CosmaneuraIOSPCMCapacitor")
+    source = delegate.read_text().replace(
+        "import Capacitor",
+        "import Capacitor\nimport CosmasWorkspaceAuthPlugin\nimport CosmaneuraIOSPCMCapacitor",
+    )
     source = source.replace("CAPBridgeViewController()", "ScribeReviewBridgeViewController()")
     source += "\nclass ScribeReviewBridgeViewController: CAPBridgeViewController {\n"
     source += "  override func capacitorDidLoad() {\n"
     source += "    bridge?.registerPluginInstance(CosmasWorkspaceAuthPlugin())\n"
     source += "    bridge?.registerPluginInstance(IOSPCMCapacitorPlugin())\n  }\n}\n"
     delegate.write_text(source)
-    files = {path.relative_to(output).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-             for path in sorted(output.rglob("*")) if path.is_file()}
-    (output / "candidate-source.json").write_text(json.dumps({
-        "schema": 1, "files_sha256": files, "bundle_identifier": "com.cosmaneura.capture",
-        "enabled": False, "signed": False, "installed": False,
-    }, indent=2) + "\n")
+    files = {
+        path.relative_to(output).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(output.rglob("*"))
+        if path.is_file()
+    }
+    (output / "candidate-source.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "files_sha256": files,
+                "bundle_identifier": "com.cosmaneura.capture",
+                "enabled": False,
+                "signed": False,
+                "installed": False,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
     print(json.dumps({"output": str(output), "files": len(files), "enabled": False}))
 
 

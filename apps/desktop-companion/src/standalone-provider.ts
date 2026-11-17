@@ -16,6 +16,7 @@ import { NativeMicrophoneInputService } from "./native-microphone-inputs.js";
 import { DesktopAudioPreflight } from "./desktop-audio-preflight.js";
 import { microphonePreferenceScope, openMicrophonePreferences } from "./microphone-preferences.js";
 import { resolveStandaloneNativeHelpers } from "./standalone-native-helpers.js";
+import { desktopScribeCancellation } from "./native-cancellation.js";
 
 interface PackagedRuntime {
   readonly packageDirectory: string;
@@ -51,6 +52,14 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
   })().catch(error => { closing = undefined; throw error; });
   return { dispose, host: {
     session: native,
+    cancellation: desktopScribeCancellation(native, runtime.userDataDirectory, runtime.protection, profile.workspaceId, abort.signal),
+    openDashboard: async signal => {
+      const before = await native.getState();
+      if (profile.enabled !== true || abort.signal.aborted || signal.aborted || before.phase !== "ready") throw unavailable();
+      await runtime.openExternal(profile.coreOrigin + "/notes");
+      const after = await native.getState();
+      if (abort.signal.aborted || signal.aborted || after.phase !== "ready" || after.revision !== before.revision) throw unavailable();
+    },
     connect: signal => {
       diagnostics("connect_begin");
       const run = (async () => {

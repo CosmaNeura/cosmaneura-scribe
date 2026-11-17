@@ -84,9 +84,13 @@ try {
                         await delay(cfg.configuration);
                         if (cfg.fail)
                             throw Error('fixture unavailable');
-                        return { enabled: true, coreOrigin: 'https://staging-app.cosmaneura.com', uploadOrigins: ['https://synthetic.blob.core.windows.net'] };
+                        return { enabled: true, profile: 'core-staging-personal-v1', coreOrigin: 'https://staging-app.cosmaneura.com', uploadOrigins: ['https://synthetic.blob.core.windows.net'] };
                     }, application: async () => { await delay(cfg.application); return { mount: root => { root.innerHTML = '<button data-fixture-ready>Your encounters</button>'; return async () => { }; } }; } });
                 await wait(() => root.querySelector('[data-fixture-ready],[data-session-action="retry-startup"]'));
+                const ready = Boolean(root.querySelector('[data-fixture-ready]'));
+                const failed = Boolean(root.querySelector('[data-session-action="retry-startup"]'));
+                if (cfg.fail ? !failed || ready : !ready || failed)
+                    throw Error('Startup fixture reached an unexpected outcome');
                 await frame();
                 completedAt = now();
                 outcome = cfg.fail ? 'actionable-error' : 'actionable-ready';

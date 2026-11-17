@@ -1,6 +1,9 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, screen, session } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, screen, session } from "electron";
 import { startElectronProvider } from "../src/electron-provider-host.js";
 import { requireMacAppStoreRuntime } from "../src/mac-app-store.js";
+import { installPublicMacPresentation } from "../src/public-app-release.js";
+
+installPublicMacPresentation(app, Menu, "Apple distribution");
 
 // Only the build target selects this entry. Store activation is a reviewed
 // compiled identity change; this cannot select a new backend or credential.

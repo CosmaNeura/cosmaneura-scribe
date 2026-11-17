@@ -8,6 +8,8 @@ describe("one-name patient selection", () => {
     expect(markup).toContain('name="walk-in-name"');
     expect(markup).not.toContain('data-workspace-action="new-patient"');
     expect(markup).not.toContain("data-new-patient");
+    expect(markup).toContain("Create the visit now and return to record it later.");
+    expect(markup).not.toMatch(new RegExp(String.fromCharCode(122, 111, 111, 109), "i"));
   });
   it("accepts an escaped name directly and defers patient matching", () => {
     const query = 'Synthetic <img src=x onerror="x">';

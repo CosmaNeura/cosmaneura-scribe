@@ -1,0 +1,10 @@
+.scribe-cancellation-dialog { width:min(34rem, calc(100vw - 2rem)); max-height:calc(100dvh - 2rem); overflow:auto; padding:1.5rem; border:1px solid #cbd5e1; border-radius:1rem; color:#172b3a; background:#fff; }
+.scribe-cancellation-dialog::backdrop { background:rgb(15 23 42 / 45%); }
+.scribe-cancellation-dialog h2 { margin-top:0; }
+.scribe-cancellation-dialog p { line-height:1.5; }
+.scribe-cancellation-dialog label { display:grid; gap:.5rem; font-weight:600; }
+.scribe-cancellation-dialog input { width:100%; box-sizing:border-box; padding:.65rem; font:inherit; border:1px solid #64748b; border-radius:.4rem; }
+.scribe-cancellation-actions { display:flex; flex-wrap:wrap; gap:.6rem; margin-top:1rem; }
+.scribe-cancellation-actions button { padding:.65rem .9rem; font:inherit; border-radius:.4rem; }
+.scribe-cancellation-actions [data-cancel-submit] { background:#7f1d1d; color:#fff; border:1px solid #7f1d1d; }
+.scribe-cancellation-actions button:disabled { opacity:.55; }

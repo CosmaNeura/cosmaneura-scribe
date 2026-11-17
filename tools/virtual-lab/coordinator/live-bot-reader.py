@@ -9,12 +9,12 @@ import hashlib
 import hmac
 import json
 import os
-from pathlib import Path
 import re
 import select
 import sys
 import time
 import urllib.parse
+from pathlib import Path
 
 MAX_INPUT = 16384
 MAX_OUTPUT = 262144
@@ -146,9 +146,9 @@ def project_provider(data, bot, recording, meeting, sequence):
 
 class Reader:
     def __init__(self, config):
+        import httpx
         import psycopg
         import redis
-        import httpx
         from typeid import TypeID
         need(exact(config, ('version', 'expected', 'privateScope', 'deployment')) and config['version'] == 1, 'configuration_invalid')
         self.expected = config['expected']
@@ -260,7 +260,8 @@ class Reader:
         # are present, they must independently agree; absence is not teardown.
         mappings = [value.decode('utf-8') if isinstance(value, bytes) else value for value in mappings]
         need(all(value is None or value == expected for value, expected in zip(mappings,
-             (self.expected['doctorRef'], self.expected['appointmentRef'], self.private['patientRef']))), 'legacy_mapping_foreign')
+             (self.expected['doctorRef'], self.expected['appointmentRef'], self.private['patientRef']),
+             strict=True)), 'legacy_mapping_foreign')
         runtime_row = {'botIdSHA256': None if bot is None else sha(bot), 'occurrenceDigest': occurrence}
         if stopped:
             need(generation is None or re.fullmatch('[0-9]{1,15}', generation), 'generation_invalid')

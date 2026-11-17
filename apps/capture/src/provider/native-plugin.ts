@@ -1,8 +1,9 @@
 import type { NativeRecordingCommand } from "./native-recorder";
 import type { MicrophoneInput } from "../native/microphone-input";
 import { registerPlugin, type PluginListenerHandle } from "@capacitor/core";
+import type { ProviderRuntimeProfile } from "./runtime-profile";
 
-export type ProviderAction = "catalog" | "encounters" | "mount" | "recorder" | "recorder-context" | "capture-admissions" | "capture-operations" | "capture-notes" | "note-opening";
+export type ProviderAction = "catalog" | "encounters" | "mount" | "recorder" | "recorder-context" | "capture-admissions" | "capture-operations" | "capture-notes" | "note-opening" | "cancellation" | "activation";
 export type ProviderSessionPhase = "disabled" | "loading" | "signedOut" | "signingIn" | "ready" | "signOutPending" | "unavailable";
 export interface ProviderSessionState {
   readonly phase: ProviderSessionPhase; readonly revision: string;
@@ -10,6 +11,7 @@ export interface ProviderSessionState {
   readonly accountIdentitySHA256?: string;
   readonly providerDisplayName?: string;
   readonly recordingSignInPreparationVersion?: 1;
+  readonly recordingInitialStartVersion?: 1;
   readonly desktopSourcePreparationVersion?: 1;
 }
 export interface NativeProviderSession {
@@ -35,6 +37,8 @@ export interface NativeProviderState {
   readonly recordingSignInPreparationVersion?: 1;
 }
 export interface ProviderNativePlugin {
+  recordProviderEntryTiming?(request: { revision: string; phase: "app-to-patients" | "patient-form"
+    | "patient-to-consent" | "patient-to-visit-ready" | "consent-to-record-ready"; durationMs: number }): Promise<void>;
   playProviderPassage?(request: { requestId: string; revision: string; workspaceId: string; bindingRef: string; sessionId: string; segmentId: string }): Promise<unknown>;
   readProviderPassage?(request: { requestId: string; revision: string }): Promise<unknown>;
   stopProviderPassage?(request: { requestId: string }): Promise<void>;
@@ -45,7 +49,7 @@ export interface ProviderNativePlugin {
   abandonProviderSignIn?(request: { preparationId: string }): Promise<void>;
   /** Read-only metadata; never starts or admits a recording. */
   getProviderActiveRecording?(request: { revision: string }): Promise<unknown>;
-  openProviderRecording?(request: { requestId: string; revision: string; workspaceId: string; bindingRef: string; sessionId: string; authorizationId?: string }): Promise<unknown>;
+  openProviderRecording?(request: { requestId: string; revision: string; workspaceId: string; bindingRef: string; sessionId: string; authorizationId?: string; initialStart?: true }): Promise<unknown>;
   providerRecordingCommand?(request: { requestId: string; revision: string; recorderId: string; kind: NativeRecordingCommand; input?: MicrophoneInput; inputId?: string }): Promise<unknown>;
   prepareProviderSource(request: { revision: string; workspaceId: string; bindingRef: string;
     sessionId: string; leaseId: string; leaseReceiptId: string; leaseGeneration: number;
@@ -61,9 +65,9 @@ export interface ProviderNativePlugin {
 
 export interface StandaloneProviderNative {
   getProviderConfiguration(): Promise<{ enabled: boolean; coreOrigin: string; uploadOrigins: string[];
-    /** Returned only by the receipt-gated, production-compiled native bridge. */
-    profile?: "core-production-organization-v1" | "core-production-personal-v1" }>;
-  openProviderCore(request: { appointmentRef: string | null }): Promise<void>;
+    /** Returned only when the sealed native identity and receiver profiles agree. */
+    profile?: ProviderRuntimeProfile }>;
+  openProviderCore(request: { appointmentRef: string | null } | { destination: "onboarding" }): Promise<void>;
 }
 
 export interface IOSRecordingOpenPlugin {

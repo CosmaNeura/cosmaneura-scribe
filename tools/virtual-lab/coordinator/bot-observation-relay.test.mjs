@@ -120,7 +120,7 @@ test('concurrent proof requests cannot overlap the collector lane', async t => {
 });
 
 test('invalid or credential-bearing DTO is never relayed and recording cannot restart', async t => {
-  const s = await setup(t, value => ({...value, providerToken: 'must-never-leave-collector'}));
+  const s = await setup(t, value => ({...value, providerToken: 'your-must-never-leave-collector'}));
   const response = await raw(s.relay.endpoint);
   assert.equal(response.status, 503); assert.equal(response.data.includes('must-never'), false);
   assert.equal((await raw(s.relay.endpoint)).status, 400); assert.equal(s.calls(), 1);

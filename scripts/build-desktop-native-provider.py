@@ -12,7 +12,16 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "standalone-provider"))
+from packaging_guard import (  # noqa: E402
+    preflight_compile_environment,
+    preflight_tree,
+    refuse_live_payload,
+    require_founder_unlock,
+)
 
 
 def build(
@@ -22,11 +31,45 @@ def build(
     mac_app_store: bool = False,
     mac_app_store_xpc: bool = False,
     production_organization: bool = False,
+    i_am_john_unlocking_production: bool = False,
 ) -> None:
+    if production_organization:
+        require_founder_unlock(i_am_john_unlocking_production)
+    preflight_compile_environment(production=production_organization)
+    repo = Path(__file__).resolve().parents[1]
+    for source, label in (
+        (native_auth / "vendor/Sources/ClerkKit", "native Clerk resources"),
+        (native_auth / "Sources/CosmasNativeAuth", "native auth resources"),
+        (
+            repo / "apps/capture/native-plugins/native-recording/Sources/CosmaneuraNativeRecording",
+            "native recording resources",
+        ),
+        (
+            repo / "apps/desktop-companion/native/ScribeDesktopAudio/Sources/ScribeStorePipe",
+            "native Store resources",
+        ),
+    ):
+        preflight_tree(source, label, production=production_organization)
     if mac_app_store and mac_app_store_xpc:
         raise ValueError("Select one explicit store topology")
     store = mac_app_store or mac_app_store_xpc
-    repo = Path(__file__).resolve().parents[1]
+    compile_definitions = []
+    if store:
+        compile_definitions += ["-Xswiftc", "-DSCRIBE_MAC_APP_STORE"]
+    if production_organization:
+        compile_definitions += ["-Xswiftc", "-DSCRIBE_PRODUCTION_ORGANIZATION"]
+    if mac_app_store_xpc:
+        compile_definitions += [
+            "-Xswiftc",
+            "-DSCRIBE_MAC_APP_STORE_XPC",
+            "-Xcc",
+            "-DSCRIBE_MAC_APP_STORE_XPC=1",
+        ]
+    refuse_live_payload(
+        compile_definitions,
+        "native compile definitions",
+        production=production_organization,
+    )
     output = output.resolve()
     output.mkdir(mode=0o700)
     package = output / "package"
@@ -150,17 +193,7 @@ let package = Package(name: "ScribeDesktopProvider", defaultLocalization: "en",
         "-debug-info-format",
         "none",
     ]
-    if store:
-        command += ["-Xswiftc", "-DSCRIBE_MAC_APP_STORE"]
-    if production_organization:
-        command += ["-Xswiftc", "-DSCRIBE_PRODUCTION_ORGANIZATION"]
-    if mac_app_store_xpc:
-        command += [
-            "-Xswiftc",
-            "-DSCRIBE_MAC_APP_STORE_XPC",
-            "-Xcc",
-            "-DSCRIBE_MAC_APP_STORE_XPC=1",
-        ]
+    command += compile_definitions
     environment = {
         **os.environ,
         "CLANG_MODULE_CACHE_PATH": str(output / "modules"),
@@ -208,6 +241,7 @@ if __name__ == "__main__":
     parser.add_argument("--mac-app-store", action="store_true")
     parser.add_argument("--mac-app-store-xpc", action="store_true")
     parser.add_argument("--production-organization", action="store_true")
+    parser.add_argument("--i-am-john-unlocking-production", action="store_true")
     options = parser.parse_args()
     build(
         options.output,
@@ -215,4 +249,5 @@ if __name__ == "__main__":
         mac_app_store=options.mac_app_store,
         mac_app_store_xpc=options.mac_app_store_xpc,
         production_organization=options.production_organization,
+        i_am_john_unlocking_production=options.i_am_john_unlocking_production,
     )

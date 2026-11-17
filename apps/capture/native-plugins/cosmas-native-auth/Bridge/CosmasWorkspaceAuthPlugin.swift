@@ -23,6 +23,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         CAPPluginMethod(name: "getProviderActiveRecording", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "takeRecordingOpenRequest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "providerRequest", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "recordProviderEntryTiming", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "recordProviderReadyTiming", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "cancelProviderRequest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "prepareProviderSignIn", returnType: CAPPluginReturnPromise),
@@ -260,6 +261,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                 value["nativeRecordingVersion"] = 2
                 value["nativePassagePlaybackVersion"] = 1
                 value["recordingSignInPreparationVersion"] = 1
+                if self.initialRecordingStartAvailable { value["recordingInitialStartVersion"] = 1 }
             }
             call.resolve(value)
         }
@@ -336,12 +338,23 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         #endif
     }
 
+    // Preparation scheduling only; Core consent/lease/source decisions remain
+    // unchanged. Keep this phone experiment in the signed staging application.
+    private var initialRecordingStartAvailable: Bool {
+        let settings = Bundle.main.object(forInfoDictionaryKey: "ScribeProviderReceiver") as? [String: Any]
+        return nativeRecordingAvailable && NativeProviderRecordingSelection.permitsEarlyMicrophone(
+            bundleIdentifier: Bundle.main.bundleIdentifier, receiverProfile: settings?["profile"] as? String)
+    }
+
     @objc nonisolated public func openProviderRecording(_ call: CAPPluginCall) {
         Task { @MainActor in
             #if os(iOS)
             do {
                 guard let options = call.options as? [String: Any] else { throw ProviderNativeError.invalidRequest }
                 let selection = try NativeProviderRecordingSelection(options)
+                guard !selection.initialStart || self.initialRecordingStartAvailable else {
+                    throw ProviderNativeError.unavailable
+                }
                 self.initializeAuth()
                 guard self.nativeRecordingAvailable, let auth = self.auth,
                       let connection = self.providerConnection else { throw ProviderNativeError.unavailable }
@@ -355,13 +368,29 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                 let result = try await Self.recordingBridge.open(selection, current: current, make: {
                     try await NativeProviderRecordingHost.make(connection: connection, auth: auth,
                         recovery: recovery, workspaceID: selection.workspaceID, bindingRef: selection.bindingRef,
-                        sessionID: selection.sessionID, revision: selection.revision, authorizationID: selection.authorizationID)
+                        sessionID: selection.sessionID, revision: selection.revision, authorizationID: selection.authorizationID,
+                        initialStart: selection.initialStart)
                 }, inputMuted: { AVAudioApplication.shared.isInputMuted })
                 call.resolve(result)
             } catch { Self.rejectProvider(call) }
             #else
             Self.rejectProvider(call)
             #endif
+        }
+    }
+
+    @objc nonisolated public func recordProviderEntryTiming(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            guard let value = call.options as? [String: Any], Set(value.keys) == ["revision", "phase", "durationMs"],
+                  let revision = value["revision"] as? String,
+                  UUID(uuidString: revision)?.uuidString.lowercased() == revision,
+                  let name = value["phase"] as? String, let phase = ProviderEntryTimingPhase(rawValue: name),
+                  let number = value["durationMs"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.isFinite, (0...600_000).contains(number.doubleValue),
+                  let auth = self.auth, auth.state().phase == .ready, auth.state().revision == revision
+            else { Self.rejectProvider(call); return }
+            ProviderNativeTimingJournal.shared.recordEntry(phase, milliseconds: number.doubleValue)
+            call.resolve()
         }
     }
 
@@ -506,10 +535,13 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
 
     @objc nonisolated public func openProviderCore(_ call: CAPPluginCall) {
         Task { @MainActor in
-            guard self.providerRequestsAvailable, self.auth?.state().phase == .ready,
-                  Set(call.options.keys) == ["appointmentRef"] else { return Self.rejectProvider(call) }
+            guard self.providerRequestsAvailable, self.auth?.state().phase == .ready else { return Self.rejectProvider(call) }
+            let revision = self.auth?.state().revision
             let path: String
-            if let appointment = call.getString("appointmentRef"),
+            if Set(call.options.keys) == ["destination"], call.getString("destination") == "onboarding" {
+                path = "/onboarding"
+            } else if Set(call.options.keys) != ["appointmentRef"] { return Self.rejectProvider(call) }
+            else if let appointment = call.getString("appointmentRef"),
                appointment.range(of: "^appointment_[0-7][0-9a-hjkmnp-tv-z]{25}$", options: .regularExpression) != nil {
                 path = "/notes/" + appointment
             } else if call.options["appointmentRef"] is NSNull { path = "/notes" }
@@ -518,7 +550,9 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             guard let configuration = Self.providerApplicationConfiguration(),
                   let origin = configuration["coreOrigin"] as? String,
                   let url = URL(string: origin + path),
-                  await UIApplication.shared.open(url) else { return Self.rejectProvider(call) }
+                   await UIApplication.shared.open(url), self.providerRequestsAvailable,
+                   self.auth?.state().phase == .ready, self.auth?.state().revision == revision
+            else { return Self.rejectProvider(call) }
             call.resolve()
             #else
             Self.rejectProvider(call)
@@ -610,7 +644,16 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
 #else
             return nil
 #endif
-        } else if !Set(settings.keys).isSubset(of: ["enabled", "uploadOrigins"]) { return nil }
+        } else {
+            guard Set(settings.keys).isSubset(of: ["enabled", "uploadOrigins"]) else { return nil }
+            if let auth = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any],
+               auth["identityProfile"] as? String == NativeIdentityProfile.coreStagingPersonal.rawValue,
+               auth["frontendOrigin"] as? String == "https://resolved-emu-53.clerk.accounts.dev",
+               let receiver = Bundle.main.object(forInfoDictionaryKey: "ScribeProviderReceiver") as? [String: Any],
+               receiver["profile"] as? String == "core-staging-https-v1" {
+                applicationProfile = NativeIdentityProfile.coreStagingPersonal.rawValue
+            } else if enabled { return nil }
+        }
         guard origins.count <= 1, (!enabled || origins.count == 1),
               origins.allSatisfy({ $0.range(of: "^https://[a-z0-9]{3,24}\\.blob\\.core\\.windows\\.net$",
                                               options: .regularExpression) != nil }) else { return nil }
@@ -740,7 +783,11 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
     @MainActor private static func payload(_ state: NativeAuthState) -> [String: Any] {
         let settings = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any]
         let profile = (settings?["identityProfile"] as? String).flatMap(NativeIdentityProfile.init(rawValue:))
-        return NativeAuthPayload.state(state, identityProfile: profile)
+        var value = NativeAuthPayload.state(state, identityProfile: profile)
+        if let digest = NativeAuthPayload.accountIdentitySHA256(state) {
+            value["accountIdentitySHA256"] = digest
+        }
+        return value
     }
 
     private static func reject(_ call: CAPPluginCall) {

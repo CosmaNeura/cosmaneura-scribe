@@ -4,7 +4,7 @@ import type { ChildProcessByStdio } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
-import { basename, dirname, isAbsolute } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { DesktopPCMDriver, DesktopPCMDriverSession, DesktopPCMFailure,
   DesktopPCMStart, DesktopPCMCompletion, DesktopCaptureAuthorization } from "./native-pcm-driver.js";
@@ -12,6 +12,7 @@ import { parseDesktopPCMStart, parseDesktopPCMCompletion } from "./pcm-capture-s
 import { NativeProcessDecoder, nativeCommand, nativeMetadata, exactKeys } from "./native-process-wire.js";
 import type { RuntimeDiagnostic, RuntimeTimingEvent } from "./runtime-diagnostics.js";
 import { StoreBridgeDiagnosticDecoder } from "./store-bootstrap-diagnostics.js";
+import { STORE_BRIDGE_HASH_ALGORITHM, storeBridgeMachoSha256 } from "./store-bridge-macho-hash.js";
 
 export interface AuthorizedDesktopSelection {
   readonly application: "com.google.Chrome" | "us.zoom.xos" | "microphone";
@@ -27,6 +28,8 @@ export interface NativeProcessDriverOptions {
   readonly microphoneUID?: () => string | null;
   readonly helperPath: string;
   readonly helperSha256: string;
+  /** Only the fixed MAS bridge permits Apple's bounded signature-size changes. */
+  readonly helperHashAlgorithm?: typeof STORE_BRIDGE_HASH_ALGORITHM;
   /** Observed native workstation state, supplied by the trusted host. */
   readonly isSessionActive: () => boolean;
   /** Fresh existing capability/consent/lease/indicator authority. No credentials
@@ -374,33 +377,55 @@ async function timed<T>(options: Pick<NativeProcessDriverOptions, "diagnostics">
 function launch(path: string, mode: string): Child {
   return spawn(path, [mode], { stdio: ["pipe", "pipe", "ignore"], env: {}, cwd: dirname(path), windowsHide: true });
 }
-export async function verifyNativeHelper(options: Pick<NativeProcessDriverOptions, "helperPath" | "helperSha256">): Promise<void> {
+export async function verifyNativeHelper(options: Pick<NativeProcessDriverOptions, "helperPath" | "helperSha256" | "helperHashAlgorithm">): Promise<void> {
   if (!isAbsolute(options.helperPath) || !/^[a-f0-9]{64}$/u.test(options.helperSha256)
     || await realpath(options.helperPath) !== options.helperPath) throw failure();
+  if (options.helperHashAlgorithm !== undefined) {
+    const app = dirname(dirname(dirname(options.helperPath)));
+    if (options.helperHashAlgorithm !== STORE_BRIDGE_HASH_ALGORITHM || process.platform !== "darwin"
+      || !("mas" in process && process.mas === true) || !basename(app).endsWith(".app")
+      || options.helperPath !== join(app, "Contents", "MacOS", "ScribeStorePipeBridge")
+      || process.execPath !== join(app, "Contents", "MacOS", "Cosmaneura Scribe Store")) throw failure();
+  }
   const file = await open(options.helperPath, constants.O_RDONLY | constants.O_NOFOLLOW);
   const bytes = Buffer.alloc(65_536);
   try {
     const before = await file.stat();
     if (!before.isFile() || before.size < 1 || before.size > 134_217_728
       || (before.mode & 0o022) !== 0 || (before.mode & 0o111) === 0) throw failure();
-    const hash = createHash("sha256");
     let length = 0;
-    for (;;) {
-      const { bytesRead } = await file.read(bytes, 0, bytes.length, null);
-      if (!bytesRead) break;
-      length += bytesRead;
-      if (length > before.size) throw failure();
-      hash.update(bytes.subarray(0, bytesRead)); bytes.fill(0);
+    let actualHash: string;
+    if (options.helperHashAlgorithm === STORE_BRIDGE_HASH_ALGORITHM) {
+      const contents = Buffer.alloc(before.size);
+      try {
+        while (length < before.size) {
+          const { bytesRead } = await file.read(contents, length, Math.min(65_536, before.size - length), null);
+          if (!bytesRead) break;
+          length += bytesRead;
+        }
+        if (length !== before.size) throw failure();
+        actualHash = storeBridgeMachoSha256(contents);
+      } finally { contents.fill(0); }
+    } else {
+      const hash = createHash("sha256");
+      for (;;) {
+        const { bytesRead } = await file.read(bytes, 0, bytes.length, null);
+        if (!bytesRead) break;
+        length += bytesRead;
+        if (length > before.size) throw failure();
+        hash.update(bytes.subarray(0, bytesRead)); bytes.fill(0);
+      }
+      actualHash = hash.digest("hex");
     }
     const after = await lstat(options.helperPath);
     if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size
-      || after.mtimeMs !== before.mtimeMs || length !== before.size || hash.digest("hex") !== options.helperSha256) throw failure();
+      || after.mtimeMs !== before.mtimeMs || length !== before.size || actualHash !== options.helperSha256) throw failure();
   } finally { bytes.fill(0); await file.close(); }
 }
 /** Explicit provider setup without a recorder, capture selection or consent grant.
  * The packaged helper/hash and live session gate remain trusted main inputs. */
 export async function requestNativeRecordingAccess(options: Pick<NativeProcessDriverOptions,
-  "enabled" | "helperPath" | "helperSha256" | "isSessionActive" | "diagnostics">,
+  "enabled" | "helperPath" | "helperSha256" | "helperHashAlgorithm" | "isSessionActive" | "diagnostics">,
   signal: AbortSignal, microphoneOnly: boolean): Promise<boolean> {
   requireMain();
   try {

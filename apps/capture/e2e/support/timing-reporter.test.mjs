@@ -6,7 +6,7 @@ import test from "node:test";
 import Reporter from "./timing-reporter.mjs";
 
 test("timing evidence retains failure without leaking opaque test or request data", () => {
-  const secret = "opaque-credential-transcript-sentinel";
+  const secret = "your-opaque-credential-transcript-sentinel";
   const previous = { report: process.env.SCRIBE_TIMING_REPORT, commit: process.env.SCRIBE_TEST_COMMIT };
   process.env.SCRIBE_TIMING_REPORT = join(mkdtempSync(join(tmpdir(), "scribe-timing-")), "result.json");
   process.env.SCRIBE_TEST_COMMIT = secret;

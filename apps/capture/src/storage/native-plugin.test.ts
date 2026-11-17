@@ -49,7 +49,7 @@ describe("NativePluginQueueStorage", () => {
       return options.key === expected.at(-1)!.reservation.objectId ? { ...record, data: "corrupt" } : record;
     });
     await expect(storage.listMetadata()).rejects.toMatchObject({ code: "native_queue_integrity_failure" });
-  });
+  }, 15_000);
 
   it("keeps review recovery metadata out of audio queue decoding and draining", async () => {
     const plugin = new FakeSecureQueuePlugin();

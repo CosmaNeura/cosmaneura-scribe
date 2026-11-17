@@ -2,19 +2,20 @@
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from azure_ingress import STAGING_ORIGIN
 from core_context_receiver import CoreContextReceiver
 from cosmaneura_scribe.provider_core_transport import ProviderCoreUnavailable
 from cosmas_os.api import auth
 from cosmas_os.config import Settings
 from pydantic import SecretStr
 from receiver import ProviderReceiver, ReceiverProfile
-from receiver_runtime import ReceiverConfiguration, build_runtime
+from receiver_runtime import ReceiverConfiguration, build_runtime, identity_arguments
 from test_production_composition import configured, personal_config, production, validate
 from test_production_native_policy import OfflineKeys, claims, personal_settings, settings, signed
 
@@ -45,15 +46,182 @@ def config(**changes):
     )
 
 
-def test_new_mode_is_default_off_and_cannot_mix_registry_or_staging():
+def staging_config(**changes):
+    return validate(
+        configured(
+            authority_backend="core-provider-context-v1",
+            database_host=None,
+            database_name=None,
+            database_reader_role=None,
+            **changes,
+        )
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route,source_action",
+    [("source-start", "prepare"), ("source-start", "authorize"), ("source-start-ready", "prepare")],
+)
+@pytest.mark.parametrize(
+    "revocation", [None, "catalog", "workload", "response", "workload_changed", "response_changed"]
+)
+async def test_native_source_routes_keep_current_authority_and_three_context_reads(
+    route, source_action, revocation, monkeypatch
+):
+    monkeypatch.setattr(
+        "receiver.Session", lambda *_args, **_kwargs: pytest.fail("Registry forbidden")
+    )
+    client, token, _paths, verifier = receiver(staging=True)
+    context_handler = client.core_http.handler
+    context_actions, native_calls = [], []
+    revoked = catalog_done = changed = False
+    original_workload = client.workload_token
+    key = str(uuid4())
+    payload = {
+        "workspace_id": WORKSPACE,
+        "binding_ref": "scribe_capture_binding_00000000000000000000000003",
+        "request_nonce": str(uuid4()),
+        "operation": {
+            "kind": "source_start",
+            "action": source_action,
+            "payload": {
+                "schema_version": "1.0",
+                "attempt_id": str(uuid4()),
+                "source": "ios_microphone",
+                "owner_proof": "a" * 64,
+                "lease_id": str(uuid4()),
+                "lease_receipt_id": str(uuid4()),
+                "lease_generation": 1,
+                "capture_authorized_until": (datetime.now(UTC) + timedelta(minutes=10)).isoformat(),
+            },
+        },
+    }
+    if route == "source-start-ready":
+        payload.update(authorize_idempotency_key=str(uuid4()), authorize_request_nonce=str(uuid4()))
+
+    async def workload():
+        nonlocal revoked, changed
+        if revocation == "workload" and catalog_done:
+            revoked = True
+        if revocation == "workload_changed" and catalog_done:
+            changed = True
+        return await original_workload()
+
+    def handle(request):
+        nonlocal revoked, catalog_done, changed
+        assert str(request.url).startswith(client.profile.core_origin + "/")
+        data = json.loads(request.content)
+        if request.url.path == "/service/v1/agent/scribe/provider-context":
+            context_actions.append(data["action"])
+            if revoked:
+                return httpx.Response(403)
+            response = context_handler(request)
+            if changed:
+                value = response.json()
+                connection = value["connection"]
+                connection["review_sha256"] = "b" * 64
+                connection.pop("connection_sha256")
+                connection["connection_sha256"] = hashlib.sha256(
+                    json.dumps(
+                        connection, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                    ).encode()
+                ).hexdigest()
+                response = httpx.Response(200, json=value, headers=response.headers)
+            if data["action"] == "catalog":
+                catalog_done = True
+                if revocation == "catalog":
+                    revoked = True
+            return response
+        assert request.url.path == "/service/v1/agent/scribe/native-capture"
+        assert data["action"] == "workflow_operation"
+        assert request.headers["authorization"] == "Bearer " + token
+        assert request.headers["idempotency-key"] == key
+        assert data["expected_actor_ref"] == ACTOR and data["expected_tenant_ref"] == TENANT
+        native_calls.append(request)
+        if revocation == "response":
+            revoked = True
+        if revocation == "response_changed":
+            changed = True
+        now = datetime.now(UTC)
+        common = {
+            **{k: v for k, v in data["operation"]["payload"].items() if k != "owner_proof"},
+            "session_id": str(uuid4()),
+            "source_start_id": str(uuid4()),
+            "creator_actor_id": ACTOR,
+            "consent_record_id": str(uuid4()),
+            "capability_id": str(uuid4()),
+            "preparation_expires_at": (now + timedelta(seconds=30)).isoformat(),
+        }
+        prepared = {**common, "state": "prepared", "issued_at": None, "expires_at": None}
+        issued = {
+            **common,
+            "state": "issued",
+            "issued_at": now.isoformat(),
+            "expires_at": (now + timedelta(seconds=15)).isoformat(),
+        }
+        authorization = {"receipt": issued, "secret": "a" * 64}
+        receipt = authorization if source_action == "authorize" else prepared
+        operation = "source_start"
+        if route == "source-start-ready":
+            operation = "source_start_sequence"
+            receipt = {"preparation": prepared, "authorization": authorization}
+        return httpx.Response(
+            200,
+            json={
+                "version": "1",
+                "action": "workflow_operation",
+                "actor_ref": ACTOR,
+                "tenant_ref": TENANT,
+                "result": {
+                    **{k: data[k] for k in ("workspace_id", "binding_ref", "request_nonce")},
+                    "contract_version": "1",
+                    "checked_at": now.isoformat(),
+                    "operation": operation,
+                    "receipt": receipt,
+                },
+            },
+            headers={"Cache-Control": "no-store", "X-Cosmaneura-Native-Capture-Version": "1"},
+        )
+
+    client.workload_token = workload
+    client.core_http = httpx.MockTransport(handle)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=client.app()), base_url=client.profile.origin
+        ) as http:
+            response = await http.post(
+                "/provider/v1/" + route,
+                json=payload,
+                headers={
+                    "Origin": "app://cosmas",
+                    "Authorization": "Bearer " + token,
+                    "X-Scribe-Native-Revision": str(uuid4()),
+                    "Idempotency-Key": key,
+                },
+            )
+        assert response.status_code == (403 if revocation else 200)
+        if revocation:
+            assert response.json() == {"detail": "core_provider_access_unavailable"}
+        before_dispatch = revocation in {"catalog", "workload", "workload_changed"}
+        assert len(native_calls) == (0 if before_dispatch else 1)
+        assert context_actions == ["catalog", "connection"] + (
+            [] if before_dispatch else ["connection"]
+        )
+    finally:
+        verifier.close()
+
+
+def test_new_mode_is_default_off_and_cannot_mix_registry_configuration():
     assert ReceiverConfiguration().authority_backend == "registry"
     assert not ReceiverConfiguration().enabled
     assert config().database_host is None
     personal = validate(personal_config())
     assert personal.authority_backend == "core-provider-context-v1"
     assert personal.database_host is None and personal.production.organization_id is None
+    assert staging_config().profile == "core-staging-personal-v1"
+    assert staging_config().production is None
     for changes in (
-        {"profile": "core-staging-personal-v1", "production": None},
         {"database_name": "forbidden"},
         {"core_scope": "api://00000000-0000-0000-0000-000000000000/.default"},
     ):
@@ -62,30 +230,51 @@ def test_new_mode_is_default_off_and_cannot_mix_registry_or_staging():
             ReceiverConfiguration.model_validate_json(json.dumps(values))
 
 
-def receiver(*, deny=False, revoke_after_native=False, full=False, core_full=None, personal=False):
-    projected = (
-        personal_settings(Settings, "app://cosmas")
-        if personal
-        else settings(Settings, "app://cosmas")
-    )
+def receiver(
+    *,
+    deny=False,
+    revoke_after_native=False,
+    full=False,
+    core_full=None,
+    personal=False,
+    staging=False,
+):
+    assert not (personal and staging)
+    core_origin = "https://staging-app.cosmaneura.com" if staging else "https://app.cosmaneura.com"
+    if staging:
+        projected_arguments, verifier_arguments = identity_arguments(
+            staging_config(desktop_native_session_without_origin=True), "desktop"
+        )
+        projected = Settings(_env_file=None, **projected_arguments)
+    else:
+        projected = (
+            personal_settings(Settings, "app://cosmas")
+            if personal
+            else settings(Settings, "app://cosmas")
+        )
+        verifier_arguments = dict(
+            production_native_origin="app://cosmas",
+            production_native_policy_receipt_sha256="4" * 64,
+            production_core_personal_session=personal,
+        )
     verifier = auth.ClerkTokenVerifier(
         projected,
         jwks_client=OfflineKeys(),
         start_background_refresh=False,
-        production_native_origin="app://cosmas",
-        production_native_policy_receipt_sha256="4" * 64,
-        production_core_personal_session=personal,
+        **verifier_arguments,
     )
     token_claims = claims(azp="app://cosmas")
-    if personal:
+    if personal or staging:
         token_claims.pop("org_id")
         token_claims.pop("aud")
+    if staging:
+        token_claims["iss"] = "https://resolved-emu-53.clerk.accounts.dev"
     token = signed(token_claims)
     calls = []
     revoked = False
 
     async def workload():
-        return SecretStr("synthetic-workload-token")
+        return SecretStr("your-synthetic-workload-token")
 
     def reply(request):
         nonlocal revoked
@@ -93,7 +282,7 @@ def receiver(*, deny=False, revoke_after_native=False, full=False, core_full=Non
         assert request.headers["authorization"] == "Bearer " + token
         assert (
             request.headers["x-cosmaneura-workload-authorization"]
-            == "Bearer synthetic-workload-token"
+            == "Bearer your-synthetic-workload-token"
         )
         if request.url.path == "/service/v1/agent/scribe/native-capture":
             body = json.loads(request.content)
@@ -130,10 +319,7 @@ def receiver(*, deny=False, revoke_after_native=False, full=False, core_full=Non
                 },
                 headers={"Cache-Control": "no-store", "X-Cosmaneura-Native-Capture-Version": "1"},
             )
-        assert (
-            str(request.url)
-            == "https://app.cosmaneura.com/service/v1/agent/scribe/provider-context"
-        )
+        assert str(request.url) == core_origin + "/service/v1/agent/scribe/provider-context"
         if deny or revoked:
             return httpx.Response(403)
         body = json.loads(request.content)
@@ -185,11 +371,17 @@ def receiver(*, deny=False, revoke_after_native=False, full=False, core_full=Non
 
     result = CoreContextReceiver(
         ReceiverProfile(
-            ORIGIN,
-            "https://app.cosmaneura.com",
+            STAGING_ORIGIN if staging else ORIGIN,
+            core_origin,
             uuid4(),
             frozenset({"app://cosmas"}),
-            identity_profile="core-production-personal-v1" if personal else "clerk-organization-v1",
+            identity_profile=(
+                "core-staging-personal-v1"
+                if staging
+                else "core-production-personal-v1"
+                if personal
+                else "clerk-organization-v1"
+            ),
         ),
         None,
         projected,
@@ -204,16 +396,18 @@ def receiver(*, deny=False, revoke_after_native=False, full=False, core_full=Non
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("personal", [False, True])
-async def test_catalog_and_selection_revalidate_core_without_any_registry(monkeypatch, personal):
+@pytest.mark.parametrize("personal,staging", [(False, False), (True, False), (False, True)])
+async def test_catalog_and_selection_revalidate_core_without_any_registry(
+    monkeypatch, personal, staging
+):
     def no_sql(*args, **kwargs):
         raise AssertionError("No registry SQL may run")
 
     monkeypatch.setattr("receiver.Session", no_sql)
-    client, token, calls, verifier = receiver(personal=personal)
+    client, token, calls, verifier = receiver(personal=personal, staging=staging)
     try:
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=client.app()), base_url=ORIGIN
+            transport=httpx.ASGITransport(app=client.app()), base_url=client.profile.origin
         ) as http:
             response = await http.post(
                 "/provider/v1/catalog",
@@ -226,13 +420,14 @@ async def test_catalog_and_selection_revalidate_core_without_any_registry(monkey
             )
             assert response.status_code == 200
             value = response.json()
-            assert value["environment"] == "Production" and value["encounter_creation_v1"] is True
+            assert value["environment"] == ("Staging" if staging else "Production")
+            assert value["encounter_creation_v1"] is True
             assert value["existing_patient_visits_v1"] is True
             assert value["encounters"][0]["workspaceId"] == WORKSPACE
             assert response.headers["cache-control"] == "no-store"
         selected, _ = await client.selected_current("Bearer " + token, uuid4(), UUID(WORKSPACE))
         assert selected.selection.actor_ref == ACTOR and selected.selection.tenant_ref == TENANT
-        assert len(calls) >= 6 and client.engine is None
+        assert len(calls) == 3 and client.engine is None
         with pytest.raises(ProviderCoreUnavailable):
             await client.encounters("Bearer " + token, {"action": "create"}, str(uuid4()))
     finally:
@@ -257,7 +452,7 @@ async def test_qualified_existing_patient_creation_uses_native_core_and_no_regis
         assert request.headers["authorization"] == "Bearer " + token
         assert (
             request.headers["x-cosmaneura-workload-authorization"]
-            == "Bearer synthetic-workload-token"
+            == "Bearer your-synthetic-workload-token"
         )
         assert request.headers["idempotency-key"] == creation_key
         body = json.loads(request.content)
@@ -332,8 +527,10 @@ async def test_core_denial_and_missing_signed_session_never_fall_back(monkeypatc
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("personal", [False, True])
-async def test_runtime_new_mode_never_constructs_engine_or_requests_pg_token(monkeypatch, personal):
+@pytest.mark.parametrize("personal,staging", [(False, False), (True, False), (False, True)])
+async def test_runtime_new_mode_never_constructs_engine_or_requests_pg_token(
+    monkeypatch, personal, staging
+):
     calls = []
     original = auth.ClerkTokenVerifier
 
@@ -344,7 +541,7 @@ async def test_runtime_new_mode_never_constructs_engine_or_requests_pg_token(mon
         async def get_token(self, scope):
             assert scope == config().core_scope
             calls.append("core-token")
-            return SimpleNamespace(token="synthetic-workload-token", expires_on=10**10)
+            return SimpleNamespace(token="your-synthetic-workload-token", expires_on=10**10)
 
         async def close(self):
             calls.append("close")
@@ -360,7 +557,10 @@ async def test_runtime_new_mode_never_constructs_engine_or_requests_pg_token(mon
     monkeypatch.setattr("azure.identity.aio.ManagedIdentityCredential", Credential)
     monkeypatch.setattr(auth, "ClerkTokenVerifier", make_verifier)
     monkeypatch.setattr("sqlalchemy.ext.asyncio.create_async_engine", forbidden_engine)
-    resources = await build_runtime(validate(personal_config()) if personal else config())
+    selected = (
+        staging_config() if staging else validate(personal_config()) if personal else config()
+    )
+    resources = await build_runtime(selected)
     await resources.close()
     assert calls == ["identity", "close"]
 
@@ -375,7 +575,7 @@ def test_existing_receiver_record_operations_are_unchanged():
         [
             "git",
             "show",
-            "6ca3b86d40859063ad29f7b111e49efafe4d1091:scripts/standalone-provider/receiver.py",
+            "0784c2451f42da7fb46abafddc3db18a5ca6bbda:scripts/standalone-provider/receiver.py",
         ],
         cwd=root,
         check=True,
@@ -478,11 +678,14 @@ async def test_full_receiver_opt_in_without_core_gate_keeps_the_existing_only_ca
 
 
 @pytest.mark.asyncio
-async def test_full_native_catalog_and_five_actions_use_fresh_core_v2_without_registry(monkeypatch):
+@pytest.mark.parametrize("staging", [False, True])
+async def test_full_native_catalog_and_five_actions_use_fresh_core_v2_without_registry(
+    monkeypatch, staging
+):
     monkeypatch.setattr(
         "receiver.Session", lambda *_args, **_kwargs: pytest.fail("Registry forbidden")
     )
-    client, token, calls, verifier = receiver(full=True)
+    client, token, calls, verifier = receiver(full=True, staging=staging)
     original = client.core_http
     assert isinstance(original, httpx.MockTransport)
     patient = "patient_00000000000000000000000007"
@@ -542,7 +745,7 @@ async def test_full_native_catalog_and_five_actions_use_fresh_core_v2_without_re
     client.core_http = httpx.MockTransport(reply)
     try:
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=client.app()), base_url=ORIGIN
+            transport=httpx.ASGITransport(app=client.app()), base_url=client.profile.origin
         ) as http:
             headers = {
                 "Origin": "app://cosmas",
@@ -552,6 +755,7 @@ async def test_full_native_catalog_and_five_actions_use_fresh_core_v2_without_re
             catalog = await http.post("/provider/v1/catalog", json={}, headers=headers)
             assert catalog.status_code == 200
             assert catalog.json()["native_visit_actions_v2"] is True
+            assert catalog.json()["native_create_opening_v1"] is True
             assert catalog.json()["existing_patient_visits_v1"] is True
             for action in (
                 "create",
@@ -586,13 +790,111 @@ async def test_full_native_catalog_and_five_actions_use_fresh_core_v2_without_re
                         )
                     if action == "private_note_save":
                         body.update(change_key=key, expected_version=0, text="Invented reminder")
+                call_start = len(calls)
                 response = await http.post(
                     "/provider/v1/encounters",
                     json=body,
                     headers={**headers, "Idempotency-Key": key},
                 )
                 assert response.status_code == 200 and response.json()["version"] == "2"
+                # Version negotiation is the initial account snapshot, followed
+                # by fresh checks after workload minting and native publication.
+                context_path = (
+                    client.profile.core_origin + "/service/v1/agent/scribe/provider-context"
+                )
+                native_path = (
+                    client.profile.core_origin + "/service/v1/agent/scribe/native-encounters"
+                )
+                assert calls[call_start:] == [context_path, context_path, native_path, context_path]
             assert len([p for p in calls if "native-encounters" in p]) == 5
             assert not any("/embed/" in p for p in calls) and client.engine is None
+    finally:
+        verifier.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", [None, "patient", "appointment", "scope", "unavailable", "timeout", "nonce", "null"]
+)
+async def test_combined_creation_binds_opening_and_preserves_retry_key(monkeypatch, failure):
+    client, token, _calls, verifier = receiver(full=True, staging=True)
+    key, revision = str(uuid4()), str(uuid4())
+    scope = str(uuid4())
+    patient = "patient_00000000000000000000000007"
+    creates, mounts = [], []
+
+    async def create(authorization, body, retry_key):
+        assert authorization == "Bearer " + token
+        assert "opening_nonce" not in body
+        creates.append(retry_key)
+        return {
+            "version": "2",
+            "action": "create",
+            "creation_key": retry_key,
+            "request_nonce": body["request_nonce"],
+            "recoveryScope": scope,
+            "account": {"email": "provider@synthetic.invalid"},
+            "encounter": {
+                "workspace_id": WORKSPACE,
+                "appointment_ref": ROW["appointment_ref"],
+                "patient_ref": patient,
+            },
+        }
+
+    async def mount(authorization, received_revision, action, body, retry_key):
+        assert authorization == "Bearer " + token and str(received_revision) == revision
+        assert action == "mount" and body == {"workspace_id": WORKSPACE, "opening_nonce": key}
+        assert UUID(retry_key)
+        mounts.append(retry_key)
+        if failure == "unavailable":
+            raise ProviderCoreUnavailable("synthetic_unavailable", 503)
+        if failure == "timeout":
+            raise TimeoutError
+        return {
+            "revision": revision,
+            "workspaceId": WORKSPACE,
+            "recoveryScope": str(uuid4()) if failure == "scope" else scope,
+            "appointmentRef": "other" if failure == "appointment" else ROW["appointment_ref"],
+            "encounter": {"patientRef": "other" if failure == "patient" else patient},
+        }
+
+    monkeypatch.setattr(client, "encounters", create)
+    monkeypatch.setattr(client, "native_core_read", mount)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=client.app()), base_url=client.profile.origin
+        ) as http:
+            body = {
+                "action": "create",
+                "creation_key": key,
+                "request_nonce": str(uuid4()),
+                "opening_nonce": None
+                if failure == "null"
+                else str(uuid4())
+                if failure == "nonce"
+                else key,
+            }
+            headers = {
+                "Origin": "app://cosmas",
+                "Authorization": "Bearer " + token,
+                "X-Scribe-Native-Revision": revision,
+                "Idempotency-Key": key,
+            }
+            for _attempt in range(2):
+                response = await http.post("/provider/v1/encounters", json=body, headers=headers)
+                assert response.status_code == (
+                    200
+                    if failure is None
+                    else 503
+                    if failure in {"unavailable", "timeout"}
+                    else 403
+                )
+                if failure is None:
+                    assert response.json()["opening"]["workspaceId"] == WORKSPACE
+                    assert response.json()["creation_key"] == key
+                else:
+                    assert "opening" not in response.json()
+            assert creates == ([] if failure in {"nonce", "null"} else [key, key])
+            assert len(mounts) == (0 if failure in {"nonce", "null"} else 2)
     finally:
         verifier.close()

@@ -45,6 +45,56 @@ final class NativeDesktopStoreContainerTests: XCTestCase {
         }
     }
 
+    func testAppleTestFlightReportingMarkerPreservesEachExactRole() throws {
+        for bundle in NativeDesktopStoreContainer.helpers {
+            var value = claims(bundle); value["beta-reports-active"] = true
+            try NativeDesktopStoreContainer.validateMembership(value, bundle: bundle, approvedGroup: group)
+            value["com.apple.developer.team-identifier"] = "OTHERTEAM"
+            XCTAssertThrowsError(try NativeDesktopStoreContainer.validateMembership(value, bundle: bundle, approvedGroup: group))
+        }
+    }
+
+    func testAppStoreAbsenceOfBetaReportsActiveStillAcceptsExactRoles() throws {
+        for bundle in NativeDesktopStoreContainer.helpers {
+            try NativeDesktopStoreContainer.validateMembership(claims(bundle), bundle: bundle, approvedGroup: group)
+        }
+    }
+
+    func testUnprovenDebuggerAllowKeysRemainRejectedForEveryHelper() {
+        // Bare get-task-allow (TN2415 iOS/profile spelling) and the macOS
+        // com.apple.security.get-task-allow spelling both fail closed until a
+        // verified App Store Connect / codesign dump proves which MAS re-sign
+        // actually injects. Boolean false and NSNumber(0) are still unknown keys.
+        for bundle in NativeDesktopStoreContainer.helpers {
+            for key in ["get-task-allow", "com.apple.security.get-task-allow"] {
+                for taskAllow: Any in [false, true, NSNumber(value: 0), NSNumber(value: 1), "false", [false]] {
+                    var value = claims(bundle); value[key] = taskAllow
+                    XCTAssertThrowsError(try NativeDesktopStoreContainer.validateMembership(value, bundle: bundle, approvedGroup: group))
+                }
+                var withReporting = claims(bundle)
+                withReporting["beta-reports-active"] = true
+                withReporting[key] = false
+                XCTAssertThrowsError(try NativeDesktopStoreContainer.validateMembership(withReporting, bundle: bundle, approvedGroup: group))
+            }
+            var unknownWithFalseAllow = claims(bundle)
+            unknownWithFalseAllow["get-task-allow"] = false
+            unknownWithFalseAllow["com.apple.security.temporary-exception.files.home-relative-path.read-write"] = ["/"]
+            XCTAssertThrowsError(try NativeDesktopStoreContainer.validateMembership(unknownWithFalseAllow, bundle: bundle, approvedGroup: group))
+        }
+    }
+
+    func testReportingMarkerCannotHideUnknownGrantsOrUseCoercedBooleans() {
+        for bundle in NativeDesktopStoreContainer.helpers {
+            for reporting: Any in [false, NSNumber(value: 1), "true", [true]] {
+                var value = claims(bundle); value["beta-reports-active"] = reporting
+                XCTAssertThrowsError(try NativeDesktopStoreContainer.validateMembership(value, bundle: bundle, approvedGroup: group))
+            }
+            var value = claims(bundle); value["beta-reports-active"] = true
+            value["com.apple.security.temporary-exception.files.home-relative-path.read-write"] = ["/"]
+            XCTAssertThrowsError(try NativeDesktopStoreContainer.validateMembership(value, bundle: bundle, approvedGroup: group))
+        }
+    }
+
     func testSandboxBooleanCannotBeOmittedFalseOrNumeric() {
         let bundle = NativeDesktopStoreContainer.auth
         for sandbox: Any? in [nil, false, NSNumber(value: 1), "true"] {

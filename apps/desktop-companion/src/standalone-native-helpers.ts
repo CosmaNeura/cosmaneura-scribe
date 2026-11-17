@@ -2,9 +2,11 @@ import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { exact, object } from "../../capture/src/provider/desktop-host-protocol";
 import { requireMacAppStoreXpcRuntime } from "./mac-app-store-xpc.js";
+import { STORE_BRIDGE_HASH_ALGORITHM } from "./store-bridge-macho-hash.js";
 
 export const STORE_BRIDGE_BUNDLE_PATH = "Contents/MacOS/ScribeStorePipeBridge";
-interface NativeHelper { readonly helperPath: string; readonly helperSha256: string }
+interface NativeHelper { readonly helperPath: string; readonly helperSha256: string;
+  readonly helperHashAlgorithm?: typeof STORE_BRIDGE_HASH_ALGORITHM }
 interface HelperRoles { readonly auth: unknown; readonly audio: unknown; readonly presentation: unknown }
 
 /** The Store bridge is code in the running app's fixed MacOS location. Profile
@@ -17,13 +19,14 @@ export async function resolveStandaloneNativeHelpers(root: string, profile: Help
     if (!isAbsolute(root) || !basename(app).endsWith(".app")
       || root !== join(app, "Contents", "Resources", "app") || await realpath(root) !== root
       || process.execPath !== executable || await realpath(executable) !== executable) throw unavailable();
-    const values = [profile.auth, profile.audio, profile.presentation].map(input => exact(object(input), ["path", "sha256"]));
+    const values = [profile.auth, profile.audio, profile.presentation].map(input => exact(object(input), ["path", "sha256", "hashAlgorithm"]));
     const hash = values[0]?.sha256;
     if (typeof hash !== "string" || !/^[0-9a-f]{64}$/u.test(hash)
-      || values.some(value => value.path !== STORE_BRIDGE_BUNDLE_PATH || value.sha256 !== hash)) throw unavailable();
+      || values.some(value => value.path !== STORE_BRIDGE_BUNDLE_PATH || value.sha256 !== hash
+        || value.hashAlgorithm !== STORE_BRIDGE_HASH_ALGORITHM)) throw unavailable();
     const path = join(app, STORE_BRIDGE_BUNDLE_PATH), info = await lstat(path);
     if (!info.isFile() || info.isSymbolicLink() || await realpath(path) !== path) throw unavailable();
-    const helper = Object.freeze({ helperPath: path, helperSha256: hash });
+    const helper = Object.freeze({ helperPath: path, helperSha256: hash, helperHashAlgorithm: STORE_BRIDGE_HASH_ALGORITHM });
     return [helper, helper, helper];
   }
   // Keep the direct distribution's existing relative-path containment gate.

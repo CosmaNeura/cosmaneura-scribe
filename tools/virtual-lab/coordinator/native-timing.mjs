@@ -17,7 +17,8 @@ const eventNames = new Set(['startRequested', 'ticketAccepted', 'permissionAccep
   'pcmInvalidInput', 'pcmBufferOverflow', 'pcmOutputLimit', 'pcmSinkFailed', 'windowAuthorityExpired', 'windowFrameLimit',
   'windowInterrupted', 'windowRouteChanged', 'continuationAuthorityExpired', 'continuationSourceRetired',
   'continuationRenewalRejected', 'continuationCaptureFailed', 'continuationStorageFailed', 'continuationClosureUnconfirmed',
-  'finalizationAuthorityChanged', 'finalizationStorageFailed', 'physicalStopRejected', 'sourceStopRejected']);
+  'finalizationAuthorityChanged', 'finalizationStorageFailed', 'physicalStopRejected', 'sourceStopRejected',
+  'pcmAuthorityHoldExpired']);
 
 function project(value) {
   const sample = value?.sample, transport = value?.transport;

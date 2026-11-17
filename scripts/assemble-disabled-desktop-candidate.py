@@ -11,7 +11,17 @@ import hashlib
 import json
 import plistlib
 import shutil
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "standalone-provider"))
+from packaging_guard import (  # noqa: E402
+    STAGING_CORE,
+    environment_marker,
+    preflight_compile_environment,
+    preflight_tree,
+    refuse_live_payload,
+)
 
 
 def digest(path: Path) -> str:
@@ -26,18 +36,19 @@ def ordinary(path: Path) -> Path:
 
 
 def assemble(args: argparse.Namespace) -> None:
+    preflight_compile_environment()
     output = args.output.resolve()
     if not output.is_relative_to(Path("/private/tmp")):
         raise ValueError("An exclusive /private/tmp output is required")
     runtime = args.electron_app.resolve()
     runtime_info = plistlib.loads(ordinary(runtime / "Contents/Info.plist").read_bytes())
     runtime_receipt = json.loads(ordinary(args.runtime_receipt).read_bytes())
-    if runtime_info.get("CFBundleShortVersionString") != "44.4.3" or (
-        runtime_receipt.get("electron_version") != "44.4.3"
+    if runtime_info.get("CFBundleShortVersionString") != "44.9.1" or (
+        runtime_receipt.get("electron_version") != "44.9.1"
         or runtime_receipt.get("official_checksum_matches") is not True
         or runtime_receipt.get("archive_paths_validated") is not True
     ):
-        raise ValueError("The verified repository-pinned Electron 44.4.3 is required")
+        raise ValueError("The verified repository-pinned Electron 44.9.1 is required")
     host = args.desktop_host.resolve()
     host_receipt = json.loads(ordinary(host / "host-build.json").read_bytes())
     if any(host_receipt.get(flag) is not False for flag in ("installed", "signed", "launch_ready")):
@@ -52,6 +63,16 @@ def assemble(args: argparse.Namespace) -> None:
     for name, expected in host_receipt["artifacts_sha256"].items():
         if digest(ordinary(host / name)) != expected:
             raise ValueError(f"Desktop host build artifact differs: {name}")
+    release = json.loads(ordinary(host / "release-metadata.json").read_bytes())
+    if (
+        release.get("displayName") != "Cosmaneura Scribe for Mac"
+        or release.get("distribution") != "Direct beta"
+        or release.get("marketingVersion")
+        != json.loads(ordinary(host / "package.json").read_bytes())["version"]
+        or not isinstance(release.get("build"), str)
+        or not release["build"].isdigit()
+    ):
+        raise ValueError("The reviewed public release metadata is required")
     builds = [
         ("auth", "ScribeDesktopProvider", args.auth_build),
         ("audio", "ScribeDesktopAudioHelper", args.audio_build),
@@ -62,8 +83,25 @@ def assemble(args: argparse.Namespace) -> None:
     clerk = args.auth_build / "ScribeDesktopProvider_ClerkKit.bundle"
     if not clerk.is_dir() or clerk.is_symlink():
         raise ValueError("The actual built Clerk resource bundle is required")
+    package_profile: dict[str, object] = {
+        "schema": 1,
+        "enabled": False,
+        "coreOrigin": STAGING_CORE,
+        "uploadOrigins": [],
+    }
+    marker = environment_marker(package_profile["coreOrigin"])
+    refuse_live_payload(package_profile, "desktop profile")
+    refuse_live_payload(runtime_info, "desktop Info.plist")
+    for source, label in (
+        (runtime, "Electron payload"),
+        (host, "desktop payload"),
+        (clerk, "Clerk resources"),
+        (args.auth_build / "build-inputs.json", "native auth build receipt"),
+        (args.audio_build / "build-inputs.json", "native audio build receipt"),
+    ):
+        preflight_tree(source, label)
     output.mkdir(mode=0o700)  # Refuse any existing app, payload or symbolic link.
-    app = output / "Cosmaneura Scribe Beta.app"
+    app = output / "Cosmaneura Scribe for Mac.app"
     shutil.copytree(runtime, app, symlinks=True)
     contents = app / "Contents"
     # Only this newly owned outer bundle changes. Keep every actual helper byte
@@ -75,13 +113,6 @@ def assemble(args: argparse.Namespace) -> None:
     packaged = resources / "app"
     shutil.copytree(host, packaged)
     shutil.copy2(host / "Scribe.icns", resources / "Scribe.icns")
-    package_profile: dict[str, object] = {
-        "schema": 1,
-        "enabled": False,
-        # Existing fixed Core profile, with no configured upload destination.
-        "coreOrigin": "https://staging-app.cosmaneura.com",
-        "uploadOrigins": [],
-    }
     helper_inputs: dict[str, dict[str, str]] = {}
     for kind, name, build in builds:
         source = ordinary(build / name)
@@ -98,7 +129,7 @@ def assemble(args: argparse.Namespace) -> None:
             "CFBundleIdentifier": bundle_id,
             "CFBundleExecutable": name,
             "CFBundleName": name,
-            "CFBundleDisplayName": "Cosmaneura Scribe Beta",
+            "CFBundleDisplayName": "Cosmaneura Scribe Beta " + marker,
             "CFBundlePackageType": "APPL",
             "CFBundleShortVersionString": "0.1.0",
             "CFBundleVersion": "1",
@@ -127,8 +158,10 @@ def assemble(args: argparse.Namespace) -> None:
         {
             "CFBundleIdentifier": "com.cosmaneura.scribe.beta.desktop",
             "CFBundleName": "Cosmaneura Scribe Beta",
-            "CFBundleDisplayName": "Cosmaneura Scribe Beta",
+            "CFBundleDisplayName": release["displayName"] + " " + marker,
             "CFBundleIconFile": "Scribe.icns",
+            "CFBundleShortVersionString": release["marketingVersion"],
+            "CFBundleVersion": release["build"],
         }
     )
     (contents / "Info.plist").write_bytes(plistlib.dumps(runtime_info, sort_keys=True))
@@ -141,7 +174,7 @@ def assemble(args: argparse.Namespace) -> None:
         "schema": 1,
         "app": app.relative_to(output).as_posix(),
         "files_sha256": files,
-        "electron_version": "44.4.3",
+        "electron_version": "44.9.1",
         "electron_archive_sha256": runtime_receipt["archive_sha256"],
         "host_build_sha256": digest(host / "host-build.json"),
         "host_source_sha256": host_receipt["source_sha256"],

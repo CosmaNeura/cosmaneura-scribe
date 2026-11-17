@@ -14,6 +14,7 @@ import plistlib
 import re
 from pathlib import Path
 
+from packaging_guard import environment_marker, require_founder_unlock
 from receiver_runtime import PRODUCTION_PROFILES, ReceiverConfiguration
 
 
@@ -61,9 +62,10 @@ def project(value: dict, *, enable_clients: bool = False) -> dict:
     if not isinstance(helpers, dict) or set(helpers) != {"auth", "audio", "presentation"}:
         raise ValueError("production_profile_input_invalid")
     for helper in helpers.values():
+        store = isinstance(helper, dict) and helper.get("hashAlgorithm") == "macho-store-v1"
         if (
             not isinstance(helper, dict)
-            or set(helper) != {"path", "sha256"}
+            or set(helper) != ({"path", "sha256", "hashAlgorithm"} if store else {"path", "sha256"})
             or not isinstance(helper["path"], str)
             or "\\" in helper["path"]
             or helper["path"].startswith("/")
@@ -72,6 +74,21 @@ def project(value: dict, *, enable_clients: bool = False) -> dict:
             or not re.fullmatch(r"[0-9a-f]{64}", helper["sha256"])
         ):
             raise ValueError("production_profile_input_invalid")
+    store_helpers = [helper for helper in helpers.values() if "hashAlgorithm" in helper]
+    if store_helpers:
+        first = store_helpers[0]
+        if len(store_helpers) != 3 or any(
+            helper["path"] != "Contents/MacOS/ScribeStorePipeBridge"
+            or helper["sha256"] != first["sha256"]
+            for helper in store_helpers
+        ):
+            raise ValueError("production_profile_input_invalid")
+    elif any(
+        helper["path"] == "Contents/MacOS/ScribeStorePipeBridge" for helper in helpers.values()
+    ):
+        # The Store bridge is re-signed by Apple; its old raw-file declaration
+        # must not silently select another admission algorithm.
+        raise ValueError("production_profile_input_invalid")
     auth = {
         "enabled": enable_clients,
         "identityProfile": (
@@ -125,7 +142,15 @@ def project(value: dict, *, enable_clients: bool = False) -> dict:
     }
 
 
-def prepare(source: Path, output: Path, *, enable_clients: bool = False) -> None:
+def prepare(
+    source: Path,
+    output: Path,
+    *,
+    enable_clients: bool = False,
+    i_am_john_unlocking_production: bool = False,
+) -> None:
+    require_founder_unlock(i_am_john_unlocking_production)
+
     def unique(pairs):
         result = {}
         for key, value in pairs:
@@ -138,6 +163,9 @@ def prepare(source: Path, output: Path, *, enable_clients: bool = False) -> None
         raise ValueError("production_profile_input_invalid")
     profiles = project(
         json.loads(source.read_bytes(), object_pairs_hook=unique), enable_clients=enable_clients
+    )
+    profiles["ios"]["CFBundleDisplayName"] = "Scribe " + environment_marker(
+        profiles["desktop"]["coreOrigin"]
     )
     output.mkdir(mode=0o700)
     for name in ("receiver", "desktop"):
@@ -164,6 +192,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--i-am-john-unlocking-production", action="store_true")
     parser.add_argument(
         "--enable-clients",
         action="store_true",
@@ -173,4 +202,9 @@ if __name__ == "__main__":
         ),
     )
     args = parser.parse_args()
-    prepare(args.source, args.output, enable_clients=args.enable_clients)
+    prepare(
+        args.source,
+        args.output,
+        enable_clients=args.enable_clients,
+        i_am_john_unlocking_production=args.i_am_john_unlocking_production,
+    )

@@ -3,22 +3,34 @@ import CosmaneuraNativeRecording
 import CosmasNativeAuth
 import CosmaneuraIOSPCMCore
 import Foundation
+import CoreFoundation
 
 struct NativeProviderRecordingSelection {
+  static func permitsEarlyMicrophone(bundleIdentifier: String?, receiverProfile: String?) -> Bool {
+    bundleIdentifier == "com.cosmaneura.scribe.beta" && receiverProfile == "core-staging-https-v1"
+  }
   let requestID: UUID, revision: String, workspaceID: UUID, bindingRef: String, sessionID: UUID
   let authorizationID: UUID?
+  let initialStart: Bool
   init(_ value: [String: Any]) throws {
     guard
       Set(value.keys)
         == Set(
           ["requestId", "revision", "workspaceId", "bindingRef", "sessionId"]
-            + (value["authorizationId"] == nil ? [] : ["authorizationId"])),
+            + (value["authorizationId"] == nil ? [] : ["authorizationId"])
+            + (value["initialStart"] == nil ? [] : ["initialStart"])),
       let binding = value["bindingRef"] as? String,
       binding.range(
         of: "^scribe_capture_binding_[0-7][0-9a-hjkmnp-tv-z]{25}$", options: .regularExpression)
         != nil
     else { throw ProviderNativeError.invalidRequest }
     authorizationID = try value["authorizationId"].map { try recordingUUID($0) }
+    if let requested = value["initialStart"] {
+      guard let boolean = requested as? NSNumber,
+        CFGetTypeID(boolean) == CFBooleanGetTypeID(), boolean.boolValue
+      else { throw ProviderNativeError.invalidRequest }
+      initialStart = true
+    } else { initialStart = false }
     requestID = try recordingUUID(value["requestId"])
     revision = try recordingUUID(value["revision"]).uuidString.lowercased()
     workspaceID = try recordingUUID(value["workspaceId"])

@@ -39,13 +39,14 @@ export function mountAccountSelfDeleteDialog(parent: HTMLElement, host: AccountS
     status.dataset.kind = state.error ? "error" : "";
     status.textContent = state.phase === "submitting" ? "Deleting your Cosmaneura account…"
       : state.phase === "clearing" ? "Clearing this device and signing out…"
-      : state.phase === "complete" ? "Your account has been deleted."
+      : state.phase === "complete" ? "Your account has been deleted. You are signed out."
       : state.error ?? "";
     if (state.phase === "complete") {
       cancel.hidden = true;
-      submit.hidden = true;
+      submit.hidden = false;
+      submit.disabled = false;
+      submit.textContent = "Done";
       label.hidden = true;
-      window.setTimeout(() => dispose(), 600);
     }
   };
 
@@ -61,9 +62,13 @@ export function mountAccountSelfDeleteDialog(parent: HTMLElement, host: AccountS
 
   input.addEventListener("input", () => flow.confirm(input.value));
   cancel.addEventListener("click", () => { if (flow.cancel()) dispose(); });
-  submit.addEventListener("click", () => { void flow.submit(); });
+  submit.addEventListener("click", () => {
+    if (flow.read().phase === "complete") { dispose(); return; }
+    void flow.submit();
+  });
   dialog.addEventListener("cancel", event => {
     event.preventDefault();
+    if (flow.read().phase === "complete") { dispose(); return; }
     if (flow.cancel()) dispose();
   });
   parent.append(dialog);

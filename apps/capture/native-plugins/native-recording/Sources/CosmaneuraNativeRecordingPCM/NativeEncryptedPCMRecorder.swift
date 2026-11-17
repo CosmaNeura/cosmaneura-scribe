@@ -10,6 +10,9 @@ import Foundation
 @MainActor public final class NativeEncryptedPCMRecorder {
   public static let maximumPlaintextBytes = 402_653_184
   public static let threeHourPlaintextBytes = 1_080 * (320_000 + 44)
+  /// Under the 10-second chunk, so audio opened before Core's start decision can
+  /// only ever be in memory. See docs/adr/0100-open-microphone-before-start-decision.md.
+  public static let authorityHoldNanoseconds: UInt64 = 9_000_000_000
 
   private let records: any NativeRecordingRecordStore
   private let firstSequence: Int
@@ -25,6 +28,9 @@ import Foundation
   private var claimed = false
   private var handle: IOSPCMSessionHandle?
   private var continuation: NativeRecordingContinuation?
+  private var pendingAuthority: PCMSourceAuthority?
+  private var awaitingAuthority = false
+  private var bound = true
   private var finalizationFailure: NativeRecordingFinalizationFailure?
   private var readiness: Task<Void, Error>?
   private var physicalClosureConfirmed = true
@@ -95,10 +101,60 @@ import Foundation
       finalizeCapturedAudio: finalizeCapturedAudio)
   }
 
+  /// Opens the microphone before Core's start decision. Audio is held in the
+  /// PCM accumulator and erased unless authorize() and ready() bind it in time.
+  public func open(lease: NativeRecordingLease, batch: NativeRecordingReservationBatch) throws {
+    guard !claimed, handle == nil, stopping == nil else {
+      throw NativeRecordingBindingFailure.operationInProgress
+    }
+    guard lease.sessionID == batch.sessionID else { throw NativeRecordingFailure.invalidBinding }
+    try requireCapacity()
+    try sink.stage(batch)
+    let configuration = try PCMConfiguration(
+      targetFramesPerChunk: 160_000, maximumChunks: batch.reservations.count,
+      maximumInputFramesPerBuffer: PCMConfiguration.maximumFramesPerInputBuffer,
+      preserveInterruptedTail: true, authorityHoldNanoseconds: Self.authorityHoldNanoseconds)
+    claimed = true
+    signal.reset()
+    handle = try core.start(configuration: configuration)
+    physicalClosureConfirmed = false
+    awaitingAuthority = true
+    bound = false
+  }
+
+  /// Called synchronously inside the native gate's permit-consumption closure
+  /// for a recorder already opened. ready() then binds the held audio.
+  public func authorize(
+    runID: String, captureExpiresAtMilliseconds: Int64,
+    lease: NativeRecordingLease, batch: NativeRecordingReservationBatch
+  ) throws {
+    guard awaitingAuthority, let handle, continuation == nil, stopping == nil else {
+      throw NativeRecordingBindingFailure.operationInProgress
+    }
+    let authority = try PCMSourceAuthority(
+      runID: runID, generation: 1, expiresAtMilliseconds: captureExpiresAtMilliseconds,
+      hardMaximumChunks: 2_048 - firstSequence)
+    continuation = try NativeRecordingContinuation(
+      session: handle, sink: sink, leases: leases, reservations: reservations,
+      initialLease: lease, initialAuthority: authority, initialBatch: batch,
+      sourceClock: sourceClock, validateActiveSource: validateActiveSource,
+      finalizeCapturedAudio: finalizeCapturedAudio)
+    pendingAuthority = authority
+    awaitingAuthority = false
+  }
+
   public func ready() async throws {
     if let readiness { return try await readiness.value }
-    guard let continuation else { throw NativeRecordingFailure.invalidBinding }
-    let task = Task { try await continuation.startMaintenance() }
+    guard let continuation, let handle else { throw NativeRecordingFailure.invalidBinding }
+    let binding = pendingAuthority
+    pendingAuthority = nil
+    let task = Task {
+      if let binding {
+        try await handle.bindAuthority(binding)
+        bound = true
+      }
+      try await continuation.startMaintenance()
+    }
     readiness = task
     try await task.value
   }
@@ -121,6 +177,21 @@ import Foundation
     if physicalClosureConfirmed && claimed { return }
     claimed = true  // A stopped preparation cannot later become a new start.
     readiness?.cancel()
+    if !bound, let handle {
+      // Never authorized or never bound: the core discards, and nothing reaches
+      // the queue, so this is a refused start rather than an incomplete recording.
+      pendingAuthority = nil
+      awaitingAuthority = false
+      let task = Task { [sink] in
+        _ = try await handle.stop(.discard)
+        sink.terminated(.captureFailed)
+      }
+      stopping = task
+      do { try await task.value } catch { stopping = nil; throw error }
+      physicalClosureConfirmed = true
+      stopping = nil
+      return
+    }
     let task = Task { [continuation, handle, sink, finalizeCapturedAudio] in
       if let continuation {
         try await continuation.stop()

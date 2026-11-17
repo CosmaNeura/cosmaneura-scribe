@@ -420,6 +420,68 @@ async def test_bootstrap_maps_all_dedicated_entra_principals_and_rejects_unsafe_
     assert provider.closed is True
 
 
+class _AzurePrincipalCatalogConnection(_Connection):
+    """Reject a direct column reference absent from the selected Azure ABI."""
+
+    def __init__(self, name_column: str, scalar_results: list[object]) -> None:
+        super().__init__(scalar_results)
+        self.name_column = name_column
+
+    async def scalar(self, statement: object, parameters: dict[str, object]) -> object | None:
+        sql = str(statement)
+        if "pgaadauth_list_principals(false)" in sql:
+            if "WHERE principal." in sql:
+                if f"WHERE principal.{self.name_column} = :role_name" not in sql:
+                    raise RuntimeError("Azure principal catalog name column does not exist")
+            else:
+                assert f"to_jsonb(principal) ->> '{self.name_column}'" in sql
+                assert ") = :role_name" in sql
+        return await super().scalar(statement, parameters)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name_column", ["rolname", "rolename"])
+async def test_bootstrap_accepts_observed_and_prior_azure_principal_name_columns(
+    monkeypatch: pytest.MonkeyPatch,
+    name_column: str,
+) -> None:
+    connection = _AzurePrincipalCatalogConnection(name_column, [None, False, False] * 4)
+    provider = _Provider(connection)
+    monkeypatch.setattr(database_bootstrap, "build_postgres_provider", lambda _: provider)
+
+    await database_bootstrap._ensure_database_principals(_settings())
+
+    creates = [
+        parameters
+        for statement, parameters in connection.executed
+        if "pgaadauth_create_principal_with_oid" in statement
+    ]
+    assert [item["role_name"] for item in creates if item is not None] == [
+        "scribe-runtime",
+        "scribe-transcription",
+        "scribe-delivery-reconciler",
+        "scribe-translation",
+    ]
+    assert provider.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name_column", ["rolname", "rolename"])
+async def test_bootstrap_catalog_name_compatibility_preserves_object_id_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+    name_column: str,
+) -> None:
+    connection = _AzurePrincipalCatalogConnection(name_column, [str(uuid4())])
+    provider = _Provider(connection)
+    monkeypatch.setattr(database_bootstrap, "build_postgres_provider", lambda _: provider)
+
+    with pytest.raises(RuntimeError, match="different Entra object"):
+        await database_bootstrap._ensure_database_principals(_settings())
+
+    assert connection.executed == []
+    assert provider.closed is True
+
+
 @pytest.mark.asyncio
 async def test_bootstrap_removes_only_new_role_creator_grants(
     monkeypatch: pytest.MonkeyPatch,

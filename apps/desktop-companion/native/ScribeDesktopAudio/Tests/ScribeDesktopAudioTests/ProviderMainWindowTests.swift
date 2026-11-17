@@ -31,7 +31,7 @@ private func window(_ id: UInt32 = 73, owner: Int32 = 41, bounds: CGRect = mainB
     #expect(handoff.reconcile(mainCovers: false, forceNative: true) == .showNative)
 }
 
-@Test func mainCoverageRequiresTheExactParentAndAnUncoveredStatusLevelWindow() {
+@Test func mainCoverageRequiresTheExactParentAndAnUncoveredNormalWindow() {
     let check: ([ProviderWindowMetadata]) -> Bool = {
         providerMainWindowVisible(73, parent: 41, helper: 42, windows: $0, screens: [workArea])
     }
@@ -40,15 +40,19 @@ private func window(_ id: UInt32 = 73, owner: Int32 = 41, bounds: CGRect = mainB
     #expect(!check([window(owner: 99)]))
     #expect(!check([window(74)]))
     #expect(!check([window(alpha: 0.5)]))
-    #expect(!check([window(layer: 0)]))
-    #expect(!check([window(layer: NSWindow.Level.floating.rawValue)]))
-    #expect(!check([window(layer: NSWindow.Level.statusBar.rawValue - 1)]))
+    // The main host deliberately preserves ordinary window order. A fully
+    // uncovered controller still provides the recording state and Stop; it
+    // must not require the competing native panel merely for being unpinned.
+    #expect(check([window(layer: NSWindow.Level.normal.rawValue)]))
+    #expect(check([window(layer: NSWindow.Level.floating.rawValue)]))
+    #expect(!check([window(layer: NSWindow.Level.normal.rawValue - 1)]))
     #expect(NSWindow.Level.statusBar.rawValue < NSWindow.Level.popUpMenu.rawValue)
     #expect(check([window(), window(90, owner: 99, layer: 20)])) // Dock overlay behind
     #expect(!check([window(90, owner: 99, layer: NSWindow.Level.popUpMenu.rawValue), window()]))
     #expect(!check([window(bounds: CGRect(x: 100, y: 40, width: 480, height: 360))]))
     #expect(!check([window(bounds: CGRect(x: -500, y: 40, width: 480, height: 120))]))
     #expect(!check([window(90, owner: 99), window()])) // another app is above the controls
+    #expect(!check([window(90, owner: 99), window(layer: NSWindow.Level.normal.rawValue)]))
     #expect(check([window(90, owner: 42), window()])) // own fallback can hand back
     #expect(check([window(90, owner: 99, alpha: 0), window()]))
     #expect(check([window(), window(90, owner: 99)])) // Zoom behind the controller

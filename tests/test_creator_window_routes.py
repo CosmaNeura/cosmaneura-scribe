@@ -169,7 +169,15 @@ async def test_same_ordinary_receipts_survive_partial_commit_and_restart(
 
 
 async def test_concurrent_ordinary_and_combined_claims_produce_one_window(initial):
-    capture, _, _ = initial
+    capture, _, keys = initial
+    # Serial tests assert key I/O sees an empty pool for that request. Concurrent
+    # claims intentionally overlap DB checkouts across requests, so drop only that
+    # cross-request assertion here while keeping call accounting.
+    async def concurrent_get_public_key():
+        keys.calls += 1
+        return await CaptureKeyProvider.get_public_key(keys)
+
+    keys.get_public_key = concurrent_get_public_key
     body = intent()
     first, second, legacy = await asyncio.wait_for(
         asyncio.gather(combined(capture, body), combined(capture, body), ordinary(capture, body)),

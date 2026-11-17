@@ -13,7 +13,7 @@ enum ProviderNativeError: String, Error, Sendable {
 }
 
 enum ProviderNativeAction: String, Sendable {
-    case catalog, encounters, mount, recorder
+    case catalog, encounters, mount, recorder, cancellation, activation
     case recorderContext = "recorder-context"
     case noteOpening = "note-opening"
     case sourceStart = "source-start"
@@ -25,10 +25,10 @@ enum ProviderNativeAction: String, Sendable {
         case .catalog: 2
         case .encounters: 16384
         case .mount: 256
-        case .recorder, .recorderContext, .noteOpening: 1024
+        case .recorder, .recorderContext, .noteOpening, .activation: 1024
         case .sourceStart: 4096
         case .sourceStartReady: 8192
-        case .admission: 2048
+        case .admission, .cancellation: 2048
         case .operation: 4_194_304
         case .note: 262_144 + 8192
         }
@@ -36,6 +36,8 @@ enum ProviderNativeAction: String, Sendable {
     var responseLimit: Int {
         switch self {
         case .catalog, .encounters: 1_048_576
+        case .cancellation: 4096
+        case .activation: 1024
         case .mount, .recorder, .recorderContext, .sourceStart: 8192
         case .sourceStartReady: 16_384
         case .operation, .noteOpening: 32 * 1024 * 1024 + 8192
@@ -45,7 +47,7 @@ enum ProviderNativeAction: String, Sendable {
 
     func acceptsResponseStatus(_ status: Int) -> Bool {
         [200, 401, 403, 409, 422, 503].contains(status)
-            || (self == .sourceStartReady && status == 404)
+            || ([.sourceStartReady, .cancellation].contains(self) && status == 404)
     }
 }
 
@@ -80,6 +82,16 @@ struct ProviderNativeRequest: Sendable {
                 value["action"] as? String == "private_note_save" && Set(value.keys) ==
                   ["action", "appointment_ref", "text", "expected_version", "change_key", "request_nonce"])
         else { throw ProviderNativeError.invalidRequest }
+        if operation == .activation {
+            guard Set(value.keys) == ["action", "request_nonce"],
+                  value["action"] as? String == "activate",
+                  let nonceText = value["request_nonce"] as? String,
+                  let nonce = UUID(uuidString: nonceText), nonce.uuidString.lowercased() == nonceText,
+                  nonce != UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
+                  let requestKey = UUID(uuidString: key), requestKey.uuidString.lowercased() == key,
+                  requestKey != UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+            else { throw ProviderNativeError.invalidRequest }
+        }
         self.id = identifier; self.revision = revision; self.action = operation
         self.key = key; self.body = data
     }
@@ -864,6 +876,10 @@ protocol ProviderNativeWire: Sendable {
     }
 
     private func rememberRecordingMount(_ request: ProviderNativeRequest, _ reply: ProviderNativeReply) {
+        if request.action == .encounters {
+            rememberCreatedRecordingMount(request, reply)
+            return
+        }
         guard request.action == .mount,
               let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
               let workspace = body["workspace_id"] as? String, let id = UUID(uuidString: workspace),
@@ -932,6 +948,37 @@ protocol ProviderNativeWire: Sendable {
             admissionPreparationSupported: admissionSupported,
             appointmentRef: desktopInitialWindowEnabled ? appointment : nil,
             desktopAdmissionMetadataSupported: desktopSupported))
+    }
+
+    /// The receiver may compose the existing create and mount operations. Feed
+    /// only its exact correlated opening through the same mount validator; the
+    /// renderer never supplies a binding or substitutes a saved credential.
+    private func rememberCreatedRecordingMount(_ request: ProviderNativeRequest, _ reply: ProviderNativeReply) {
+        guard reply.status == 200, reply.body.count <= request.responseLimit,
+              let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+              Set(body.keys) == ["action", "request_nonce", "creation_key", "patient", "appointment_at", "title", "opening_nonce"],
+              body["action"] as? String == "create", body["creation_key"] as? String == request.key,
+              body["opening_nonce"] as? String == request.key,
+              let value = try? JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
+              Set(value.keys) == ["revision", "version", "action", "request_nonce", "account", "creation_key", "encounter", "recoveryScope", "opening"],
+              value["revision"] as? String == request.revision, value["version"] as? String == "2",
+              value["action"] as? String == "create", value["creation_key"] as? String == request.key,
+              value["request_nonce"] as? String == body["request_nonce"] as? String,
+              let created = value["encounter"] as? [String: Any],
+              let opening = value["opening"] as? [String: Any],
+              let workspace = created["workspace_id"] as? String,
+              opening["workspaceId"] as? String == workspace,
+              opening["recoveryScope"] as? String == value["recoveryScope"] as? String,
+              opening["appointmentRef"] as? String == created["appointment_ref"] as? String,
+              let encounter = opening["encounter"] as? [String: Any],
+              let patient = created["patient_ref"] as? String,
+              encounter["patientRef"] as? String == patient,
+              let data = try? JSONSerialization.data(withJSONObject: opening),
+              let mountBody = try? JSONSerialization.data(withJSONObject: ["workspace_id": workspace, "opening_nonce": request.key]),
+              let text = String(data: mountBody, encoding: .utf8),
+              let mountRequest = try? ProviderNativeRequest(id: request.id.uuidString.lowercased(),
+                revision: request.revision, action: "mount", key: request.key, body: text) else { return }
+        rememberRecordingMount(mountRequest, ProviderNativeReply(status: 200, body: data))
     }
 
     /// Opt in only for fresh consent on a mount advertised by our receiver.
@@ -1709,7 +1756,7 @@ protocol ProviderNativeWire: Sendable {
                 self.rememberRecordingMount(request, reply)
                 // Do not forward arbitrary proxy/SDK/error content to JavaScript.
                 completed = true
-                return Self.sanitizedFailure(reply, action: request.action)
+                return Self.sanitizedFailure(reply, action: request.action, request: request)
             }
             guard (try? JSONSerialization.jsonObject(with: reply.body)) is [String: Any] else {
                 throw ProviderNativeError.response
@@ -1755,7 +1802,25 @@ protocol ProviderNativeWire: Sendable {
         return reply
     }
 
-    static func sanitizedFailure(_ reply: ProviderNativeReply, action: ProviderNativeAction) -> ProviderNativeReply {
+    static func sanitizedFailure(_ reply: ProviderNativeReply, action: ProviderNativeAction,
+                                 request: ProviderNativeRequest? = nil) -> ProviderNativeReply {
+        if [.catalog, .activation].contains(action), reply.status == 409, reply.body.count <= 1024,
+           let value = try? JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
+           Set(value.keys) == ["type", "status", "setup", "request_nonce", "revision"],
+           value["type"] as? String == "scribe_account_setup_required",
+           let status = value["status"] as? NSNumber, CFGetTypeID(status) != CFBooleanGetTypeID(), status.doubleValue == 409,
+           let setup = value["setup"] as? String, ["practice", "activation"].contains(setup),
+           let nonceText = value["request_nonce"] as? String,
+           let nonce = UUID(uuidString: nonceText), nonce.uuidString.lowercased() == nonceText,
+           nonce != UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
+           let revision = value["revision"] as? String, revision == request?.revision,
+           action != .activation || (setup == "practice" &&
+             (try? JSONSerialization.jsonObject(with: request?.body ?? Data()) as? [String: String])?["request_nonce"] == nonceText),
+           let body = try? JSONSerialization.data(withJSONObject: [
+             "type": "scribe_account_setup_required", "status": 409, "setup": setup,
+             "request_nonce": nonceText, "revision": revision]) {
+            return ProviderNativeReply(status: 409, body: body)
+        }
         if action == .admission, reply.status == 409, reply.body.count <= 1024,
            let value = try? JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
            Set(value.keys) == ["detail"], value["detail"] as? String == "core_provider_consent_required" {
