@@ -251,7 +251,10 @@ def main() -> None:
                     raise SystemExit(f"missing AccountSelfDeleteContract.resolve in {relative}")
                 # Scope the origin-before-token order check to the deleteAccount
                 # handler only — other methods also call auth.token earlier.
-                marker = 'func deleteAccount' if "func deleteAccount" in text else 'case "deleteAccount"'
+                if "func deleteAccount" in text:
+                    marker = "func deleteAccount"
+                else:
+                    marker = 'case "deleteAccount"'
                 handler_at = text.find(marker)
                 if handler_at < 0:
                     raise SystemExit(f"missing deleteAccount handler in {relative}")
