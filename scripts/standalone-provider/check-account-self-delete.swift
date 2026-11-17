@@ -56,15 +56,15 @@ struct CheckAccountSelfDelete {
         try require(AccountSelfDeleteContract.accountDeleteURL(origin: "http://evil.example") == nil)
         try require(AccountSelfDeleteContract.accountDeleteURL(origin: "https://example.com") == nil)
         try require(AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(
-            origin: "http://evil.example", bearerToken: "synthetic-bearer-token") == nil)
+            origin: "http://evil.example", bearerToken: "synthetic") == nil)
         try require(AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(
-            origin: "https://staging-app.cosmaneura.com.evil", bearerToken: "synthetic-bearer-token") == nil)
+            origin: "https://staging-app.cosmaneura.com.evil", bearerToken: "synthetic") == nil)
         let allowed = AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(
-            origin: "https://staging-app.cosmaneura.com", bearerToken: "synthetic-bearer-token")
+            origin: "https://staging-app.cosmaneura.com", bearerToken: "synthetic")
         try require(allowed != nil)
         try require(allowed?.httpMethod == "DELETE")
         try require(allowed?.url?.absoluteString == "https://staging-app.cosmaneura.com/v1/me/account")
-        try require(allowed?.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-bearer-token")
+        try require(allowed?.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic")
 
         try require(AccountSelfDeleteContract.coreOrigin(
             forFrontendOrigin: "https://resolved-emu-53.clerk.accounts.dev")
