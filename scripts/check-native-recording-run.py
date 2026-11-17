@@ -251,14 +251,22 @@ def main() -> None:
                     raise SystemExit(f"missing AccountSelfDeleteContract.resolve in {relative}")
                 if "deleteAccount" not in text:
                     raise SystemExit(f"missing deleteAccount handler in {relative}")
-                origin_idx = text.find("AccountSelfDeleteContract.accountDeleteURL(")
+                origin_idx = text.find(
+                    "AccountSelfDeleteContract.accountDeleteURL("
+                )
                 token_idx = text.find("auth.token(")
-                request_idx = text.find("AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(")
+                request_idx = text.find(
+                    "AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest("
+                )
                 if origin_idx < 0 or token_idx < 0 or request_idx < 0:
-                    raise SystemExit(f"missing origin-before-token deleteAccount wiring in {relative}")
+                    raise SystemExit(
+                        "missing origin-before-token deleteAccount "
+                        f"wiring in {relative}"
+                    )
                 if not (origin_idx < token_idx < request_idx):
                     raise SystemExit(
-                        f"deleteAccount must fence origin before token before request in {relative}"
+                        "deleteAccount must fence origin before token "
+                        f"before request in {relative}"
                     )
             results.append(
                 {
