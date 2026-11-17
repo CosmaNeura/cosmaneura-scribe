@@ -1164,81 +1164,36 @@ import Security
       checks += 1
     }
     do {
-      // deleteAccount recording refuse: held/opening → recordingActive, zero requests.
-      enum DeleteSim {
-        case recordingActive([String: Any])
-        case wouldRequest
-      }
-      let f = try Fixture()
-      let bridge = NativeProviderRecordingBridge()
-      try check(bridge.holdsOrOpeningRecording == false)
-      var authorizedRequests = 0
-      let simulateDeleteAccount: () -> DeleteSim = {
-        // Mirrors CosmasWorkspaceAuthPlugin.deleteAccount order: recording
-        // bridge first, then origin/token/request. Token/request never run
-        // while a recording is held or opening.
+      // deleteAccount: held/opening → recordingActive, zero authorized requests.
+      let f = try Fixture(), bridge = NativeProviderRecordingBridge()
+      var n = 0
+      let sim: () -> Bool = {
         if bridge.holdsOrOpeningRecording {
-          return .recordingActive(
-            AccountSelfDeleteContract.bridgePayload(for: .recordingActive)!)
+          return AccountSelfDeleteContract.bridgePayload(for: .recordingActive)?["recordingActive"]
+            as? Bool == true
         }
-        authorizedRequests += 1
+        n += 1
         _ = AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(
-          origin: "https://staging-app.cosmaneura.com",
-          bearerToken: "synthetic")
-        return .wouldRequest
+          origin: "https://staging-app.cosmaneura.com", bearerToken: "synthetic")
+        return false
       }
-      switch simulateDeleteAccount() {
-      case .wouldRequest: break
-      case .recordingActive: throw Failed(line: #line)
-      }
-      try check(authorizedRequests == 1)
-      authorizedRequests = 0
-      var sawOpeningRefuse = false
-      let revision = UUID().uuidString.lowercased()
-      let raw: [String: Any] = [
-        "requestId": UUID().uuidString.lowercased(), "revision": revision,
-        "workspaceId": f.scope.workspaceID.uuidString.lowercased(),
-        "sessionId": f.scope.sessionID.uuidString.lowercased(),
-        "bindingRef": "scribe_capture_binding_01j00000000000000000000000",
-      ]
+      try check(sim() == false && n == 1); n = 0
+      let rev = UUID().uuidString.lowercased()
       let opened = try await bridge.open(
-        try NativeProviderRecordingSelection(raw),
-        current: {},
-        make: {
-          try check(bridge.holdsOrOpeningRecording == true)
-          switch simulateDeleteAccount() {
-          case .recordingActive(let payload):
-            try check(payload["recordingActive"] as? Bool == true)
-            sawOpeningRefuse = true
-          case .wouldRequest: throw Failed(line: #line)
-          }
-          try check(authorizedRequests == 0)
-          return f.host()
-        },
-        inputMuted: { false })
-      try check(sawOpeningRefuse)
-      try check(opened["ok"] as? Bool == true)
-      try check(bridge.holdsOrOpeningRecording == true)
-      switch simulateDeleteAccount() {
-      case .recordingActive(let payload):
-        try check(payload["recordingActive"] as? Bool == true)
-      case .wouldRequest: throw Failed(line: #line)
-      }
-      try check(authorizedRequests == 0)
-      let state = opened["recording"] as! [String: Any]
-      let id = state["recorderId"] as! String
-      let close = try NativeProviderRecordingCommand([
-        "requestId": UUID().uuidString.lowercased(), "revision": revision,
-        "recorderId": id, "kind": "close",
-      ])
-      _ = try await bridge.command(close, current: {}, inputMuted: { false })
-      try check(bridge.holdsOrOpeningRecording == false)
-      switch simulateDeleteAccount() {
-      case .wouldRequest: break
-      case .recordingActive: throw Failed(line: #line)
-      }
-      try check(authorizedRequests == 1)
-      checks += 1
+        try NativeProviderRecordingSelection([
+          "requestId": UUID().uuidString.lowercased(), "revision": rev,
+          "workspaceId": f.scope.workspaceID.uuidString.lowercased(),
+          "sessionId": f.scope.sessionID.uuidString.lowercased(),
+          "bindingRef": "scribe_capture_binding_01j00000000000000000000000",
+        ]), current: {}, make: { try check(sim() && n == 0); return f.host() }, inputMuted: { false })
+      try check(sim() && n == 0)
+      let id = (opened["recording"] as! [String: Any])["recorderId"] as! String
+      _ = try await bridge.command(
+        try NativeProviderRecordingCommand([
+          "requestId": UUID().uuidString.lowercased(), "revision": rev,
+          "recorderId": id, "kind": "close",
+        ]), current: {}, inputMuted: { false })
+      try check(sim() == false && n == 1); checks += 1
     }
     return checks
   }

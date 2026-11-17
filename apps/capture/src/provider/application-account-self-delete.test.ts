@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mountProviderApplication, type ProviderApplicationHost } from "./application";
-import { ACCOUNT_SELF_DELETE_MESSAGES } from "./account-self-delete";
+import { ACCOUNT_SELF_DELETE_MESSAGES, type AccountSelfDeleteHost } from "./account-self-delete";
 import { mountAccountSelfDeleteDialog } from "./account-self-delete-dialog";
 import type { ProviderSessionState } from "./native-plugin";
 
@@ -88,5 +88,15 @@ describe("account self-delete recording guard", () => {
     const f = await fixture();
     await f.click("delete-account");
     expect(mountAccountSelfDeleteDialog).toHaveBeenCalledOnce();
+  });
+
+  it("re-checks providerRecordingActive at submit and skips Cosmas", async () => {
+    const f = await fixture();
+    await f.click("delete-account");
+    const dialog = vi.mocked(mountAccountSelfDeleteDialog).mock.calls.at(-1)?.[1] as AccountSelfDeleteHost;
+    // Same dataset key workspace syncRecordingActive writes (see workspace-consent-preparation).
+    f.root.querySelector("[data-provider-workflow]")!.dataset.providerRecordingActive = "true";
+    expect(await dialog.client.deleteAccount({ confirm: "DELETE" })).toEqual({ outcome: "recording_active" });
+    expect(f.deleteAccount).not.toHaveBeenCalled();
   });
 });

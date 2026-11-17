@@ -213,16 +213,12 @@ describe("accountSelfDelete", () => {
   it("recording_active keeps the session and shows the stop-first message", async () => {
     const deleteAccount = vi.fn(async (): Promise<AccountSelfDeleteResult> => ({ outcome: "recording_active" }));
     const { flow, clearLocalCredentials, closeWorkspace } = fixture({ client: { deleteAccount } });
-    flow.confirm("DELETE");
-    await flow.submit();
+    flow.confirm("DELETE"); await flow.submit();
     expect(closeWorkspace).not.toHaveBeenCalled();
     expect(clearLocalCredentials).not.toHaveBeenCalled();
     expect(flow.read()).toMatchObject({
-      phase: "failed",
-      confirmation: "DELETE",
-      error: ACCOUNT_SELF_DELETE_MESSAGES.recordingActive,
-      retryable: false,
-      completion: null,
+      phase: "failed", confirmation: "DELETE",
+      error: ACCOUNT_SELF_DELETE_MESSAGES.recordingActive, retryable: false, completion: null,
     });
   });
 
