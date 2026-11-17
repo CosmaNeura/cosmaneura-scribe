@@ -572,17 +572,15 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             let revision = auth.state().revision
             guard let configuration = Self.providerApplicationConfiguration(),
                   let origin = configuration["coreOrigin"] as? String,
-                  let url = URL(string: origin + "/v1/me/account")
+                  AccountSelfDeleteContract.accountDeleteURL(origin: origin) != nil
             else { return Self.reject(call) }
             do {
+                // Origin already fenced above — mint the Bearer token only for allow-listed hosts.
                 let token = try await auth.token(expectedRevision: revision)
                 guard auth.state().phase == .ready, auth.state().revision == revision else { return Self.reject(call) }
-                var request = URLRequest(url: url)
-                request.httpMethod = "DELETE"
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
-                request.httpBody = Data(#"{"confirm":"DELETE"}"#.utf8)
-                request.timeoutInterval = 30
+                guard let request = AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(
+                    origin: origin, bearerToken: token)
+                else { return Self.reject(call) }
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let http = response as? HTTPURLResponse,
                       let payload = AccountSelfDeleteContract.resolve(

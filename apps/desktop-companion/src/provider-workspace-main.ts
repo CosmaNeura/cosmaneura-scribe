@@ -137,17 +137,27 @@ export class DesktopProviderWorkspaceMain {
         || typeof this.host.session.deleteAccount !== "function") throw unavailable();
       exact(payload, ["confirm"]); if (payload.confirm !== "DELETE") throw unavailable();
       const state = await this.readSession(); if (state?.phase !== "ready" || signal.aborted) throw unavailable();
-      await this.closeConnection(); // Stop recording before destructive account deletion.
+      // Refuse while a recorder is owned or opening — keep the workspace so a
+      // keep-session failure cannot strand the user on "connection closed".
+      const encounter = this.connection?.encounter;
+      if (encounter?.recorder || encounter?.recorderOpening) throw unavailable();
       if (signal.aborted) throw unavailable();
       const value = await this.host.session.deleteAccount({ confirm: "DELETE" });
       if (signal.aborted) throw unavailable();
-      if (value?.unauthorized === true) return { unauthorized: true };
-      if (value?.gone === true) return { gone: true };
+      if (value?.unauthorized === true) {
+        await this.closeConnection();
+        return { unauthorized: true };
+      }
+      if (value?.gone === true) {
+        await this.closeConnection();
+        return { gone: true };
+      }
       if (value?.unavailable === true) return { unavailable: true };
       if (value?.retryable === true) return { retryable: true };
       if ((value?.status === "deleted" || value?.status === "already_deleted")
         && typeof value.practiceLeftOwnerless === "boolean"
         && typeof value.clerkIdentityRemoved === "boolean") {
+        await this.closeConnection();
         return {
           status: value.status,
           practiceLeftOwnerless: value.practiceLeftOwnerless,

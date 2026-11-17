@@ -146,18 +146,17 @@ import ScribeStorePipe
             else { throw ProviderNativeError.invalidRequest }
             guard auth.state().phase == .ready else { throw ProviderNativeError.unavailable }
             let revision = auth.state().revision
+            // Origin fence before minting a Clerk token — no Bearer DELETE to a
+            // non-allow-listed host.
             guard let origin = Self.coreOriginForSelfDelete(),
-                  let url = URL(string: origin + "/v1/me/account")
+                  AccountSelfDeleteContract.accountDeleteURL(origin: origin) != nil
             else { throw ProviderNativeError.unavailable }
             let token = try await auth.token(expectedRevision: revision)
             guard auth.state().phase == .ready, auth.state().revision == revision
             else { throw ProviderNativeError.unavailable }
-            var request = URLRequest(url: url)
-            request.httpMethod = "DELETE"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
-            request.httpBody = Data(#"{"confirm":"DELETE"}"#.utf8)
-            request.timeoutInterval = 30
+            guard let request = AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(
+                origin: origin, bearerToken: token)
+            else { throw ProviderNativeError.unavailable }
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse,
                   let payload = AccountSelfDeleteContract.resolve(

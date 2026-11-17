@@ -96,4 +96,194 @@ describe("desktop account self-delete IPC", () => {
       expect(await missing.send("delete_account", { confirm: "DELETE" })).toMatchObject({ ok: false });
     } finally { await missing.main.dispose(); }
   });
+  it("does not close an open workspace before a keep-session delete response", async () => {
+    const deleteAccount = vi.fn(async () => ({ unavailable: true as const }));
+    const dispose = vi.fn(async () => undefined);
+    const events: { kind: string }[] = [];
+    const state: ProviderSessionState = { phase: "ready", revision: crypto.randomUUID() };
+    const host: DesktopProviderMainHost = {
+      openDashboard: vi.fn(async () => undefined),
+      connect: vi.fn(async signal => ({
+        dispose,
+        workspace: {
+          signal,
+          listEncounters: async () => [],
+          openEncounter: async () => { throw new Error("no encounter"); },
+          createEncounter: async () => undefined,
+        },
+      })),
+      cancellation: { status: vi.fn(async () => null), load: vi.fn(), submit: vi.fn() },
+      session: {
+        getState: async () => state,
+        signIn: async () => state,
+        signOut: async () => state,
+        addListener: async () => ({ remove: async () => undefined }),
+        deleteAccount,
+      },
+    };
+    const main = new DesktopProviderWorkspaceMain(host, () => ({ dispose: async () => undefined }));
+    main.subscribe(event => events.push(event));
+    await main.initialize();
+    try {
+      const connected = await main.request({
+        method: "connect", payload: {}, requestId: crypto.randomUUID(),
+        connectionId: null, encounterId: null,
+      }) as { ok: boolean; result: { connectionId: string } };
+      expect(connected.ok).toBe(true);
+      events.length = 0;
+      expect(await main.request({
+        method: "delete_account", payload: { confirm: "DELETE" },
+        requestId: crypto.randomUUID(), connectionId: null, encounterId: null,
+      })).toMatchObject({ ok: true, result: { unavailable: true } });
+      expect(deleteAccount).toHaveBeenCalledOnce();
+      expect(dispose).not.toHaveBeenCalled();
+      expect(events.some(event => event.kind === "connection_closed")).toBe(false);
+      // Connection remains usable after keep-session failure.
+      expect(await main.request({
+        method: "list", payload: {}, requestId: crypto.randomUUID(),
+        connectionId: connected.result.connectionId, encounterId: null,
+      })).toMatchObject({ ok: true });
+    } finally { await main.dispose(); }
+  });
+  it("refuses delete_account while a recorder is attached and leaves the connection open", async () => {
+    const deleteAccount = vi.fn(async () => ({
+      status: "deleted" as const, practiceLeftOwnerless: false, clerkIdentityRemoved: true,
+    }));
+    const dispose = vi.fn(async () => undefined);
+    const stop = vi.fn(async () => undefined);
+    const events: { kind: string }[] = [];
+    const state: ProviderSessionState = { phase: "ready", revision: crypto.randomUUID() };
+    const sessionId = "10000000-0000-4000-8000-000000000001";
+    const workspaceId = "20000000-0000-4000-8000-000000000002";
+    const scope = {
+      workspaceId, bindingRef: "scribe_capture_binding_01j00000000000000000000000",
+      appointmentRef: "appointment_01j00000000000000000000000",
+    };
+    const progress = {
+      sessionId, uploaded: false, pendingSave: null,
+      admission: {
+        key: sessionId, languageMode: "en-US+es-US",
+        attestation: {
+          modality: "virtual", participant_regions: ["US-NY"], method: "verbal_attestation",
+          all_parties_consented: true, granted_at: new Date().toISOString(),
+        },
+      },
+    };
+    const saved = { revision: "1", progress: structuredClone(progress) };
+    const nativeRecord = {
+      deactivate: stop,
+      snapshot: {
+        sessionId, state: "recording", statusCode: "capture_recording",
+        recordedChunks: 1, queuedChunks: 0, elapsedSeconds: 1, remainingBudgetSeconds: 0,
+        remainingAuthoritySeconds: null, transcriptionStatus: null, transcript: null,
+        desktop: { phase: "recording", coverage: "active", trimmedStartMs: 0, trimmedEndMs: null },
+      },
+      subscribe: () => () => undefined,
+    };
+    const host: DesktopProviderMainHost = {
+      connect: vi.fn(async signal => ({
+        dispose,
+        workspace: {
+          signal,
+          listEncounters: async () => [{
+            appointmentRef: scope.appointmentRef, title: "Synthetic", detail: "Visit",
+          }],
+          openEncounter: async (_ref: string, encounterSignal: AbortSignal) => ({
+            scope, signal: encounterSignal,
+            encounter: { appointmentRef: scope.appointmentRef, title: "Synthetic", detail: "Visit" },
+            request: async () => Response.json({}),
+            openInCore: async () => undefined,
+            journal: {
+              load: async () => structuredClone(saved),
+              save: async () => saved,
+            },
+            reviewJournal: () => ({
+              load: async () => null, save: async () => undefined, clear: async () => undefined,
+            }),
+            recorder: async () => nativeRecord,
+          }),
+          createEncounter: async () => undefined,
+        },
+      })),
+      session: {
+        getState: async () => state,
+        signIn: async () => state,
+        signOut: async () => state,
+        addListener: async () => ({ remove: async () => undefined }),
+        deleteAccount,
+      },
+    };
+    const main = new DesktopProviderWorkspaceMain(host, () => ({ dispose: stop }));
+    main.subscribe(event => events.push(event));
+    await main.initialize();
+    try {
+      const connected = await main.request({
+        method: "connect", payload: {}, requestId: crypto.randomUUID(),
+        connectionId: null, encounterId: null,
+      }) as { ok: boolean; result: { connectionId: string } };
+      expect(connected.ok).toBe(true);
+      const opened = await main.request({
+        method: "open", payload: { appointmentRef: scope.appointmentRef },
+        requestId: crypto.randomUUID(),
+        connectionId: connected.result.connectionId, encounterId: null,
+      }) as { ok: boolean; result: { encounterId: string } };
+      expect(opened.ok).toBe(true);
+      expect((await main.request({
+        method: "recorder", payload: { sessionId },
+        requestId: crypto.randomUUID(),
+        connectionId: connected.result.connectionId,
+        encounterId: opened.result.encounterId,
+      }) as { ok: boolean }).ok).toBe(true);
+      events.length = 0;
+      expect(await main.request({
+        method: "delete_account", payload: { confirm: "DELETE" },
+        requestId: crypto.randomUUID(), connectionId: null, encounterId: null,
+      })).toMatchObject({ ok: false });
+      expect(deleteAccount).not.toHaveBeenCalled();
+      expect(events.some(event => event.kind === "connection_closed")).toBe(false);
+      expect(dispose).not.toHaveBeenCalled();
+    } finally { await main.dispose(); }
+  });
+  it("closes the workspace only after a session-ending delete response", async () => {
+    const deleteAccount = vi.fn(async () => ({
+      status: "deleted" as const, practiceLeftOwnerless: false, clerkIdentityRemoved: true,
+    }));
+    const dispose = vi.fn(async () => undefined);
+    const events: { kind: string }[] = [];
+    const state: ProviderSessionState = { phase: "ready", revision: crypto.randomUUID() };
+    const host: DesktopProviderMainHost = {
+      connect: vi.fn(async signal => ({
+        dispose,
+        workspace: {
+          signal,
+          listEncounters: async () => [],
+          openEncounter: async () => { throw new Error("no encounter"); },
+          createEncounter: async () => undefined,
+        },
+      })),
+      session: {
+        getState: async () => state,
+        signIn: async () => state,
+        signOut: async () => state,
+        addListener: async () => ({ remove: async () => undefined }),
+        deleteAccount,
+      },
+    };
+    const main = new DesktopProviderWorkspaceMain(host, () => ({ dispose: async () => undefined }));
+    main.subscribe(event => events.push(event));
+    await main.initialize();
+    try {
+      expect((await main.request({
+        method: "connect", payload: {}, requestId: crypto.randomUUID(),
+        connectionId: null, encounterId: null,
+      }) as { ok: boolean }).ok).toBe(true);
+      events.length = 0;
+      expect(await main.request({
+        method: "delete_account", payload: { confirm: "DELETE" },
+        requestId: crypto.randomUUID(), connectionId: null, encounterId: null,
+      })).toMatchObject({ ok: true, result: { status: "deleted" } });
+      expect(events.some(event => event.kind === "connection_closed")).toBe(true);
+      expect(dispose).toHaveBeenCalledOnce();
+    } finally { await main.dispose(); }
+  });
 });

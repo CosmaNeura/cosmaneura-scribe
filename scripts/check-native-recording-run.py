@@ -240,7 +240,8 @@ def main() -> None:
                 ],
             )
             run("mac-account-self-delete-checks", [account_self_delete])
-            # Both native deleteAccount handlers must share the contract resolve path.
+            # Both native deleteAccount handlers must share the contract resolve path
+            # and fence the origin before minting a Clerk token / building the request.
             for relative in (
                 "apps/capture/native-plugins/cosmas-native-auth/Bridge/CosmasWorkspaceAuthPlugin.swift",
                 "scripts/standalone-provider/DesktopProviderMain.swift",
@@ -250,6 +251,15 @@ def main() -> None:
                     raise SystemExit(f"missing AccountSelfDeleteContract.resolve in {relative}")
                 if "deleteAccount" not in text:
                     raise SystemExit(f"missing deleteAccount handler in {relative}")
+                origin_idx = text.find("AccountSelfDeleteContract.accountDeleteURL(")
+                token_idx = text.find("auth.token(")
+                request_idx = text.find("AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(")
+                if origin_idx < 0 or token_idx < 0 or request_idx < 0:
+                    raise SystemExit(f"missing origin-before-token deleteAccount wiring in {relative}")
+                if not (origin_idx < token_idx < request_idx):
+                    raise SystemExit(
+                        f"deleteAccount must fence origin before token before request in {relative}"
+                    )
             results.append(
                 {
                     "name": "native-deleteAccount-handlers-wire-contract",

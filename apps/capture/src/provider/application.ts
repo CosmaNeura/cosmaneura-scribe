@@ -7,7 +7,11 @@ import "./application.css";
 import { openCancellationDialog } from "./cancellation-dialog";
 import type { CancellationReceipt, ScribeCancellation } from "./cancellation";
 import { ProviderSetupRequired, type ProviderSetup } from "./account-setup";
-import { clearCachedProviderPreferences, type AccountSelfDeleteClient } from "./account-self-delete";
+import {
+  ACCOUNT_SELF_DELETE_MESSAGES,
+  clearCachedProviderPreferences,
+  type AccountSelfDeleteClient,
+} from "./account-self-delete";
 import { mountAccountSelfDeleteDialog } from "./account-self-delete-dialog";
 
 export type { ProviderSessionState } from "./native-plugin";
@@ -409,10 +413,19 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     const action = target.closest<HTMLButtonElement>("button[data-session-action]")?.dataset.sessionAction;
     if (action === "delete-account") {
       if (disposed || busy || stopUnconfirmed || logoutPending || state?.phase !== "ready" || !host.accountSelfDelete) return;
+      // Shared iPhone + Mac: refuse while the workspace owns an active recording.
+      if (workflow.dataset.providerRecordingActive === "true") {
+        const menu = actions.querySelector<HTMLDetailsElement>(".provider-account-menu");
+        if (menu) menu.open = false;
+        notice = ACCOUNT_SELF_DELETE_MESSAGES.recordingActive;
+        render();
+        return;
+      }
       const revision = state.revision;
       const client = host.accountSelfDelete;
       const menu = actions.querySelector<HTMLDetailsElement>(".provider-account-menu");
       if (menu) menu.open = false;
+      notice = "";
       closeDeletionDialog?.();
       let pendingNotice: "deleted" | "session_expired" | "gone" = "deleted";
       closeDeletionDialog = mountAccountSelfDeleteDialog(document.body, {

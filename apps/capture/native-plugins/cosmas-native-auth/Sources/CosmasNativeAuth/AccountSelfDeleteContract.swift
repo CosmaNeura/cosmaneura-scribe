@@ -21,6 +21,26 @@ public enum AccountSelfDeleteContract {
         return isExactLocalhostHTTP(origin)
     }
 
+    /// DELETE URL only after the origin allow-list passes. Callers must invoke
+    /// this before minting a Clerk token so a disallowed origin never receives Bearer.
+    public static func accountDeleteURL(origin: String) -> URL? {
+        guard allowsCoreOrigin(origin) else { return nil }
+        return URL(string: origin + "/v1/me/account")
+    }
+
+    /// Builds the authenticated DELETE request, or nil when the origin is refused.
+    /// A nil result means no URLRequest exists — so no Bearer DELETE can be sent.
+    public static func makeAuthorizedAccountDeleteRequest(origin: String, bearerToken: String) -> URLRequest? {
+        guard let url = accountDeleteURL(origin: origin) else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer " + bearerToken, forHTTPHeaderField: "Authorization")
+        request.httpBody = Data(#"{"confirm":"DELETE"}"#.utf8)
+        request.timeoutInterval = 30
+        return request
+    }
+
     /// Map sealed Clerk frontendOrigin → Cosmas coreOrigin (Mac Info.plist path).
     public static func coreOrigin(forFrontendOrigin frontend: String) -> String? {
         switch frontend {

@@ -109,6 +109,8 @@ const MESSAGES = {
   sessionExpired: "Your session has expired. You are signed out.",
   gone: "This account no longer has access. You are signed out.",
   deleted: "Your account has been deleted. You are signed out.",
+  /** Shared iPhone + Mac refuse copy while a recording is owned or in progress. */
+  recordingActive: "Stop the recording before deleting your account.",
 } as const;
 
 export const ACCOUNT_SELF_DELETE_MESSAGES = MESSAGES;

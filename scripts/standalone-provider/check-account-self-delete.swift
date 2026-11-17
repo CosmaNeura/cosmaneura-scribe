@@ -52,6 +52,20 @@ struct CheckAccountSelfDelete {
         try require(!AccountSelfDeleteContract.allowsCoreOrigin("http://192.168.1.10:8787"))
         try require(!AccountSelfDeleteContract.allowsCoreOrigin("https://example.com"))
 
+        // Disallowed origin produces no URLRequest — so no Bearer DELETE can be sent.
+        try require(AccountSelfDeleteContract.accountDeleteURL(origin: "http://evil.example") == nil)
+        try require(AccountSelfDeleteContract.accountDeleteURL(origin: "https://example.com") == nil)
+        try require(AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(
+            origin: "http://evil.example", bearerToken: "synthetic-bearer-token") == nil)
+        try require(AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(
+            origin: "https://staging-app.cosmaneura.com.evil", bearerToken: "synthetic-bearer-token") == nil)
+        let allowed = AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(
+            origin: "https://staging-app.cosmaneura.com", bearerToken: "synthetic-bearer-token")
+        try require(allowed != nil)
+        try require(allowed?.httpMethod == "DELETE")
+        try require(allowed?.url?.absoluteString == "https://staging-app.cosmaneura.com/v1/me/account")
+        try require(allowed?.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-bearer-token")
+
         try require(AccountSelfDeleteContract.coreOrigin(
             forFrontendOrigin: "https://resolved-emu-53.clerk.accounts.dev")
             == "https://staging-app.cosmaneura.com")

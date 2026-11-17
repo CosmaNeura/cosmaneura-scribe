@@ -128,7 +128,14 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const header = root.querySelector<HTMLElement>(".provider-header")!;
   const accountLabel = root.querySelector<HTMLElement>("[data-provider-account]")!;
   const patientDetail = root.querySelector<HTMLElement>("[data-provider-patient-detail]")!;
+  const syncRecordingActive = (): void => {
+    // Account → Delete account reads this shared flag on iPhone and Mac.
+    const active = !disposed && (recorderBlocksRefresh || closeRecorder !== null || acquiringRecorder !== null);
+    if (active) root.dataset.providerRecordingActive = "true";
+    else delete root.dataset.providerRecordingActive;
+  };
   const updateRefresh = (): void => {
+    syncRecordingActive();
     const button = root.querySelector<HTMLButtonElement>('[data-workspace-action="refresh-visit"]');
     if (!button) return;
     button.disabled = busy || recorderBlocksRefresh || !context;
@@ -227,6 +234,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (close) {
       await close();
       if (closeRecorder === close) closeRecorder = null;
+      syncRecordingActive();
     }
   };
   const run = async (action: () => Promise<void>, timingAction?: string): Promise<void> => {
@@ -727,9 +735,13 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       ? activeContext.recorder(id, activeClient.signal, { initialStart: true })
       : activeContext.recorder(id, activeClient.signal);
     acquiringRecorder = acquisition;
+    syncRecordingActive();
     let resources: ProviderRecorderResources | PreparedProviderRecorder;
     try { resources = await acquisition; }
-    finally { if (acquiringRecorder === acquisition) acquiringRecorder = null; }
+    finally {
+      if (acquiringRecorder === acquisition) acquiringRecorder = null;
+      syncRecordingActive();
+    }
     const native = "controller" in resources ? resources : null;
     const local = "flowStore" in resources ? resources : null;
     const localController = local ? new CaptureFlowController({ bff: new CoreCaptureBff(activeClient, id),
@@ -747,6 +759,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       catch { closing = null; throw new RecorderStopUnconfirmed(); }
     })();
     closeRecorder = close;
+    syncRecordingActive();
     if (!authorized(n)) { await close(); return; }
     if (local && localController) {
       const active = await local.flowStore.getActiveCaptureState();
@@ -1920,6 +1933,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       document.removeEventListener("visibilitychange", foregroundChanged);
       root.removeEventListener("scribe-desktop-close-request", requestDesktopClose); host.signal.removeEventListener("abort", abort);
       root.removeEventListener("scribe-open-recording", requestRecordingOpen);
+      delete root.dataset.providerRecordingActive;
       root.replaceChildren();
     }
     disposing = clearEncounter().then(() => { root.replaceChildren(); }).catch(error => {
