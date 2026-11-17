@@ -215,7 +215,6 @@ export function accountSelfDelete(
       if (!["confirming", "failed"].includes(state.phase)) return;
       running = true;
       publish({ phase: "submitting", confirmation: state.confirmation, error: null, retryable: false, completion: null });
-      let completion: AccountSelfDeleteCompletion | null = null;
       try {
         if (!active()) throw new Error("account_self_delete_session_changed");
         const result = await host.client.deleteAccount({ confirm: CONFIRM }, abort.signal);
@@ -232,7 +231,8 @@ export function accountSelfDelete(
           return;
         }
         if (!endsSession(result)) throw new Error("account_self_delete_unconfirmed");
-        completion = completionFor(result);
+        const completion = completionFor(result);
+        if (completion === null) throw new Error("account_self_delete_unconfirmed");
         serverEndedSession = true;
         if (abort.signal.aborted) throw new Error("account_self_delete_aborted");
         publish({ phase: "clearing", confirmation: "", error: null, retryable: false, completion });

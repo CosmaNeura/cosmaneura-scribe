@@ -81,7 +81,7 @@ describe("desktop account self-delete IPC", () => {
     const deleteAccount = vi.fn(async () => ({
       status: "deleted" as const, practiceLeftOwnerless: false,
     }));
-    const f = await fixture("ready", deleteAccount as never);
+    const f = await fixture("ready", deleteAccount);
     try {
       expect(await f.send("delete_account", { confirm: "DELETE" })).toMatchObject({ ok: false });
     } finally { await f.main.dispose(); }
