@@ -42,9 +42,11 @@ with native Clerk auth and audio helpers. Listing name for Connect is
 **Cosmas Scribe**. Sign-in is Clerk hosted auth, not a custom username/password
 form inside the app.
 
-**OPEN (not decided):** In-app account deletion is not in the Mac app. John has
-not decided whether to add it before submitting. **Cancel Scribe access** only
-cancels capture access and must not be described as account deletion.
+**Account deletion (Guideline 5.1.1(v)):** Signed-in users can permanently
+delete their account in-app on Mac: **Account → Delete account**. That path
+calls the Core self-delete endpoint (`DELETE /v1/me/account`). Scribe #519
+adds the same control on iPhone and Mac. **Cancel Scribe access** only cancels
+capture access and must not be described as account deletion.
 
 **Signed-build checks still owed before any upload:**
 
@@ -224,6 +226,9 @@ HOW TO RECORD A SYNTHETIC SAMPLE
 NETWORK
 The app needs HTTPS to: production Clerk (hosted sign-in), https://app.cosmaneura.com (catalog, consent, session, upload authority), and one Azure Blob Storage origin for encrypted audio upload. Offline use is not supported for this demo.
 
+ACCOUNT DELETION (Guideline 5.1.1(v))
+Signed-in users can permanently delete their account in the Mac app: open Account → Delete account, type DELETE, and confirm. The app calls CosmaNeura’s account self-delete API (DELETE /v1/me/account). Cancel Scribe access only cancels capture access; it is not account deletion.
+
 DEMO ACCOUNT
 Use only the Sign-in Required credentials in App Review Information. All names and speech must remain synthetic.
 ```
@@ -238,8 +243,9 @@ Use only the Sign-in Required credentials in App Review Information. All names a
   (`prefersEphemeralWebBrowserSession: true`).
 - Sign-in / workspace controls:
   `apps/capture/src/provider/application.ts:129` (“Sign in”),
-  `:134-138` (“Check access” / “Open workspace”). Account menu at `:95` is only
-  Sign out, Cancel Scribe access, Get help — not dashboard.
+  `:134-138` (“Check access” / “Open workspace”). Account menu
+  (`application.ts`) includes Sign out, **Delete account** (Scribe #519),
+  Cancel Scribe access, and Get help — not dashboard.
 - Dashboard control on Today’s patients:
   `apps/capture/src/provider/workspace.ts:348` (`More` → `Open the dashboard`);
   opening it may require a second browser sign-in.
@@ -247,10 +253,10 @@ Use only the Sign-in Required credentials in App Review Information. All names a
   (`PUBLIC_STORE_MAC_NAME` / #558). `preparation-controls.ts:14` only compares
   `document.title` for in-app repair copy — it does **not** prove the System
   Settings TCC label on a signed install.
-- Mac has **no in-app account deletion**. **Cancel Scribe access** cancels Scribe
-  capture access only and must **not** be described to Apple as account deletion
-  (Account menu: `application.ts:95`). **OPEN:** John has not decided whether to
-  add in-app account deletion before submit.
+- Mac has in-app **Delete account** for signed-in users (Account → Delete
+  account; Core `DELETE /v1/me/account`; Scribe #519, same as iPhone).
+  **Cancel Scribe access** cancels Scribe capture access only and must **not**
+  be described to Apple as account deletion.
 - Usage-description strings (packaging drafts, not a checked-in app
   `Info.plist` on this branch):
   `scripts/prepare-desktop-mas-variant.py:74-75` and
@@ -384,9 +390,9 @@ Dry run succeeds on the candidate Mac package with only synthetic data, both
 signed-build checks pass, and App Review fields are ready for John to paste
 (credentials still outside git).
 
-OPEN
-In-app account deletion is not in the Mac app. John has not decided whether to
-add it before submitting.
+DEPENDENCY
+Merge Scribe #519 (in-app Delete account on iPhone and Mac) before sealing or
+submitting this Store candidate. Do not merge this PR ahead of #519.
 ```
 
 ---
@@ -400,7 +406,7 @@ add it before submitting.
 | Founder production assemble | `scripts/assemble-production-provider.py`; projection `scripts/standalone-provider/prepare_production_profiles.py` |
 | Standalone host (no practice setup wire) | `apps/desktop-companion/src/standalone-provider.ts` (`workspaceId` use L55, L73-76) |
 | Desktop UI host | `apps/capture/src/provider/desktop-application.ts` |
-| Session / Sign in UI | `apps/capture/src/provider/application.ts` (Account menu L95; Sign in L129; Check access / Open workspace L134-138) |
+| Session / Sign in UI | `apps/capture/src/provider/application.ts` (Account menu; Sign in; Check access / Open workspace); Delete account via Scribe #519 (`account-self-delete.ts` + native owners) |
 | Today’s patients → More → dashboard | `apps/capture/src/provider/workspace.ts:348` |
 | In-app repair-copy app name (not the System Settings label) | `apps/capture/src/provider/preparation-controls.ts:14,75,80` |
 | Store public display name | `apps/desktop-companion/src/public-app-release.ts` (`PUBLIC_STORE_MAC_NAME` = Cosmas Scribe) |
