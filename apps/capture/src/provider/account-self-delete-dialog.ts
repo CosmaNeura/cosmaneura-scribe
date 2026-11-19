@@ -14,8 +14,9 @@ export function mountAccountSelfDeleteDialog(parent: HTMLElement, host: AccountS
   dialog.setAttribute("aria-labelledby", "scribe-account-self-delete-title");
   dialog.innerHTML = `<section>
     <h1 id="scribe-account-self-delete-title">Delete your account?</h1>
-    <p>This permanently deletes your whole Cosmaneura sign-in, including Cosmas web access, and your personal Scribe data on this account. This cannot be undone.</p>
+    <p data-confirm-body></p>
     <p>Your practice and your colleagues' data are not deleted. Clinical records stay with the practice under its retention policy and are not deleted by this action.</p>
+    <p data-ownerless-notice hidden></p>
     <label data-confirmation-label>Type DELETE to confirm
       <input data-confirmation autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Type DELETE to confirm">
     </label>
@@ -34,6 +35,10 @@ export function mountAccountSelfDeleteDialog(parent: HTMLElement, host: AccountS
   const done = dialog.querySelector<HTMLButtonElement>("[data-done]")!;
   const retry = dialog.querySelector<HTMLButtonElement>("[data-retry]")!;
   const status = dialog.querySelector<HTMLElement>("[data-status]")!;
+  const confirmBody = dialog.querySelector<HTMLElement>("[data-confirm-body]")!;
+  const ownerless = dialog.querySelector<HTMLElement>("[data-ownerless-notice]")!;
+  confirmBody.textContent = ACCOUNT_SELF_DELETE_MESSAGES.confirmBody;
+  ownerless.textContent = ACCOUNT_SELF_DELETE_MESSAGES.practiceLeftOwnerlessNotice;
   let disposed = false;
 
   const render = (state: AccountSelfDeleteState): void => {
@@ -48,6 +53,7 @@ export function mountAccountSelfDeleteDialog(parent: HTMLElement, host: AccountS
     cancel.hidden = state.phase === "submitting" || state.phase === "clearing" || finished;
     retry.hidden = !(state.phase === "failed" && state.retryable);
     done.hidden = !finished;
+    ownerless.hidden = state.practiceLeftOwnerless !== true;
     status.dataset.kind = state.error ? "error" : "";
     status.textContent = state.phase === "submitting" ? "Deleting your Cosmaneura account…"
       : state.phase === "clearing" ? "Clearing this device and signing out…"

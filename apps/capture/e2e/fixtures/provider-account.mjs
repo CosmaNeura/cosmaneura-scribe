@@ -42,7 +42,7 @@ const accountSelfDelete = {
     return {
       outcome: "deleted",
       status: "deleted",
-      practiceLeftOwnerless: false,
+      practiceLeftOwnerless: options.has("delete-ownerless"),
       clerkIdentityRemoved: true,
     };
   },

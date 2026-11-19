@@ -89,7 +89,7 @@ describe("accountSelfDelete", () => {
     });
   });
 
-  it("handles practiceLeftOwnerless on already_deleted without UI copy change", async () => {
+  it("surfaces practiceLeftOwnerless on already_deleted for ownerless notice copy", async () => {
     const deleteAccount = vi.fn(async (): Promise<AccountSelfDeleteResult> => ({
       outcome: "deleted", status: "already_deleted", practiceLeftOwnerless: true, clerkIdentityRemoved: true,
     }));
@@ -99,6 +99,16 @@ describe("accountSelfDelete", () => {
     expect(flow.read()).toMatchObject({
       phase: "complete", completion: "deleted", practiceLeftOwnerless: true,
     });
+  });
+
+  it("locks John-approved delete confirm and ownerless notice copy", () => {
+    expect(ACCOUNT_SELF_DELETE_MESSAGES.confirmBody).toBe(
+      "This removes your Cosmaneura sign-in, including Cosmas web access, and deletes your personal Scribe data for this account on this device. Your practice record and clinical records kept with the practice are not deleted by this action.",
+    );
+    expect(ACCOUNT_SELF_DELETE_MESSAGES.practiceLeftOwnerlessNotice).toBe(
+      "If you were the last owner of this practice, Cosmaneura may keep the practice record so billing and retention obligations can finish. Your sign-in is removed; the practice is not deleted by this action.",
+    );
+    expect(Object.values(ACCOUNT_SELF_DELETE_MESSAGES).join("\n")).not.toMatch(/permanently deletes/);
   });
 
   it("survives dispose during in-flight DELETE and still purges + clears", async () => {

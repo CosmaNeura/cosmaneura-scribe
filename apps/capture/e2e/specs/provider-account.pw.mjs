@@ -185,13 +185,17 @@ test("Settings > Delete account confirms against a synthetic Cosmas backend and 
   const dialog = page.locator("dialog.scribe-account-self-delete");
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("heading", { name: "Delete your account?", exact: true })).toBeVisible();
-  await expect(dialog).toContainText("whole Cosmaneura sign-in, including Cosmas web access");
-  await expect(dialog).toContainText("cannot be undone");
+  await expect(dialog.locator("[data-confirm-body]")).toHaveText(
+    "This removes your Cosmaneura sign-in, including Cosmas web access, and deletes your personal Scribe data for this account on this device. Your practice record and clinical records kept with the practice are not deleted by this action.",
+  );
+  await expect(dialog).not.toContainText("permanently deletes");
+  await expect(dialog.locator("[data-ownerless-notice]")).toBeHidden();
   await expect(dialog).toContainText("Clinical records stay with the practice under its retention policy and are not deleted by this action");
   await expect(dialog.getByRole("button", { name: "Delete account", exact: true })).toBeDisabled();
   await dialog.getByLabel("Type DELETE to confirm").fill("DELETE");
   await dialog.getByRole("button", { name: "Delete account", exact: true }).click();
   await expect(dialog.getByRole("status")).toContainText("Your account has been deleted");
+  await expect(dialog.locator("[data-ownerless-notice]")).toBeHidden();
   await expect(dialog.getByRole("button", { name: "Done", exact: true })).toBeEnabled();
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   await expect(dialog).toHaveCount(0);
@@ -200,6 +204,21 @@ test("Settings > Delete account confirms against a synthetic Cosmas backend and 
   expect(await page.evaluate(() => window.accountLab.stats.deleteAccountCalls)).toBe(1);
   expect(await page.evaluate(() => window.accountLab.stats.signOutCalls)).toBe(1);
   await expect(menu(page)).toHaveCount(0);
+});
+
+test("Delete account shows ownerless notice only when practiceLeftOwnerless is true", async ({ page }) => {
+  await open(page, "?delete-ownerless");
+  await account(page).click();
+  await page.getByRole("button", { name: "Delete account", exact: true }).click();
+  const dialog = page.locator("dialog.scribe-account-self-delete");
+  await expect(dialog.locator("[data-ownerless-notice]")).toBeHidden();
+  await dialog.getByLabel("Type DELETE to confirm").fill("DELETE");
+  await dialog.getByRole("button", { name: "Delete account", exact: true }).click();
+  await expect(dialog.getByRole("status")).toContainText("Your account has been deleted");
+  await expect(dialog.locator("[data-ownerless-notice]")).toBeVisible();
+  await expect(dialog.locator("[data-ownerless-notice]")).toHaveText(
+    "If you were the last owner of this practice, Cosmaneura may keep the practice record so billing and retention obligations can finish. Your sign-in is removed; the practice is not deleted by this action.",
+  );
 });
 
 test("Delete account 401 signs out with session expired, not account-deleted copy", async ({ page }) => {
