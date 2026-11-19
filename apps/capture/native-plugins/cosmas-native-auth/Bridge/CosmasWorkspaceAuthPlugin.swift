@@ -569,37 +569,24 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                   call.getString("confirm") == "DELETE" else { return Self.reject(call) }
             self.initializeAuth()
             guard let auth = self.auth, auth.state().phase == .ready else { return Self.reject(call) }
-            // Refuse before origin/token/request while a recording is held or opening.
-            if Self.recordingBridge.holdsOrOpeningRecording {
-                guard let payload = AccountSelfDeleteContract.bridgePayload(for: .recordingActive)
-                else { return Self.reject(call) }
-                call.resolve(payload)
+            let revision = auth.state().revision
+            let origin = Self.providerApplicationConfiguration()?["coreOrigin"] as? String
+            // Shared production path: recording refuse before mintToken/send.
+            guard let payload = await AccountSelfDeleteContract.attempt(
+                holdsOrOpeningRecording: Self.recordingBridge.holdsOrOpeningRecording,
+                origin: origin,
+                mintToken: {
+                    let token = try await auth.token(expectedRevision: revision)
+                    guard auth.state().phase == .ready, auth.state().revision == revision
+                    else { throw URLError(.userAuthenticationRequired) }
+                    return token
+                },
+                send: { try await URLSession.shared.data(for: $0) })
+            else {
+                call.reject("Account deletion unavailable", "account_self_delete_failed")
                 return
             }
-            let revision = auth.state().revision
-            guard let configuration = Self.providerApplicationConfiguration(),
-                  let origin = configuration["coreOrigin"] as? String,
-                  AccountSelfDeleteContract.accountDeleteURL(origin: origin) != nil
-            else { return Self.reject(call) }
-            do {
-                // Origin already fenced above — mint the Bearer token only for allow-listed hosts.
-                let token = try await auth.token(expectedRevision: revision)
-                guard auth.state().phase == .ready, auth.state().revision == revision else { return Self.reject(call) }
-                guard let request = AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(
-                    origin: origin, bearerToken: token)
-                else { return Self.reject(call) }
-                let (data, response) = try await URLSession.shared.data(for: request)
-                guard let http = response as? HTTPURLResponse,
-                      let payload = AccountSelfDeleteContract.resolve(
-                        origin: origin, statusCode: http.statusCode, body: data)
-                else {
-                    call.reject("Account deletion unavailable", "account_self_delete_failed")
-                    return
-                }
-                call.resolve(payload)
-            } catch {
-                call.reject("Account deletion unavailable", "account_self_delete_failed")
-            }
+            call.resolve(payload)
         }
     }
 

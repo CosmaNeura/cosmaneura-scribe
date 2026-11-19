@@ -101,6 +101,25 @@ public enum AccountSelfDeleteContract {
         return bridgePayload(for: interpret(statusCode: statusCode, body: body))
     }
 
+    /// Production deleteAccount core (iOS handler + offline proofs).
+    /// Recording refuse runs before mintToken/send — inject fakes in tests.
+    public static func attempt(
+        holdsOrOpeningRecording: Bool, origin: String?,
+        mintToken: () async throws -> String,
+        send: (URLRequest) async throws -> (Data, URLResponse)
+    ) async -> [String: Any]? {
+        if holdsOrOpeningRecording { return bridgePayload(for: .recordingActive) }
+        guard let origin, accountDeleteURL(origin: origin) != nil else { return nil }
+        do {
+            let token = try await mintToken()
+            guard let request = makeAuthorizedAccountDeleteRequest(origin: origin, bearerToken: token)
+            else { return nil }
+            let (data, response) = try await send(request)
+            guard let http = response as? HTTPURLResponse else { return nil }
+            return resolve(origin: origin, statusCode: http.statusCode, body: data)
+        } catch { return nil }
+    }
+
     private static func isExactLocalhostHTTP(_ origin: String) -> Bool {
         guard let url = URL(string: origin), url.scheme == "http",
               let host = url.host, host == "127.0.0.1" || host == "localhost",

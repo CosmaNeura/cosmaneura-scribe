@@ -240,52 +240,63 @@ def main() -> None:
                 ],
             )
             run("mac-account-self-delete-checks", [account_self_delete])
-            # Both native deleteAccount handlers must share the contract resolve path
-            # and fence the origin before minting a Clerk token / building the request.
+            # iOS deleteAccount → AccountSelfDeleteContract.attempt (recording before
+            # mintToken/send). Mac keeps inline origin-before-token-before-request.
+            contract = (
+                REPO / "apps/capture/native-plugins/cosmas-native-auth/Sources"
+                / "CosmasNativeAuth/AccountSelfDeleteContract.swift"
+            ).read_text(encoding="utf-8")
+            attempt_at = contract.find("public static func attempt(")
+            if attempt_at < 0:
+                raise SystemExit("missing AccountSelfDeleteContract.attempt")
+            attempt_body = contract[attempt_at:]
+            for earlier, later in (
+                ("accountDeleteURL(origin:", "mintToken()"),
+                ("mintToken()", "makeAuthorizedAccountDeleteRequest("),
+                ("makeAuthorizedAccountDeleteRequest(", "resolve(origin:"),
+            ):
+                a, b = attempt_body.find(earlier), attempt_body.find(later)
+                if a < 0 or b < 0 or not (a < b):
+                    raise SystemExit("AccountSelfDeleteContract.attempt order broken")
+            if "holdsOrOpeningRecording" not in attempt_body.split("mintToken()", 1)[0]:
+                raise SystemExit("attempt must refuse recording before mintToken")
             for relative in (
                 "apps/capture/native-plugins/cosmas-native-auth/Bridge/CosmasWorkspaceAuthPlugin.swift",
                 "scripts/standalone-provider/DesktopProviderMain.swift",
             ):
                 text = (REPO / relative).read_text(encoding="utf-8")
-                if "AccountSelfDeleteContract.resolve(" not in text:
-                    raise SystemExit(f"missing AccountSelfDeleteContract.resolve in {relative}")
-                # Scope the origin-before-token order check to the deleteAccount
-                # handler only — other methods also call auth.token earlier.
-                if "func deleteAccount" in text:
-                    marker = "func deleteAccount"
-                else:
-                    marker = 'case "deleteAccount"'
+                marker = (
+                    "func deleteAccount" if "func deleteAccount" in text
+                    else 'case "deleteAccount"'
+                )
                 handler_at = text.find(marker)
                 if handler_at < 0:
                     raise SystemExit(f"missing deleteAccount handler in {relative}")
                 handler = text[handler_at:]
-                origin_idx = handler.find(
-                    "AccountSelfDeleteContract.accountDeleteURL("
-                )
                 token_idx = handler.find("auth.token(")
-                request_idx = handler.find(
-                    "AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest("
-                )
-                if origin_idx < 0 or token_idx < 0 or request_idx < 0:
-                    raise SystemExit(
-                        "missing origin-before-token deleteAccount "
-                        f"wiring in {relative}"
-                    )
-                if not (origin_idx < token_idx < request_idx):
-                    raise SystemExit(
-                        "deleteAccount must fence origin before token "
-                        f"before request in {relative}"
-                    )
-                # iPhone handler must refuse a held/opening recording before token.
+                if token_idx < 0:
+                    raise SystemExit(f"missing auth.token in deleteAccount of {relative}")
                 if relative.endswith("CosmasWorkspaceAuthPlugin.swift"):
-                    recording_idx = handler.find(
-                        "recordingBridge.holdsOrOpeningRecording"
-                    )
+                    if "AccountSelfDeleteContract.attempt(" not in handler:
+                        raise SystemExit(f"iOS deleteAccount must call attempt in {relative}")
+                    recording_idx = handler.find("recordingBridge.holdsOrOpeningRecording")
                     if recording_idx < 0 or not (recording_idx < token_idx):
                         raise SystemExit(
                             "iOS deleteAccount must refuse held/opening "
                             f"recording before token in {relative}"
                         )
+                    continue
+                if "AccountSelfDeleteContract.resolve(" not in text:
+                    raise SystemExit(f"missing AccountSelfDeleteContract.resolve in {relative}")
+                origin_idx = handler.find("AccountSelfDeleteContract.accountDeleteURL(")
+                request_idx = handler.find(
+                    "AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest("
+                )
+                if origin_idx < 0 or request_idx < 0 or not (origin_idx < token_idx < request_idx):
+                    raise SystemExit(
+                        "deleteAccount must fence origin before token "
+                        f"before request in {relative}"
+                    )
             results.append(
                 {
                     "name": "native-deleteAccount-handlers-wire-contract",
