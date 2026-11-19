@@ -19,6 +19,7 @@ MODULES = [
             AUTH / "Sources/CosmasNativeAuth" / f"{name}.swift"
             for name in [
                 "AccountSelfDeleteContract",
+                "ClinicalPurgeMarker",
                 "DesktopAuthProtocol",
                 "KeychainAccessBlock",
                 "NativeAuthAwait",
