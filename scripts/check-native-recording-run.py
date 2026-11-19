@@ -17,6 +17,7 @@ MODULES = [
         "CosmasNativeAuth",
         [
             AUTH / "Sources/CosmasNativeAuth" / f"{name}.swift"
+            # ClinicalPurgeMarker is required: AccountSelfDeleteContract references it.
             for name in [
                 "AccountSelfDeleteContract",
                 "ClinicalPurgeMarker",
