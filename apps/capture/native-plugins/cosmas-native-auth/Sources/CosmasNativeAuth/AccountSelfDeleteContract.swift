@@ -103,6 +103,8 @@ public enum AccountSelfDeleteContract {
 
     /// Production deleteAccount core (iOS handler + offline proofs).
     /// Recording refuse runs before mintToken/send — inject fakes in tests.
+    /// MainActor: matches CosmasWorkspaceAuthPlugin.deleteAccount and host proofs.
+    @MainActor
     public static func attempt(
         holdsOrOpeningRecording: Bool, origin: String?,
         mintToken: () async throws -> String,
