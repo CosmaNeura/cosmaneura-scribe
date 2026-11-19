@@ -195,11 +195,14 @@ export function accountSelfDelete(
         if (completion === null) throw new Error("account_self_delete_unconfirmed");
         serverEndedSession = true;
         const ownerless = result.outcome === "deleted" ? result.practiceLeftOwnerless : false;
-        // Survive signedOut/dispose during in-flight DELETE: still purge + clear + notice.
+        // Clinical purge only on deleted — 401/410 clear credentials but keep local clinical data.
+        const shouldPurge = result.outcome === "deleted";
         publish(base("clearing", { completion, practiceLeftOwnerless: ownerless }));
         await host.closeWorkspace().catch(() => undefined);
         let purgeFailed = false;
-        try { await host.purgeLocalClinicalData(); } catch { purgeFailed = true; }
+        if (shouldPurge) {
+          try { await host.purgeLocalClinicalData(); } catch { purgeFailed = true; }
+        }
         await host.clearLocalCredentials();
         if (purgeFailed) throw new Error("clinical_purge_failed");
         publish(base("complete", { completion, practiceLeftOwnerless: ownerless }));

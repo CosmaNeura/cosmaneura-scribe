@@ -30,6 +30,7 @@ describe("purgeLocalClinicalData", () => {
       drafts: empty, review: empty, queuedAudio: empty, recordings: empty,
     })).rejects.toThrow(/clinical_store_not_empty:journal/);
   });
+
 });
 
 describe("deleteProviderFlowDatabases", () => {

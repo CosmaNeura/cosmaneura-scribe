@@ -108,7 +108,9 @@ export class DesktopProviderWorkspaceMain {
       : request.method === "encounter_setup" && request.payload.action === "hidden" ? "provider_visit_preferences" : undefined;
     try {
       const result = await this.dispatch(request, abort.signal);
-      if (this.closed || abort.signal.aborted) throw unavailable();
+      if (this.closed) throw unavailable();
+      // delete_account: once Cosmas DELETE is sent, return the bridge result even if aborted.
+      if (abort.signal.aborted && request.method !== "delete_account") throw unavailable();
       return { requestId: request.requestId, ok: true, result: jsonCopy(result) };
     } catch { return { requestId: request.requestId, ok: false, result: null }; }
     finally {
@@ -139,21 +141,20 @@ export class DesktopProviderWorkspaceMain {
         || typeof this.host.session.deleteAccount !== "function") throw unavailable();
       exact(payload, ["confirm"]); if (payload.confirm !== "DELETE") throw unavailable();
       const state = await this.readSession(); if (state?.phase !== "ready" || signal.aborted) throw unavailable();
-      // Refuse while a recorder is owned or opening — keep the workspace so a
-      // keep-session failure cannot strand the user on "connection closed".
+      // Refuse only while a recorder is opening or actively capturing. Pending
+      // uploads do not block delete (John, 12:15pm ET Nov 19 2026: "Delete anyway").
       const encounter = this.connection?.encounter;
-      if (encounter?.recorder || encounter?.recorderOpening) throw unavailable();
+      if (encounter?.recorderOpening) throw unavailable();
       if (signal.aborted) throw unavailable();
+      // Once DELETE is sent, always return the bridge result — even if the
+      // renderer aborted mid-flight (signedOut / dialog teardown).
       const value = await this.host.session.deleteAccount({ confirm: "DELETE" });
-      if (signal.aborted) throw unavailable();
       if (value?.unauthorized === true) {
         await this.closeConnection();
-        await this.host.purgeLocalClinicalData?.();
         return { unauthorized: true };
       }
       if (value?.gone === true) {
         await this.closeConnection();
-        await this.host.purgeLocalClinicalData?.();
         return { gone: true };
       }
       if (value?.unavailable === true) return { unavailable: true };
@@ -162,7 +163,9 @@ export class DesktopProviderWorkspaceMain {
         && typeof value.practiceLeftOwnerless === "boolean"
         && typeof value.clerkIdentityRemoved === "boolean") {
         await this.closeConnection();
-        await this.host.purgeLocalClinicalData?.();
+        // Purge only on deleted. A purge error must not hide Cosmas success —
+        // failure is observed via the purge call itself (not the locked keys).
+        try { await this.host.purgeLocalClinicalData?.(); } catch { /* signalled separately */ }
         return {
           status: value.status,
           practiceLeftOwnerless: value.practiceLeftOwnerless,

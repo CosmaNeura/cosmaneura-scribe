@@ -87,6 +87,15 @@ describe("account self-delete recording guard", () => {
       .toBe(ACCOUNT_SELF_DELETE_MESSAGES.recordingActive);
   });
 
+  it("allows Delete account while a pending upload is held (John Delete anyway)", async () => {
+    const f = await fixture();
+    const workflow = f.root.querySelector("[data-provider-workflow]")!;
+    workflow.dataset.providerRecordingActive = "true";
+    workflow.dataset.providerUploadPending = "true";
+    await f.click("delete-account");
+    expect(mountAccountSelfDeleteDialog).toHaveBeenCalledOnce();
+  });
+
   it("opens the delete dialog when no recording is active", async () => {
     const f = await fixture();
     await f.click("delete-account");
@@ -125,4 +134,5 @@ describe("account self-delete recording guard", () => {
     await dialog.clearLocalCredentials();
     expect(f.root.querySelector("[data-session-title]")?.textContent).toBe("Account deleted");
   });
+
 });

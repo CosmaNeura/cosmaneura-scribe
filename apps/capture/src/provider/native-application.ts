@@ -54,8 +54,9 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
         deleteAccount: async (request: { confirm: "DELETE" }, signal?: AbortSignal): Promise<AccountSelfDeleteResult> => {
           if (request.confirm !== "DELETE") throw new Error("account_self_delete_unconfirmed");
           if (signal?.aborted) throw new Error("account_self_delete_aborted");
+          // Once Cosmas DELETE is sent, always return the result — even if the
+          // dialog aborted afterwards (signedOut during in-flight DELETE).
           const value = await native.deleteAccount!({ confirm: "DELETE" });
-          if (signal?.aborted) throw new Error("account_self_delete_aborted");
           return interpretAccountSelfDeleteBridge(value);
         },
       },
