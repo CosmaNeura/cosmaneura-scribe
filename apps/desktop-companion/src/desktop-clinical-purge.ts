@@ -139,12 +139,14 @@ export function createDesktopClinicalPurgeHost(options: {
     prepareClinicalPurge: async () => {
       const plan = planDesktopClinicalPurge(await options.loadCatalog(), options.creationWorkspaceId);
       writeClinicalPurgePending(options.userDataDirectory, plan);
-      return async () => {
-        try { wipe(options.userDataDirectory, plan); clearClinicalPurgePending(options.userDataDirectory); }
-        catch {
+      return (): Promise<void> => {
+        try {
+          wipe(options.userDataDirectory, plan); clearClinicalPurgePending(options.userDataDirectory);
+          return Promise.resolve();
+        } catch {
           log?.("clinical_purge_wipe_failed");
           writeClinicalPurgePending(options.userDataDirectory, plan, "clinical_purge_wipe_failed");
-          throw new Error("clinical_purge_wipe_failed");
+          return Promise.reject(new Error("clinical_purge_wipe_failed"));
         }
       };
     },

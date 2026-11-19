@@ -231,9 +231,11 @@ def main() -> None:
             contract = (REPO / "apps/capture/native-plugins/cosmas-native-auth/Sources"
                         / "CosmasNativeAuth/AccountSelfDeleteContract.swift").read_text()
             attempt = contract[contract.find("public static func attempt("):]
-            for earlier, later in (("accountDeleteURL(origin:", "mintToken()"),
-                                   ("mintToken()", "makeAuthorizedAccountDeleteRequest("),
-                                   ("makeAuthorizedAccountDeleteRequest(", "resolve(origin:"))):
+            for earlier, later in (
+                ("accountDeleteURL(origin:", "mintToken()"),
+                ("mintToken()", "makeAuthorizedAccountDeleteRequest("),
+                ("makeAuthorizedAccountDeleteRequest(", "resolve(origin:"),
+            ):
                 a, b = attempt.find(earlier), attempt.find(later)
                 if a < 0 or b < 0 or not (a < b):
                     raise SystemExit("AccountSelfDeleteContract.attempt order broken")
@@ -243,7 +245,8 @@ def main() -> None:
                              "CosmasWorkspaceAuthPlugin.swift",
                              "scripts/standalone-provider/DesktopProviderMain.swift"):
                 text = (REPO / relative).read_text()
-                marker = ("func deleteAccount" if "func deleteAccount" in text else 'case "deleteAccount"')
+                marker = ("func deleteAccount" if "func deleteAccount" in text
+                          else 'case "deleteAccount"')
                 handler = text[text.find(marker):]
                 token_idx = handler.find("auth.token(")
                 if token_idx < 0:
