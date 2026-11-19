@@ -1170,7 +1170,7 @@ import Security
       let deleted = Data(#"{"status":"deleted","practice_left_ownerless":false,"clerk_identity_removed":true}"#.utf8)
       let run: () async -> [String: Any]? = {
         await AccountSelfDeleteContract.attempt(
-          holdsOrOpeningRecording: bridge.holdsOrOpeningRecording,
+          holdsOrOpeningRecording: { bridge.holdsOrOpeningRecording },
           origin: "https://staging-app.cosmaneura.com", mintToken: { "synthetic" },
           send: { req in
             sends += 1

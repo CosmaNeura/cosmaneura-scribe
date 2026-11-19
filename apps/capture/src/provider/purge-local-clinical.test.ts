@@ -14,12 +14,16 @@ describe("purgeLocalClinicalData", () => {
       delete: async key => {
         for (const name of CLINICAL_STORE_NAMES) bags[name] = bags[name].filter(entry => entry !== key);
       },
-      clearAll: async () => { for (const name of CLINICAL_STORE_NAMES) bags[name] = []; },
+      clearAll: async () => { for (const name of CLINICAL_STORE_NAMES) bags[name] = []; return 0; },
     });
     await purgeLocalClinicalData(stores);
     for (const name of CLINICAL_STORE_NAMES) {
       expect(bags[name]).toEqual([]); expect(await stores[name].isEmpty()).toBe(true);
     }
+    await expect(clinicalStoresFromKeys({
+      list: async () => ["provider-workspace-v1:x"], delete: async () => undefined,
+      clearAll: async () => 1,
+    }).journal.clear()).rejects.toThrow(/clinical_clear_all_remaining:1/);
     const empty = { clear: async () => undefined, isEmpty: async () => true };
     await expect(purgeLocalClinicalData({
       journal: { clear: async () => undefined, isEmpty: async () => false },
@@ -27,7 +31,7 @@ describe("purgeLocalClinicalData", () => {
     })).rejects.toThrow(/clinical_store_not_empty:journal/);
   });
 
-  it("deletes only scribe-provider-flow IndexedDB databases", async () => {
+  it("H8: IDB delete rejects blocked/unsupported; allSettled throws", async () => {
     const deleted: string[] = [];
     await deleteProviderFlowDatabases({
       databases: async () => [
@@ -42,5 +46,17 @@ describe("purgeLocalClinicalData", () => {
       },
     } as unknown as IDBFactory);
     expect(deleted).toEqual(["scribe-provider-flow:v1:a", "scribe-provider-flow:v1:b"]);
+    await expect(deleteProviderFlowDatabases(undefined)).rejects.toThrow(/clinical_idb_databases_unsupported/);
+    await expect(deleteProviderFlowDatabases({
+      databases: async () => [{ name: "scribe-provider-flow:v1:z" }],
+      deleteDatabase: () => ({
+        set onsuccess(_h: () => void) {}, set onerror(_h: () => void) {},
+        set onblocked(h: () => void) { queueMicrotask(h); }, error: null,
+      }),
+    } as unknown as IDBFactory)).rejects.toThrow(/idb_delete_blocked/);
+    const { purgeLocalClinicalWithFlowDatabases } = await import("./purge-local-clinical");
+    await expect(purgeLocalClinicalWithFlowDatabases(
+      async () => undefined, undefined,
+    )).rejects.toThrow(/clinical_idb_databases_unsupported/);
   });
 });

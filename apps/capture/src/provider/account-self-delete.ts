@@ -1,4 +1,3 @@
-/** Cosmas self-delete (T-REL-8b / Apple 5.1.1(v) / Core #940). */
 
 export type AccountDeleteConfirm = "DELETE";
 export interface AccountSelfDeleteRequest { readonly confirm: AccountDeleteConfirm; }
@@ -16,8 +15,7 @@ export type AccountSelfDeleteCompletion = "deleted" | "session_expired" | "gone"
 export interface AccountSelfDeleteState {
   readonly phase: AccountSelfDeletePhase; readonly confirmation: string; readonly error: string | null;
   readonly retryable: boolean; readonly completion: AccountSelfDeleteCompletion | null;
-  /** Set on deleted success; UI copy for ownerless waits on John's words (Core #940). */
-  readonly practiceLeftOwnerless: boolean | null;
+    readonly practiceLeftOwnerless: boolean | null;
 }
 export interface AccountSelfDeleteClient {
   deleteAccount(request: AccountSelfDeleteRequest, signal?: AbortSignal): Promise<AccountSelfDeleteResult>;
@@ -26,8 +24,7 @@ export interface AccountSelfDeleteHost {
   readonly client: AccountSelfDeleteClient;
   sameAccountSession(): boolean;
   closeWorkspace(): Promise<void>;
-  /** Wipe journal/drafts/review/queued audio/recordings so "Clearing this device" is true. */
-  purgeLocalClinicalData(): Promise<void>;
+    purgeLocalClinicalData(): Promise<void>;
   clearLocalCredentials(): Promise<void>;
 }
 
@@ -53,8 +50,8 @@ export function interpretAccountSelfDeleteResponse(status: number, body: unknown
   if (status !== 200) throw new Error(`account_self_delete_http_${status}`);
   if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("account_self_delete_body");
   const row = body as Record<string, unknown>;
-  if (Object.keys(row).sort().join(",") !== "clerk_identity_removed,practice_left_ownerless,status"
-    || (row.status !== "deleted" && row.status !== "already_deleted")
+  // H11: require the three fields; ignore extras.
+  if ((row.status !== "deleted" && row.status !== "already_deleted")
     || typeof row.practice_left_ownerless !== "boolean" || typeof row.clerk_identity_removed !== "boolean") {
     throw new Error("account_self_delete_body");
   }
@@ -76,8 +73,7 @@ export function interpretAccountSelfDeleteBridge(value: unknown): AccountSelfDel
   }
   if ((row.status === "deleted" || row.status === "already_deleted")
     && typeof row.practiceLeftOwnerless === "boolean"
-    && typeof row.clerkIdentityRemoved === "boolean"
-    && keys.sort().join(",") === "clerkIdentityRemoved,practiceLeftOwnerless,status") {
+    && typeof row.clerkIdentityRemoved === "boolean") {
     return {
       outcome: "deleted", status: row.status,
       practiceLeftOwnerless: row.practiceLeftOwnerless, clerkIdentityRemoved: row.clerkIdentityRemoved,
@@ -98,7 +94,6 @@ const idle = (): AccountSelfDeleteState => ({
   phase: "confirming", confirmation: "", error: null, retryable: false, completion: null, practiceLeftOwnerless: null,
 });
 
-/** Exact confirm fencing; cancel is a no-op; keep-session failures leave credentials. */
 export function accountSelfDelete(
   host: AccountSelfDeleteHost, changed: (value: AccountSelfDeleteState) => void,
 ): {
@@ -143,10 +138,15 @@ export function accountSelfDelete(
         if (!endsSession(result)) throw new Error("account_self_delete_unconfirmed");
         const completion = completionFor(result);
         if (completion === null) throw new Error("account_self_delete_unconfirmed");
+        if (result.outcome === "deleted" && result.clerkIdentityRemoved === false) {
+          publish(base("failed", { confirmation: CONFIRM, error: MESSAGES.keepSession }));
+          return;
+        }
         serverEndedSession = true;
         const ownerless = result.outcome === "deleted" ? result.practiceLeftOwnerless : false;
         publish(base("clearing", { completion, practiceLeftOwnerless: ownerless }));
-        await host.closeWorkspace().catch(() => undefined);
+        // H9: surface unconfirmed stop (do not swallow).
+        await host.closeWorkspace();
         let purgeFailed = false;
         if (result.outcome === "deleted") {
           try { await host.purgeLocalClinicalData(); } catch { purgeFailed = true; }
@@ -185,7 +185,6 @@ export function accountSelfDelete(
   };
 }
 
-/** Remove nonclinical preference cache keys after a successful account delete. */
 export function clearCachedProviderPreferences(): void {
   try {
     const keys: string[] = [];

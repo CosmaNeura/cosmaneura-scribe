@@ -28,6 +28,7 @@ export interface NativeProviderSession {
     readonly gone?: true;
     readonly unavailable?: true;
     readonly retryable?: true;
+    readonly recordingActive?: true;
     readonly status?: "deleted" | "already_deleted";
     readonly practiceLeftOwnerless?: boolean;
     readonly clerkIdentityRemoved?: boolean;

@@ -90,17 +90,23 @@ private func recordingUUID(_ value: Any?) throws -> UUID {
   private var lastClosed: UUID?
   private var version = 0
   private var readyTimingRecorded: UUID?
+  /// H9: open() refuses while account deletion is in flight.
+  private(set) var accountDeletionInProgress = false
 
   var permitsPassagePlayback: Bool {
     openingRevision == nil && (entry.map { [.sealed, .closed].contains($0.host.phase) && !$0.host.busy } ?? true)
   }
 
-  /// True while open() is in flight or a live capture is retained (not sealed/closed).
+  /// True while open() is in flight, host.busy, deletion in flight, or live capture retained.
   var holdsOrOpeningRecording: Bool {
-    if openingRevision != nil { return true }
+    if accountDeletionInProgress || openingRevision != nil { return true }
     guard let entry else { return false }
+    if entry.host.busy { return true }
     return ![.sealed, .closed].contains(entry.host.phase)
   }
+
+  func beginAccountDeletion() { accountDeletionInProgress = true }
+  func endAccountDeletion() { accountDeletionInProgress = false }
 
   func recordReadyTiming(revision: String, milliseconds: Double) {
     guard milliseconds.isFinite, milliseconds >= 0, milliseconds <= 3_600_000,
@@ -139,7 +145,7 @@ private func recordingUUID(_ value: Any?) throws -> UUID {
     inputMuted: @MainActor () -> Bool
   ) async throws -> [String: Any] {
     try current()
-    guard openingRevision == nil else { throw ProviderNativeError.unavailable }
+    guard !accountDeletionInProgress, openingRevision == nil else { throw ProviderNativeError.unavailable }
     openingRevision = selection.revision
     defer { openingRevision = nil }
     let ticket = generation

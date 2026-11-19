@@ -26,6 +26,9 @@ export interface DesktopProviderMainHost {
   /** Capture wipe scopes before DELETE; closure never calls Core. */
   readonly prepareClinicalPurge?: () => Promise<() => Promise<void>>;
   readonly abandonClinicalPurge?: () => void;
+  readonly confirmClinicalPurge?: () => void;
+  readonly hasPendingPurge?: () => boolean;
+  readonly resolvePreparedPurge?: (observation: { recoveryScope?: string | null; revoked?: boolean }) => void;
   /** Test fallback wipe when prepareClinicalPurge is absent. */
   readonly purgeLocalClinicalData?: () => Promise<void>;
   /** Main-only complete provider workspace; never forward this object to preload. */
@@ -147,55 +150,79 @@ export class DesktopProviderWorkspaceMain {
       const state = await this.readSession(); if (state?.phase !== "ready" || signal.aborted) throw unavailable();
       // Non-terminal recorder refuses; uploading/processing/complete/idle do not.
       const encounter = this.connection?.encounter;
-      if (encounter?.recorderOpening) throw unavailable();
+      if (encounter?.recorderOpening) return { recordingActive: true };
       const recorderState = encounter?.liveRecorder?.snapshot.state;
       if (recorderState && !["uploading", "processing", "complete", "idle"].includes(recorderState)) {
-        throw unavailable();
+        return { recordingActive: true };
       }
       if (signal.aborted) throw unavailable();
       let wipe: (() => Promise<void>) | undefined;
-      if (this.host.prepareClinicalPurge) {
-        try { wipe = await this.host.prepareClinicalPurge(); }
-        catch { throw unavailable(); }
+      let prepared = false, sent = false;
+      try {
+        if (this.host.prepareClinicalPurge) {
+          try { wipe = await this.host.prepareClinicalPurge(); prepared = true; }
+          catch { throw unavailable(); }
+        }
+        if (signal.aborted) throw unavailable();
+        // Once DELETE is sent, always return the bridge result (even mid-flight abort).
+        const value = await this.host.session.deleteAccount({ confirm: "DELETE" });
+        sent = true;
+        if (value?.unauthorized === true) {
+          // H3: 401 with pending marker counts as confirmed delete.
+          if (prepared) this.host.confirmClinicalPurge?.();
+          else this.host.abandonClinicalPurge?.();
+          try { await this.closeConnection(); } catch { /* H12: still return server outcome */ }
+          if (prepared && wipe) {
+            let clinicalPurgeFailed = false;
+            try { await wipe(); } catch { clinicalPurgeFailed = true; }
+            return {
+              status: "already_deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true,
+              ...(clinicalPurgeFailed ? { clinicalPurgeFailed: true } : {}),
+            };
+          }
+          return { unauthorized: true };
+        }
+        if (value?.gone === true) {
+          this.host.abandonClinicalPurge?.();
+          try { await this.closeConnection(); } catch { /* H12 */ }
+          return { gone: true };
+        }
+        if (value?.unavailable === true) { this.host.abandonClinicalPurge?.(); return { unavailable: true }; }
+        if (value?.retryable === true) { this.host.abandonClinicalPurge?.(); return { retryable: true }; }
+        if (value?.recordingActive === true) { this.host.abandonClinicalPurge?.(); return { recordingActive: true }; }
+        if ((value?.status === "deleted" || value?.status === "already_deleted")
+          && typeof value.practiceLeftOwnerless === "boolean"
+          && typeof value.clerkIdentityRemoved === "boolean") {
+          this.host.confirmClinicalPurge?.();
+          try { await this.closeConnection(); } catch { /* H12: still return server outcome */ }
+          let clinicalPurgeFailed = false;
+          try {
+            if (wipe) await wipe();
+            else await this.host.purgeLocalClinicalData?.();
+          } catch { clinicalPurgeFailed = true; }
+          return {
+            status: value.status,
+            practiceLeftOwnerless: value.practiceLeftOwnerless,
+            clerkIdentityRemoved: value.clerkIdentityRemoved,
+            ...(clinicalPurgeFailed ? { clinicalPurgeFailed: true } : {}),
+          };
+        }
+        this.host.abandonClinicalPurge?.();
+        throw unavailable();
+      } finally {
+        // H1: abandon prepared on every path that never sent DELETE.
+        if (prepared && !sent) this.host.abandonClinicalPurge?.();
       }
-      if (signal.aborted) throw unavailable();
-      // Once DELETE is sent, always return the bridge result (even mid-flight abort).
-      const value = await this.host.session.deleteAccount({ confirm: "DELETE" });
-      if (value?.unauthorized === true) {
-        this.host.abandonClinicalPurge?.(); await this.closeConnection(); return { unauthorized: true };
-      }
-      if (value?.gone === true) {
-        this.host.abandonClinicalPurge?.(); await this.closeConnection(); return { gone: true };
-      }
-      if (value?.unavailable === true) {
-        this.host.abandonClinicalPurge?.(); return { unavailable: true };
-      }
-      if (value?.retryable === true) {
-        this.host.abandonClinicalPurge?.(); return { retryable: true };
-      }
-      if ((value?.status === "deleted" || value?.status === "already_deleted")
-        && typeof value.practiceLeftOwnerless === "boolean"
-        && typeof value.clerkIdentityRemoved === "boolean") {
-        await this.closeConnection();
-        let clinicalPurgeFailed = false;
-        try {
-          if (wipe) await wipe();
-          else await this.host.purgeLocalClinicalData?.();
-        } catch { clinicalPurgeFailed = true; }
-        return {
-          status: value.status,
-          practiceLeftOwnerless: value.practiceLeftOwnerless,
-          clerkIdentityRemoved: value.clerkIdentityRemoved,
-          ...(clinicalPurgeFailed ? { clinicalPurgeFailed: true } : {}),
-        };
-      }
-      this.host.abandonClinicalPurge?.();
-      throw unavailable();
     }
     if (["session_read", "sign_in", "sign_out", "connect"].includes(request.method)) {
       if (request.connectionId !== null || request.encounterId !== null) throw unavailable();
       exact(payload, []);
       if (request.method === "session_read") return this.readSession();
+      // H6: refuse sign_in/connect while any purge marker exists; retry first.
+      if ((request.method === "sign_in" || request.method === "connect")
+        && this.host.hasPendingPurge?.()) {
+        throw unavailable();
+      }
       if (request.method === "connect") return this.connect(signal);
       if (this.sessionBusy) throw unavailable();
       this.sessionBusy = true;
@@ -540,6 +567,10 @@ export class DesktopProviderWorkspaceMain {
     if (this.closed) return;
     let value: ProviderSessionState;
     try { value = sessionState(input); } catch { value = { phase: "unavailable", revision: crypto.randomUUID() }; }
+    // H1: resolve prepared markers from the next auth observation.
+    if (value.phase === "signedOut" || value.phase === "unavailable") {
+      this.host.resolvePreparedPurge?.({ revoked: true });
+    }
     this.observations++; this.state = value;
     if (this.connection && (value.phase !== "ready" || value.revision !== this.connection.revision)) void this.closeConnection().catch(() => undefined);
     this.publish({ kind: "session", state: value });
@@ -578,6 +609,7 @@ export class DesktopProviderWorkspaceMain {
     if (encounter.closing) return encounter.closing;
     encounter.closing = Promise.resolve().then(async () => {
       await Promise.allSettled(encounter.work); await encounter.recorder?.dispose();
+      encounter.liveRecorder = undefined; delete encounter.recorder;
       await encounter.preflight?.close(); delete encounter.preflight;
       if (connection.encounter === encounter) delete connection.encounter;
     }).catch(error => { delete encounter.closing; throw error; });

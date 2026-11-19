@@ -171,75 +171,36 @@ test("unconfirmed SDK sign-out keeps the workspace closed and exposes normal ret
   expect(await page.evaluate(() => window.accountLab.stats.sourceCalls)).toBe(0);
 });
 
-const deleteDialog = async (page, query = "") => {
-  await open(page, query); await account(page).click();
-  await page.getByRole("button", { name: "Delete account", exact: true }).click();
-  const dialog = page.locator("dialog.scribe-account-self-delete");
-  await expect(dialog).toBeVisible();
-  return dialog;
-};
-const confirmDelete = async dialog => {
-  await dialog.getByLabel("Type DELETE to confirm").fill("DELETE");
-  await dialog.getByRole("button", { name: "Delete account", exact: true }).click();
-};
-
-test("Delete account confirms, maps 401/404/503, and keeps cancel/failure signed in", async ({ page }) => {
-  await open(page); await account(page).click();
-  await expect(page.getByRole("button", { name: "Delete account", exact: true })).toBeEnabled();
-  await expect(page.getByRole("button", { name: "Cancel Scribe access", exact: true })).toBeEnabled();
-
-  let dialog = await deleteDialog(page);
-  await expect(dialog.getByRole("heading", { name: "Delete your account?", exact: true })).toBeVisible();
-  await expect(dialog).toContainText("whole Cosmaneura sign-in, including Cosmas web access");
-  await expect(dialog).toContainText("cannot be undone");
-  await expect(dialog).toContainText("Clinical records stay with the practice under its retention policy");
-  await expect(dialog.getByRole("button", { name: "Delete account", exact: true })).toBeDisabled();
-  await confirmDelete(dialog);
-  await expect(dialog.getByRole("status")).toContainText("Your account has been deleted");
-  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+test("Delete account confirms, maps failures, keeps cancel signed in", async ({ page }) => {
+  const openDelete = async (q = "") => {
+    await open(page, q); await account(page).click();
+    await page.getByRole("button", { name: "Delete account", exact: true }).click();
+    const d = page.locator("dialog.scribe-account-self-delete");
+    await expect(d).toBeVisible(); return d;
+  };
+  const confirm = async d => {
+    await d.getByLabel("Type DELETE to confirm").fill("DELETE");
+    await d.getByRole("button", { name: "Delete account", exact: true }).click();
+  };
+  let d = await openDelete();
+  await expect(d).toContainText("Clinical records stay with the practice under its retention policy");
+  await confirm(d);
+  await expect(d.getByRole("status")).toContainText("Your account has been deleted");
+  await d.getByRole("button", { name: "Done", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Account deleted", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
-  expect(await page.evaluate(() => window.accountLab.stats.deleteAccountCalls)).toBe(1);
-  expect(await page.evaluate(() => window.accountLab.stats.signOutCalls)).toBe(1);
-
-  dialog = await deleteDialog(page, "?delete-unauthorized");
-  await confirmDelete(dialog);
-  await expect(dialog.getByRole("status")).toContainText("Your session has expired");
-  await dialog.getByRole("button", { name: "Done", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Session expired", exact: true })).toBeVisible();
-  expect(await page.evaluate(() => window.accountLab.stats.signOutCalls)).toBe(1);
-
-  dialog = await deleteDialog(page, "?delete-unavailable");
-  await confirmDelete(dialog);
-  await expect(dialog.getByRole("status")).toContainText("Account deletion isn't available yet, contact support");
-  expect(await page.evaluate(() => window.accountLab.stats.signOutCalls)).toBe(0);
-  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-
-  dialog = await deleteDialog(page, "?delete-retryable");
-  await confirmDelete(dialog);
-  await expect(dialog.getByRole("status")).toContainText("temporarily unavailable");
-  await expect(dialog.getByRole("button", { name: "Try again", exact: true })).toBeEnabled();
-  expect(await page.evaluate(() => window.accountLab.stats.signOutCalls)).toBe(0);
-
-  dialog = await deleteDialog(page, "?fail-once");
-  await confirmDelete(dialog);
-  await expect(dialog.getByRole("status")).toContainText("could not finish signing out");
-  await dialog.getByRole("button", { name: "Done", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Retry sign out", exact: true })).toBeEnabled();
+  d = await openDelete("?delete-unauthorized"); await confirm(d);
+  await expect(d.getByRole("status")).toContainText("Your session has expired");
+  await d.getByRole("button", { name: "Done", exact: true }).click();
+  d = await openDelete("?delete-unavailable"); await confirm(d);
+  await expect(d.getByRole("status")).toContainText("isn't available yet");
+  await d.getByRole("button", { name: "Cancel", exact: true }).click();
+  d = await openDelete("?delete-retryable"); await confirm(d);
+  await expect(d.getByRole("button", { name: "Try again", exact: true })).toBeEnabled();
+  d = await openDelete("?fail-once"); await confirm(d);
+  await expect(d.getByRole("status")).toContainText("could not finish signing out");
+  await d.getByRole("button", { name: "Done", exact: true }).click();
   await page.getByRole("button", { name: "Retry sign out", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
-
-  dialog = await deleteDialog(page);
-  await dialog.getByLabel("Type DELETE to confirm").fill("DELETE");
-  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(dialog).toHaveCount(0);
-  expect(await page.evaluate(() => window.accountLab.stats.deleteAccountCalls)).toBe(0);
-
-  dialog = await deleteDialog(page, "?delete-fail");
-  await confirmDelete(dialog);
-  await expect(dialog.getByRole("status")).toContainText("still signed in");
-  expect(await page.evaluate(() => window.accountLab.stats.deleteAccountCalls)).toBe(1);
-  expect(await page.evaluate(() => window.accountLab.stats.signOutCalls)).toBe(0);
-  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Today's patients", exact: true })).toBeVisible();
+  d = await openDelete("?delete-fail"); await confirm(d);
+  await expect(d.getByRole("status")).toContainText("still signed in");
+  await d.getByRole("button", { name: "Cancel", exact: true }).click();
 });

@@ -18,10 +18,10 @@ func body(_ status: String, practiceLeftOwnerless: Bool, clerkIdentityRemoved: B
 }
 
 func expectDeleted(_ payload: [String: Any]?, status: String) throws {
+    // H11: require the three fields; extras on the wire body are ignored upstream.
     try require(payload != nil && payload?["status"] as? String == status
         && payload?["practiceLeftOwnerless"] as? Bool != nil
-        && payload?["clerkIdentityRemoved"] as? Bool != nil
-        && Set(payload!.keys) == ["status", "practiceLeftOwnerless", "clerkIdentityRemoved"])
+        && payload?["clerkIdentityRemoved"] as? Bool != nil)
 }
 func expectFlag(_ payload: [String: Any]?, key: String) throws {
     try require(payload != nil && payload?[key] as? Bool == true && payload!.count == 1)
@@ -71,6 +71,10 @@ struct CheckAccountSelfDelete {
         try require(AccountSelfDeleteContract.resolve(
             origin: "https://staging-app.cosmaneura.com", statusCode: 200,
             body: Data(#"{"status":"deleted"}"#.utf8)) == nil)
+        try expectDeleted(AccountSelfDeleteContract.resolve(
+            origin: "https://staging-app.cosmaneura.com", statusCode: 200,
+            body: Data(#"{"status":"deleted","practice_left_ownerless":false,"clerk_identity_removed":true,"extra":1}"#.utf8)),
+            status: "deleted")
         try require(AccountSelfDeleteContract.resolve(
             origin: "http://evil.example", statusCode: 200,
             body: try body("deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true)) == nil)

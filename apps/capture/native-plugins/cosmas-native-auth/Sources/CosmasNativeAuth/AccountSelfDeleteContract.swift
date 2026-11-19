@@ -1,6 +1,5 @@
 import Foundation
 
-/// Shared Cosmas T-REL-8a / PR #940 self-delete contract (iPhone + Mac).
 public enum AccountSelfDeleteContract {
     public enum Outcome: Equatable, Sendable {
         case deleted(status: String, practiceLeftOwnerless: Bool, clerkIdentityRemoved: Bool)
@@ -43,12 +42,12 @@ public enum AccountSelfDeleteContract {
         case 200:
             guard let body,
                   let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-                  Set(object.keys) == ["status", "practice_left_ownerless", "clerk_identity_removed"],
                   let status = object["status"] as? String,
                   status == "deleted" || status == "already_deleted",
                   let practiceLeftOwnerless = object["practice_left_ownerless"] as? Bool,
                   let clerkIdentityRemoved = object["clerk_identity_removed"] as? Bool
             else { return .rejected }
+            // H11: require the three fields; ignore extras.
             return .deleted(status: status, practiceLeftOwnerless: practiceLeftOwnerless,
                             clerkIdentityRemoved: clerkIdentityRemoved)
         default: return .rejected
@@ -75,20 +74,53 @@ public enum AccountSelfDeleteContract {
 
     @MainActor
     public static func attempt(
-        holdsOrOpeningRecording: Bool, origin: String?,
+        holdsOrOpeningRecording: () -> Bool, origin: String?,
         mintToken: () async throws -> String,
-        send: (URLRequest) async throws -> (Data, URLResponse)
+        send: (URLRequest) async throws -> (Data, URLResponse),
+        beginDeletion: (() -> Void)? = nil,
+        endDeletion: (() -> Void)? = nil,
+        markerPrepared: (() -> Void)? = nil,
+        markerConfirm: (() -> Void)? = nil,
+        markerAbandonPrepared: (() -> Void)? = nil
     ) async -> [String: Any]? {
-        if holdsOrOpeningRecording { return bridgePayload(for: .recordingActive) }
+        if holdsOrOpeningRecording() { return bridgePayload(for: .recordingActive) }
         guard let origin, accountDeleteURL(origin: origin) != nil else { return nil }
+        var sent = false
+        markerPrepared?()
+        beginDeletion?()
+        defer { endDeletion?(); if !sent { markerAbandonPrepared?() } }
         do {
             let token = try await mintToken()
+            // H9: recheck recording after mint await.
+            if holdsOrOpeningRecording() {
+                markerAbandonPrepared?()
+                return bridgePayload(for: .recordingActive)
+            }
             guard let request = makeAuthorizedAccountDeleteRequest(
                 origin: origin, bearerToken: token) else { return nil }
             let (data, response) = try await send(request)
+            sent = true
             guard let http = response as? HTTPURLResponse else { return nil }
-            return resolve(origin: origin, statusCode: http.statusCode, body: data)
-        } catch { return nil }
+            // H3: 401 with pending marker → confirmed already_deleted.
+            if http.statusCode == 401, ClinicalPurgeMarker.exists {
+                markerConfirm?()
+                return bridgePayload(for: .deleted(
+                    status: "already_deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true))
+            }
+            let payload = resolve(origin: origin, statusCode: http.statusCode, body: data)
+            if payload?["status"] != nil { markerConfirm?() }
+            else { markerAbandonPrepared?() }
+            return payload
+        } catch {
+            // H3: mint failure with pending marker → confirmed already_deleted.
+            if ClinicalPurgeMarker.exists {
+                sent = true
+                markerConfirm?()
+                return bridgePayload(for: .deleted(
+                    status: "already_deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true))
+            }
+            return nil
+        }
     }
 
     private static func isExactLocalhostHTTP(_ origin: String) -> Bool {

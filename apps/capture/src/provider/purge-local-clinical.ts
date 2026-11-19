@@ -1,4 +1,3 @@
-/** Wipe local clinical custody after Cosmas account delete ("Clearing this device"). */
 
 export type ClinicalStoreName = "journal" | "drafts" | "review" | "queuedAudio" | "recordings";
 export interface ClinicalStore { clear(): Promise<void>; isEmpty(): Promise<boolean>; }
@@ -19,20 +18,27 @@ export async function purgeLocalClinicalData(stores: LocalClinicalStores): Promi
   }
 }
 
-/** Shared-map adapter; clearAll wipes native keys that renderer list() cannot see. */
 export function clinicalStoresFromKeys(
-  keys: { list(): Promise<readonly string[]>; delete(key: string): Promise<void>; clearAll?: () => Promise<void> },
+  keys: {
+    list(): Promise<readonly string[]>;
+    delete(key: string): Promise<void>;
+    clearAll?: () => Promise<number>;
+  },
 ): LocalClinicalStores {
   let cleared = false;
   const wipe = async (): Promise<void> => {
     if (cleared) return;
-    if (keys.clearAll) await keys.clearAll();
-    else for (const key of await keys.list()) await keys.delete(key);
+    if (keys.clearAll) {
+      const remaining = await keys.clearAll();
+      if (remaining !== 0) throw new Error(`clinical_clear_all_remaining:${remaining}`);
+    } else {
+      for (const key of await keys.list()) await keys.delete(key);
+    }
     cleared = true;
   };
   const empty = (prefixes: readonly string[]) => async (): Promise<boolean> => {
-    if (cleared && keys.clearAll) return true;
-    return !(await keys.list()).some(key => prefixes.some(prefix => key.startsWith(prefix)));
+    const remaining = (await keys.list()).filter(key => prefixes.some(prefix => key.startsWith(prefix)));
+    return remaining.length === 0;
   };
   const store = (prefixes: readonly string[]): ClinicalStore => ({ clear: wipe, isEmpty: empty(prefixes) });
   return {
@@ -45,13 +51,25 @@ export function clinicalStoresFromKeys(
 export async function deleteProviderFlowDatabases(
   factory: IDBFactory | undefined = globalThis.indexedDB,
 ): Promise<void> {
-  if (!factory || typeof factory.databases !== "function") return;
+  // H8: missing databases() is a failure; blocked delete is a failure.
+  if (!factory || typeof factory.databases !== "function") {
+    throw new Error("clinical_idb_databases_unsupported");
+  }
   const rows = await factory.databases();
   await Promise.all(rows.filter(row => typeof row.name === "string"
     && row.name.startsWith("scribe-provider-flow:v1:")).map(row => new Promise<void>((resolve, reject) => {
     const request = factory.deleteDatabase(row.name!);
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error ?? new Error("idb_delete_failed"));
-    request.onblocked = () => resolve();
+    request.onblocked = () => reject(new Error("idb_delete_blocked"));
   })));
+}
+
+export async function purgeLocalClinicalWithFlowDatabases(
+  hostPurge: () => Promise<void>,
+  factory?: IDBFactory,
+): Promise<void> {
+  const results = await Promise.allSettled([hostPurge(), deleteProviderFlowDatabases(factory)]);
+  const failed = results.find(result => result.status === "rejected") as PromiseRejectedResult | undefined;
+  if (failed) throw failed.reason instanceof Error ? failed.reason : new Error("clinical_purge_failed");
 }

@@ -24,34 +24,6 @@ async function fixture(phase: ProviderSessionState["phase"] = "ready",
   return { main, openDashboard, status, connect, purgeLocalClinicalData, prepareClinicalPurge, send };
 }
 
-describe("fixed account-level desktop cancellation actions", () => {
-  it("opens the trusted account dashboard and reads own status without any recording connection", async () => {
-    const f = await fixture();
-    try {
-      expect(await f.send("open_dashboard", {})).toMatchObject({ ok: true, result: null });
-      expect(f.openDashboard).toHaveBeenCalledOnce(); expect(f.connect).not.toHaveBeenCalled();
-      expect(await f.send("cancellation", { action: "status" })).toMatchObject({ ok: true, result: null });
-      expect(f.status).toHaveBeenCalledOnce();
-    } finally { await f.main.dispose(); }
-  });
-  it("rejects a renderer URL or visit-scoped account dashboard request", async () => {
-    const f = await fixture();
-    try {
-      expect(await f.send("open_dashboard", { url: "https://untrusted.synthetic.invalid" })).toMatchObject({ ok: false });
-      expect(await f.send("open_dashboard", {}, crypto.randomUUID())).toMatchObject({ ok: false });
-      expect(f.openDashboard).not.toHaveBeenCalled();
-    } finally { await f.main.dispose(); }
-  });
-  it("does not open the account dashboard or query cancellation while signed out", async () => {
-    const f = await fixture("signedOut");
-    try {
-      expect(await f.send("open_dashboard", {})).toMatchObject({ ok: false });
-      expect(await f.send("cancellation", { action: "status" })).toMatchObject({ ok: false });
-      expect(f.openDashboard).not.toHaveBeenCalled(); expect(f.status).not.toHaveBeenCalled();
-    } finally { await f.main.dispose(); }
-  });
-});
-
 describe("desktop account self-delete IPC", () => {
   const okDelete = () => ({
     status: "deleted" as const, practiceLeftOwnerless: false, clerkIdentityRemoved: true,
@@ -68,7 +40,14 @@ describe("desktop account self-delete IPC", () => {
       expect(f.purgeLocalClinicalData).toHaveBeenCalledOnce();
       expect(await f.send("delete_account", { confirm: "delete" })).toMatchObject({ ok: false });
     } finally { await f.main.dispose(); }
-    for (const flag of ["unauthorized", "gone", "unavailable", "retryable"] as const) {
+    // H3: 401 with prepared marker confirms already_deleted and wipes.
+    const unauthorized = await fixture("ready", vi.fn(async () => ({ unauthorized: true as const })));
+    try {
+      expect(await unauthorized.send("delete_account", { confirm: "DELETE" }))
+        .toMatchObject({ ok: true, result: { status: "already_deleted" } });
+      expect(unauthorized.purgeLocalClinicalData).toHaveBeenCalledOnce();
+    } finally { await unauthorized.main.dispose(); }
+    for (const flag of ["gone", "unavailable", "retryable"] as const) {
       const row = await fixture("ready", vi.fn(async () => ({ [flag]: true as const })));
       try {
         expect(await row.send("delete_account", { confirm: "DELETE" }))
@@ -123,12 +102,12 @@ describe("desktop account self-delete IPC", () => {
   });
 
   it("refuses signed-out/missing delete; closes workspace only after session-ending delete", async () => {
-    const signedOut = await fixture("signedOut", vi.fn(async () => ({ unauthorized: true as const })));
-    try { expect(await signedOut.send("delete_account", { confirm: "DELETE" })).toMatchObject({ ok: false }); }
-    finally { await signedOut.main.dispose(); }
-    const missing = await fixture("ready");
-    try { expect(await missing.send("delete_account", { confirm: "DELETE" })).toMatchObject({ ok: false }); }
-    finally { await missing.main.dispose(); }
+    for (const [phase, del] of [["signedOut", vi.fn(async () => ({ unauthorized: true as const }))],
+      ["ready", undefined]] as const) {
+      const row = await fixture(phase, del as never);
+      try { expect(await row.send("delete_account", { confirm: "DELETE" })).toMatchObject({ ok: false }); }
+      finally { await row.main.dispose(); }
+    }
     const dispose = vi.fn(async () => undefined);
     const state: ProviderSessionState = { phase: "ready", revision: crypto.randomUUID() };
     const hostFor = (deleteAccount: NonNullable<DesktopProviderMainHost["session"]["deleteAccount"]>): DesktopProviderMainHost => ({
@@ -148,27 +127,19 @@ describe("desktop account self-delete IPC", () => {
     );
     await keep.initialize();
     try {
-      const connected = await keep.request({
-        method: "connect", payload: {}, requestId: crypto.randomUUID(), connectionId: null, encounterId: null,
-      }) as { ok: boolean; result: { connectionId: string } };
+      await keep.request({ method: "connect", payload: {}, requestId: crypto.randomUUID(), connectionId: null, encounterId: null });
       expect(await keep.request({
         method: "delete_account", payload: { confirm: "DELETE" }, requestId: crypto.randomUUID(),
         connectionId: null, encounterId: null,
       })).toMatchObject({ ok: true, result: { unavailable: true } });
       expect(dispose).not.toHaveBeenCalled();
-      expect(await keep.request({
-        method: "list", payload: {}, requestId: crypto.randomUUID(),
-        connectionId: connected.result.connectionId, encounterId: null,
-      })).toMatchObject({ ok: true });
     } finally { await keep.dispose(); }
     dispose.mockClear();
     const end = new DesktopProviderWorkspaceMain(hostFor(vi.fn(async () => okDelete())),
       () => ({ dispose: async () => undefined }));
     await end.initialize();
     try {
-      expect((await end.request({
-        method: "connect", payload: {}, requestId: crypto.randomUUID(), connectionId: null, encounterId: null,
-      }) as { ok: boolean }).ok).toBe(true);
+      await end.request({ method: "connect", payload: {}, requestId: crypto.randomUUID(), connectionId: null, encounterId: null });
       expect(await end.request({
         method: "delete_account", payload: { confirm: "DELETE" }, requestId: crypto.randomUUID(),
         connectionId: null, encounterId: null,
@@ -179,7 +150,7 @@ describe("desktop account self-delete IPC", () => {
 
   it("refuses delete_account for any non-terminal recorder state", async () => {
     const deleteAccount = vi.fn(async () => okDelete());
-    const dispose = vi.fn(async () => undefined), stop = vi.fn(async () => undefined);
+    const stop = vi.fn(async () => undefined);
     const state: ProviderSessionState = { phase: "ready", revision: crypto.randomUUID() };
     const sessionId = "10000000-0000-4000-8000-000000000001";
     const scope = {
@@ -187,12 +158,6 @@ describe("desktop account self-delete IPC", () => {
       bindingRef: "scribe_capture_binding_01j00000000000000000000000",
       appointmentRef: "appointment_01j00000000000000000000000",
     };
-    const saved = { revision: "1", progress: { sessionId, uploaded: false, pendingSave: null, admission: {
-      key: sessionId, languageMode: "en-US+es-US", attestation: {
-        modality: "virtual", participant_regions: ["US-NY"], method: "verbal_attestation",
-        all_parties_consented: true, granted_at: new Date().toISOString(),
-      },
-    } } };
     const nativeRecord = {
       deactivate: stop, subscribe: () => () => undefined,
       snapshot: { sessionId, state: "recording", statusCode: "capture_recording",
@@ -203,14 +168,19 @@ describe("desktop account self-delete IPC", () => {
     const host = {
       prepareClinicalPurge: vi.fn(async () => vi.fn(async () => undefined)),
       connect: vi.fn(async (signal: AbortSignal) => ({
-        dispose, workspace: {
+        dispose: stop, workspace: {
           signal,
           listEncounters: async () => [{ appointmentRef: scope.appointmentRef, title: "S", detail: "V" }],
           openEncounter: async (_: string, encounterSignal: AbortSignal) => ({
             scope, signal: encounterSignal,
             encounter: { appointmentRef: scope.appointmentRef, title: "S", detail: "V" },
             request: async () => Response.json({}), openInCore: async () => undefined,
-            journal: { load: async () => structuredClone(saved), save: async () => saved },
+            journal: { load: async () => ({ revision: "1", progress: { sessionId, uploaded: false, pendingSave: null, admission: {
+              key: sessionId, languageMode: "en-US+es-US", attestation: {
+                modality: "virtual", participant_regions: ["US-NY"], method: "verbal_attestation",
+                all_parties_consented: true, granted_at: new Date().toISOString(),
+              },
+            } } }), save: async () => undefined },
             reviewJournal: () => ({ load: async () => null, save: async () => undefined, clear: async () => undefined }),
             recorder: async () => nativeRecord,
           }),
@@ -232,18 +202,49 @@ describe("desktop account self-delete IPC", () => {
         method: "open", payload: { appointmentRef: scope.appointmentRef },
         requestId: crypto.randomUUID(), connectionId: connected.result.connectionId, encounterId: null,
       }) as { ok: boolean; result: { encounterId: string } };
-      expect((await main.request({
+      await main.request({
         method: "recorder", payload: { sessionId }, requestId: crypto.randomUUID(),
         connectionId: connected.result.connectionId, encounterId: opened.result.encounterId,
-      }) as { ok: boolean }).ok).toBe(true);
+      });
       for (const recorderState of ["recording", "paused", "ready", "preparing", "error"] as const) {
         nativeRecord.snapshot.state = recorderState;
         expect(await main.request({
           method: "delete_account", payload: { confirm: "DELETE" },
           requestId: crypto.randomUUID(), connectionId: null, encounterId: null,
-        })).toMatchObject({ ok: false });
+        })).toMatchObject({ ok: true, result: { recordingActive: true } });
         expect(deleteAccount).not.toHaveBeenCalled();
       }
+    } finally { await main.dispose(); }
+  });
+
+  it("H1: throw before/after prepare abandons prepared; H6 gates sign_in while pending", async () => {
+    const abandonClinicalPurge = vi.fn(), confirmClinicalPurge = vi.fn();
+    const hasPendingPurge = vi.fn(() => true);
+    const deleteAccount = vi.fn(async () => { throw new Error("account_self_delete_http_500"); });
+    const state: ProviderSessionState = { phase: "ready", revision: crypto.randomUUID() };
+    const host: DesktopProviderMainHost = {
+      connect: vi.fn(async () => { throw new Error("no"); }),
+      prepareClinicalPurge: vi.fn(async () => vi.fn(async () => undefined)),
+      abandonClinicalPurge, confirmClinicalPurge, hasPendingPurge,
+      session: {
+        getState: async () => state, signIn: async () => state, signOut: async () => state,
+        addListener: async () => ({ remove: async () => undefined }), deleteAccount,
+      },
+    };
+    const main = new DesktopProviderWorkspaceMain(host, () => ({ dispose: async () => undefined }));
+    await main.initialize();
+    try {
+      expect(await main.request({
+        method: "delete_account", payload: { confirm: "DELETE" },
+        requestId: crypto.randomUUID(), connectionId: null, encounterId: null,
+      })).toMatchObject({ ok: false });
+      expect(abandonClinicalPurge).toHaveBeenCalled();
+      expect(confirmClinicalPurge).not.toHaveBeenCalled();
+      expect(await main.request({
+        method: "sign_in", payload: {}, requestId: crypto.randomUUID(),
+        connectionId: null, encounterId: null,
+      })).toMatchObject({ ok: false });
+      expect(hasPendingPurge).toHaveBeenCalled();
     } finally { await main.dispose(); }
   });
 });

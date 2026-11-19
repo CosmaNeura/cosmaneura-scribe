@@ -53,8 +53,12 @@ describe("account self-delete interpret + flow", () => {
       expect(() => interpretAccountSelfDeleteResponse(status, {})).toThrow(new RegExp(`account_self_delete_http_${status}`));
     }
     expect(() => interpretAccountSelfDeleteResponse(200, { status: "deleted" })).toThrow(/account_self_delete_body/);
+    // H11: extras ignored when the three fields are present.
+    expect(interpretAccountSelfDeleteResponse(200, {
+      status: "deleted", practice_left_ownerless: false, clerk_identity_removed: true, extra: 1,
+    })).toMatchObject({ outcome: "deleted" });
     expect(interpretAccountSelfDeleteBridge({
-      status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true,
+      status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true, clinicalPurgeFailed: true,
     })).toMatchObject({ outcome: "deleted" });
     for (const [payload, outcome] of [
       [{ unauthorized: true }, "unauthorized"], [{ gone: true }, "gone"],
@@ -136,9 +140,21 @@ describe("account self-delete interpret + flow", () => {
     changed.flow.confirm("DELETE"); await changed.flow.submit();
     expect(changed.deleteAccount).not.toHaveBeenCalled();
 
+    // H9: unconfirmed stop surfaces as local_clear_failed after server delete.
     const closeFail = fixture({ closeWorkspace: vi.fn(async () => { throw new Error("close_failed"); }) });
     closeFail.flow.confirm("DELETE"); await closeFail.flow.submit();
-    expect(closeFail.flow.read().phase).toBe("complete");
+    expect(closeFail.flow.read().phase).toBe("local_clear_failed");
+    // Partial delete (clerk_identity_removed:false) never full success; reuse keepSession.
+    const partial = fixture({
+      client: { deleteAccount: vi.fn(async (): Promise<AccountSelfDeleteResult> => ({
+        outcome: "deleted", status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: false,
+      })) },
+    });
+    partial.flow.confirm("DELETE"); await partial.flow.submit();
+    expect(partial.flow.read()).toMatchObject({
+      phase: "failed", error: ACCOUNT_SELF_DELETE_MESSAGES.keepSession,
+    });
+    expect(partial.clearLocalCredentials).not.toHaveBeenCalled();
     const signOutFail = fixture({
       clearLocalCredentials: vi.fn(async () => { throw new Error("sign_out_failed"); }),
     });
