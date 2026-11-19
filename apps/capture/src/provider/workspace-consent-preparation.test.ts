@@ -164,6 +164,8 @@ it("checkbox alone prepares exactly once and never invokes any recording continu
   expect(f.recorder).toHaveBeenCalledOnce(); expect(f.start).not.toHaveBeenCalled(); expect(f.app.startFromProviderAction).not.toHaveBeenCalled();
   expect(f.recorder.mock.calls[0]).toHaveLength(2);
   expect(f.controller.selectAudioInput).toHaveBeenCalledWith("microphone-fixture");
+  // Account Delete reads this flag from real syncRecordingActive (unmocked workspace).
+  expect(f.root.dataset.providerRecordingActive).toBe("true");
   await f.binding()!.controller.startRecording(); expect(f.start).toHaveBeenCalledOnce();
 });
 it("an open screen stops checkbox preparation at expiry and retains explicit Start preparation", async () => {

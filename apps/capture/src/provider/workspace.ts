@@ -51,6 +51,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let disposed = false, generation = 0, busy = false;
   let recordingOpenPending = false;
   let recorderBlocksRefresh = false;
+  let recorderUploadPending = false;
   let context: AuthorizedProviderEncounter | null = null;
   let client: CoreCaptureClient | null = null;
   let journal: JournalSnapshot = { revision: null, progress: null };
@@ -128,7 +129,17 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const header = root.querySelector<HTMLElement>(".provider-header")!;
   const accountLabel = root.querySelector<HTMLElement>("[data-provider-account]")!;
   const patientDetail = root.querySelector<HTMLElement>("[data-provider-patient-detail]")!;
+  const syncRecordingActive = (): void => {
+    // Shared iPhone + Mac ownership flag (refresh + delete). Pending-upload is
+    // marked separately so Delete can proceed (John "Delete anyway").
+    const active = !disposed && (recorderBlocksRefresh || closeRecorder !== null || acquiringRecorder !== null);
+    if (active) root.dataset.providerRecordingActive = "true";
+    else delete root.dataset.providerRecordingActive;
+    if (recorderUploadPending) root.dataset.providerUploadPending = "true";
+    else delete root.dataset.providerUploadPending;
+  };
   const updateRefresh = (): void => {
+    syncRecordingActive();
     const button = root.querySelector<HTMLButtonElement>('[data-workspace-action="refresh-visit"]');
     if (!button) return;
     button.disabled = busy || recorderBlocksRefresh || !context;
@@ -206,7 +217,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (closed.status === "rejected") throw closed.reason;
     preparationControls = null;
     privateNoteSession?.dispose(); privateNoteSession = null; identityOverride = null;
-    recorderBlocksRefresh = false; updateRefresh();
+    recorderBlocksRefresh = false; recorderUploadPending = false; updateRefresh();
     pendingRecordingAction?.abort(); pendingRecordingAction = null; consentPreparationPending = false; consentRecordAction = null; queuedConsentRecord = null; leaveAfterRecordingPreparation = false;
     listedDraftRefs.clear();
     stopSaveCheck?.(); stopSaveCheck = null; pendingDateOfBirth = null;
@@ -227,6 +238,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (close) {
       await close();
       if (closeRecorder === close) closeRecorder = null;
+      syncRecordingActive();
     }
   };
   const run = async (action: () => Promise<void>, timingAction?: string): Promise<void> => {
@@ -727,9 +739,13 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       ? activeContext.recorder(id, activeClient.signal, { initialStart: true })
       : activeContext.recorder(id, activeClient.signal);
     acquiringRecorder = acquisition;
+    syncRecordingActive();
     let resources: ProviderRecorderResources | PreparedProviderRecorder;
     try { resources = await acquisition; }
-    finally { if (acquiringRecorder === acquisition) acquiringRecorder = null; }
+    finally {
+      if (acquiringRecorder === acquisition) acquiringRecorder = null;
+      syncRecordingActive();
+    }
     const native = "controller" in resources ? resources : null;
     const local = "flowStore" in resources ? resources : null;
     const localController = local ? new CaptureFlowController({ bff: new CoreCaptureBff(activeClient, id),
@@ -747,6 +763,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       catch { closing = null; throw new RecorderStopUnconfirmed(); }
     })();
     closeRecorder = close;
+    syncRecordingActive();
     if (!authorized(n)) { await close(); return; }
     if (local && localController) {
       const active = await local.flowStore.getActiveCaptureState();
@@ -820,6 +837,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const stopObserving = controller.subscribe(snapshot => {
       if (!authorized(n) || context !== activeContext || snapshot.sessionId !== id) return;
       const device = snapshot as ProviderRecorderSnapshot;
+      recorderUploadPending = snapshot.state === "uploading"
+        || device.native?.phase === "sealing";
       recorderBlocksRefresh = ["recording", "uploading"].includes(snapshot.state)
         || ["stopping", "stop_unconfirmed"].includes(device.desktop?.phase ?? "")
         || ["pausing", "stopPending", "sealing"].includes(device.native?.phase ?? "");
@@ -1920,6 +1939,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       document.removeEventListener("visibilitychange", foregroundChanged);
       root.removeEventListener("scribe-desktop-close-request", requestDesktopClose); host.signal.removeEventListener("abort", abort);
       root.removeEventListener("scribe-open-recording", requestRecordingOpen);
+      delete root.dataset.providerRecordingActive;
+      delete root.dataset.providerUploadPending;
       root.replaceChildren();
     }
     disposing = clearEncounter().then(() => { root.replaceChildren(); }).catch(error => {

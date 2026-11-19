@@ -23,6 +23,8 @@ export interface DesktopProviderMainHost {
   readonly cancellation?: ScribeCancellation;
   /** Trusted fixed account dashboard, independent of a visit connection. */
   readonly openDashboard?: (signal: AbortSignal) => Promise<void>;
+  /** Wipe local clinical SQLite (journal/drafts/review/queue) after account delete. */
+  readonly purgeLocalClinicalData?: () => Promise<void>;
   /** Main-only complete provider workspace; never forward this object to preload. */
   connect(signal: AbortSignal): Promise<{ readonly workspace: ProviderWorkspaceHost<DesktopProviderRecorder>; dispose(): Promise<void> }>;
 }
@@ -106,7 +108,9 @@ export class DesktopProviderWorkspaceMain {
       : request.method === "encounter_setup" && request.payload.action === "hidden" ? "provider_visit_preferences" : undefined;
     try {
       const result = await this.dispatch(request, abort.signal);
-      if (this.closed || abort.signal.aborted) throw unavailable();
+      if (this.closed) throw unavailable();
+      // delete_account: once Cosmas DELETE is sent, return the bridge result even if aborted.
+      if (abort.signal.aborted && request.method !== "delete_account") throw unavailable();
       return { requestId: request.requestId, ok: true, result: jsonCopy(result) };
     } catch { return { requestId: request.requestId, ok: false, result: null }; }
     finally {
@@ -131,6 +135,44 @@ export class DesktopProviderWorkspaceMain {
       const preview = parseCancellation(payload.preview); if (preview.action !== "preview") throw unavailable();
       await this.closeConnection(); // A renderer cannot bypass stop-before-request.
       return this.host.cancellation.submit(preview, signal);
+    }
+    if (request.method === "delete_account") {
+      if (request.connectionId !== null || request.encounterId !== null
+        || typeof this.host.session.deleteAccount !== "function") throw unavailable();
+      exact(payload, ["confirm"]); if (payload.confirm !== "DELETE") throw unavailable();
+      const state = await this.readSession(); if (state?.phase !== "ready" || signal.aborted) throw unavailable();
+      // Refuse only while a recorder is opening or actively capturing. Pending
+      // uploads do not block delete (John, 12:15pm ET Nov 19 2026: "Delete anyway").
+      const encounter = this.connection?.encounter;
+      if (encounter?.recorderOpening) throw unavailable();
+      if (signal.aborted) throw unavailable();
+      // Once DELETE is sent, always return the bridge result — even if the
+      // renderer aborted mid-flight (signedOut / dialog teardown).
+      const value = await this.host.session.deleteAccount({ confirm: "DELETE" });
+      if (value?.unauthorized === true) {
+        await this.closeConnection();
+        return { unauthorized: true };
+      }
+      if (value?.gone === true) {
+        await this.closeConnection();
+        return { gone: true };
+      }
+      if (value?.unavailable === true) return { unavailable: true };
+      if (value?.retryable === true) return { retryable: true };
+      if ((value?.status === "deleted" || value?.status === "already_deleted")
+        && typeof value.practiceLeftOwnerless === "boolean"
+        && typeof value.clerkIdentityRemoved === "boolean") {
+        await this.closeConnection();
+        // Purge only on deleted. A purge error must not hide Cosmas success —
+        // failure is observed via the purge call itself (not the locked keys).
+        try { await this.host.purgeLocalClinicalData?.(); } catch { /* signalled separately */ }
+        return {
+          status: value.status,
+          practiceLeftOwnerless: value.practiceLeftOwnerless,
+          clerkIdentityRemoved: value.clerkIdentityRemoved,
+        };
+      }
+      throw unavailable();
     }
     if (["session_read", "sign_in", "sign_out", "connect"].includes(request.method)) {
       if (request.connectionId !== null || request.encounterId !== null) throw unavailable();

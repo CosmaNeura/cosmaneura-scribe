@@ -92,12 +92,41 @@ export class NativeProviderClient implements NativeProviderSession {
   async getState(): Promise<ProviderSessionState> { return this.readState("getState", 35_000); }
   async signIn(): Promise<ProviderSessionState> { return this.readState("signIn", 185_000); }
   async signOut(): Promise<ProviderSessionState> { return this.readState("signOut", 35_000); }
+  /** Cosmas DELETE /v1/me/account for the signed-in caller. Token stays native. */
+  async deleteAccount(request: { confirm: "DELETE" }): Promise<{
+    readonly unauthorized?: true;
+    readonly gone?: true;
+    readonly unavailable?: true;
+    readonly retryable?: true;
+    readonly status?: "deleted" | "already_deleted";
+    readonly practiceLeftOwnerless?: boolean;
+    readonly clerkIdentityRemoved?: boolean;
+  }> {
+    requireMain();
+    if (request.confirm !== "DELETE") throw unavailable();
+    const reply = object(await this.request("deleteAccount", { confirm: "DELETE" }, undefined, 35_000));
+    if (reply.unauthorized === true && Object.keys(reply).length === 1) return { unauthorized: true };
+    if (reply.gone === true && Object.keys(reply).length === 1) return { gone: true };
+    if (reply.unavailable === true && Object.keys(reply).length === 1) return { unavailable: true };
+    if (reply.retryable === true && Object.keys(reply).length === 1) return { retryable: true };
+    if ((reply.status === "deleted" || reply.status === "already_deleted")
+      && typeof reply.practiceLeftOwnerless === "boolean"
+      && typeof reply.clerkIdentityRemoved === "boolean"
+      && Object.keys(reply).sort().join(",") === "clerkIdentityRemoved,practiceLeftOwnerless,status") {
+      return {
+        status: reply.status,
+        practiceLeftOwnerless: reply.practiceLeftOwnerless,
+        clerkIdentityRemoved: reply.clerkIdentityRemoved,
+      };
+    }
+    throw unavailable();
+  }
   addListener(_event: "authStateChanged", listener: (state: ProviderSessionState) => void): Promise<{ remove(): Promise<void> }> {
     this.listeners.add(listener);
     return Promise.resolve({ remove: () => { this.listeners.delete(listener); return Promise.resolve(); } });
   }
 
-  request(method: "getState" | "signIn" | "signOut" | "providerRequest" | "providerInitialWindow" | "providerInitialWindowAbandon" | "sourcePrepare" | "sourcePrepareForStart"
+  request(method: "getState" | "signIn" | "signOut" | "deleteAccount" | "providerRequest" | "providerInitialWindow" | "providerInitialWindowAbandon" | "sourcePrepare" | "sourcePrepareForStart"
     | "sourceAuthorize" | "sourceRelease" | "sourceStopped" | "sourcePreparationRelease" | "prepareProviderSignIn" | "abandonProviderSignIn", payload: Record<string, unknown>, signal?: AbortSignal,
     timeout = 35_000): Promise<unknown> {
     requireMain();

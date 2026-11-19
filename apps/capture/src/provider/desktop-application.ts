@@ -16,6 +16,7 @@ import { reference, type CoreCaptureScope } from "./core-client";
 import { parseCancellation } from "./cancellation";
 import { parseOpeningRecovery, parseOpeningReview } from "./opening-review";
 import type { ConsentPreparationRelease } from "./consent-preparation";
+import { interpretAccountSelfDeleteBridge, type AccountSelfDeleteResult } from "./account-self-delete";
 import { parseDesktopProviderEvent, sessionState, exact, object, uuid, jsonCopy, unavailable,
   type DesktopProviderMethod, type DesktopProviderPort, type DesktopProviderRequest } from "./desktop-host-protocol";
 
@@ -109,6 +110,21 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
       submit: async (preview, signal) => {
         const result = parseCancellation(await request("cancellation", { action: "submit", preview }, null, null, signal));
         if (result.action === "preview") throw unavailable(); return result;
+      },
+    },
+    accountSelfDelete: {
+      deleteAccount: async (body, signal?: AbortSignal): Promise<AccountSelfDeleteResult> => {
+        if (body.confirm !== "DELETE") throw unavailable();
+        if (closed || signal?.aborted) throw unavailable();
+        // Once Cosmas DELETE is in flight, always surface the bridge result — even
+        // if the dialog aborted afterwards (signedOut / dispose mid-flight).
+        const requestId = crypto.randomUUID();
+        const reply = exact(await port.request({
+          method: "delete_account", requestId, payload: { confirm: "DELETE" },
+          connectionId: null, encounterId: null,
+        }), ["requestId", "ok", "result"]);
+        if (closed || reply.requestId !== requestId || reply.ok !== true) throw unavailable();
+        return interpretAccountSelfDeleteBridge(object(jsonCopy(reply.result)));
       },
     },
     supportsRecorderStopReauthentication: true,

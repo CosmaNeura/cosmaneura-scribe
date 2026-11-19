@@ -29,6 +29,8 @@ final class RendererSecureQueueStore {
   }
   func list() throws -> [String] { try store.list().filter(SecureQueueRecordCodec.isRendererKey) }
   func clear() throws -> Int { try store.clear(forRenderer: true) }
+  /** Account delete: wipe renderer + native custody so "Clearing this device" is true. */
+  func clearAll() throws -> Int { try store.clear(forRenderer: false) }
   func availableBytes() throws -> Int { try store.availableBytes() }
 
   private func allow(_ key: String) throws {
