@@ -45,7 +45,7 @@ export interface AccountSelfDeleteState {
   readonly error: string | null;
   readonly retryable: boolean;
   readonly completion: AccountSelfDeleteCompletion | null;
-  /** Set on deleted success; UI copy for ownerless waits on John's words (Core #940). */
+  /** Set on deleted success; dialog shows practiceLeftOwnerlessNotice when true. */
   readonly practiceLeftOwnerless: boolean | null;
 }
 
@@ -70,6 +70,15 @@ const MESSAGES = {
   gone: "This account no longer has access. You are signed out.",
   deleted: "Your account has been deleted. You are signed out.",
   recordingActive: "Stop the recording before deleting your account.",
+  /** Confirm-dialog body (b) — John, in-app chat, Nov 19 2026 11:53am ET, relayed via CoS. */
+  confirmBody:
+    "This removes your Cosmaneura sign-in, including Cosmas web access, and deletes your personal Scribe data for this account on this device. Your practice record and clinical records kept with the practice are not deleted by this action.",
+  /** Shown only when practiceLeftOwnerless is true (a) — same citation as confirmBody. */
+  practiceLeftOwnerlessNotice:
+    "If you were the last owner of this practice, Cosmaneura may keep the practice record so billing and retention obligations can finish. Your sign-in is removed; the practice is not deleted by this action.",
+  /** Pending-upload warning — John, in-app chat, Nov 19 2026 1:52pm ET, relayed via CoS. */
+  pendingUploadNotice:
+    "Recordings on this device that haven't finished uploading will be deleted. On iPhone and iPad, this also removes unsent recordings from any other account on this device.",
 } as const;
 
 export const ACCOUNT_SELF_DELETE_MESSAGES = MESSAGES;
