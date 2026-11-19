@@ -121,7 +121,6 @@ export function retryClinicalPurgePending(
     return false;
   }
 }
-
 /** Capture validated scopes before DELETE. Wipe closure never calls Core. */
 export function createDesktopClinicalPurgeHost(options: {
   readonly userDataDirectory: string; readonly creationWorkspaceId: string;
