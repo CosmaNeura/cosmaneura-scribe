@@ -606,7 +606,7 @@ export class DesktopProviderWorkspaceMain {
     if (encounter.closing) return encounter.closing;
     encounter.closing = Promise.resolve().then(async () => {
       await Promise.allSettled(encounter.work); await encounter.recorder?.dispose();
-      encounter.liveRecorder = undefined; delete encounter.recorder;
+      delete encounter.liveRecorder; delete encounter.recorder;
       await encounter.preflight?.close(); delete encounter.preflight;
       if (connection.encounter === encounter) delete connection.encounter;
     }).catch(error => { delete encounter.closing; throw error; });
