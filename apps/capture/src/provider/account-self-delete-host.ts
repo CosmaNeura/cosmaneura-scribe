@@ -24,8 +24,7 @@ export async function desktopAccountSelfDeleteAdapter(
   if (options.closed() || reply.requestId !== requestId || reply.ok !== true) throw unavailable();
   const raw = object(jsonCopy(reply.result));
   if (raw.clinicalPurgeFailed === true) {
-    delete raw.clinicalPurgeFailed;
-    options.onClinicalPurgeFailed?.();
+    delete raw.clinicalPurgeFailed; options.onClinicalPurgeFailed?.();
   }
   return interpretAccountSelfDeleteBridge(raw);
 }

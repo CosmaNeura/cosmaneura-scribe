@@ -121,10 +121,10 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
         },
       ),
     },
-    purgeLocalClinicalData: async () => {
-      if (!clinicalPurgeFailed) return;
+    purgeLocalClinicalData: () => {
+      if (!clinicalPurgeFailed) return Promise.resolve();
       clinicalPurgeFailed = false;
-      throw new Error("clinical_purge_failed");
+      return Promise.reject(new Error("clinical_purge_failed"));
     },
     supportsRecorderStopReauthentication: true,
     supportsWorkspaceCloseReauthentication: true,

@@ -52,7 +52,7 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
     recordingOpen: listener => subscribeIOSRecordingOpen(native, listener),
     ...(typeof native.deleteAccount === "function" ? {
       accountSelfDelete: {
-        deleteAccount: (request, signal) => nativeAccountSelfDeleteAdapter(native.deleteAccount!, request, signal),
+        deleteAccount: (request, signal) => nativeAccountSelfDeleteAdapter(req => native.deleteAccount!(req), request, signal),
       },
     } : {}),
     connect: async signal => {
