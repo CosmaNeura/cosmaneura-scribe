@@ -238,7 +238,8 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         if (!disposed && before === observations) accept(value);
       } catch {
         if (!disposed && before === observations) {
-          closeDeletionDialog?.(); closeDeletionDialog = undefined;
+          // Keep the in-flight delete dialog; adapters still return the Cosmas result.
+          if (!accountDeleteInFlight) { closeDeletionDialog?.(); closeDeletionDialog = undefined; }
           setupAbort?.abort(); setup = undefined; practiceHandoffRevision = null;
           state = null;
           accessClosed = true; invalidate(); closeInBackground();
@@ -414,8 +415,9 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     const action = target.closest<HTMLButtonElement>("button[data-session-action]")?.dataset.sessionAction;
     if (action === "delete-account") {
       if (disposed || busy || stopUnconfirmed || logoutPending || state?.phase !== "ready" || !host.accountSelfDelete) return;
-      // Shared iPhone + Mac: refuse while the workspace owns an active recording.
-      if (workflow.dataset.providerRecordingActive === "true") {
+      // Refuse live capture only. Pending uploads do not block (John "Delete anyway").
+      if (workflow.dataset.providerRecordingActive === "true"
+        && workflow.dataset.providerUploadPending !== "true") {
         const menu = actions.querySelector<HTMLDetailsElement>(".provider-account-menu");
         if (menu) menu.open = false;
         notice = ACCOUNT_SELF_DELETE_MESSAGES.recordingActive;
@@ -432,8 +434,9 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
       closeDeletionDialog = mountAccountSelfDeleteDialog(document.body, {
         client: {
           deleteAccount: async (request, signal) => {
-            // Re-check at submit: recording may have started after the dialog opened.
-            if (workflow.dataset.providerRecordingActive === "true") {
+            // Re-check at submit: live capture only — pending uploads purge with delete.
+            if (workflow.dataset.providerRecordingActive === "true"
+              && workflow.dataset.providerUploadPending !== "true") {
               return { outcome: "recording_active" as const };
             }
             accountDeleteInFlight = true;

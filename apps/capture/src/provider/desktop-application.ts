@@ -113,11 +113,18 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
       },
     },
     accountSelfDelete: {
-      deleteAccount: async (body, signal): Promise<AccountSelfDeleteResult> => {
+      deleteAccount: async (body, signal?: AbortSignal): Promise<AccountSelfDeleteResult> => {
         if (body.confirm !== "DELETE") throw unavailable();
-        return interpretAccountSelfDeleteBridge(
-          object(await request("delete_account", { confirm: "DELETE" }, null, null, signal)),
-        );
+        if (closed || signal?.aborted) throw unavailable();
+        // Once Cosmas DELETE is in flight, always surface the bridge result — even
+        // if the dialog aborted afterwards (signedOut / dispose mid-flight).
+        const requestId = crypto.randomUUID();
+        const reply = exact(await port.request({
+          method: "delete_account", requestId, payload: { confirm: "DELETE" },
+          connectionId: null, encounterId: null,
+        }), ["requestId", "ok", "result"]);
+        if (closed || reply.requestId !== requestId || reply.ok !== true) throw unavailable();
+        return interpretAccountSelfDeleteBridge(object(jsonCopy(reply.result)));
       },
     },
     supportsRecorderStopReauthentication: true,

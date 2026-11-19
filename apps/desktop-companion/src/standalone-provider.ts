@@ -44,6 +44,7 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
   const connections = new Set<ReturnType<typeof createDesktopProviderConnection>>();
   const opening = new Set<Promise<unknown>>();
   let closing: Promise<void> | undefined;
+  let lastClinicalScope: { recoveryScope: string; workspaceId: string } | null = null;
   const dispose = (): Promise<void> => closing ??= (async () => {
     abort.abort(); await Promise.allSettled([...opening]);
     // Keep native identity/custody alive until every actual source confirms stop.
@@ -54,8 +55,11 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
     session: native,
     cancellation: desktopScribeCancellation(native, runtime.userDataDirectory, runtime.protection, profile.workspaceId, abort.signal),
     purgeLocalClinicalData: () => {
+      const scope = lastClinicalScope;
       for (const name of ["provider-records-v1", "provider-creation-v1"] as const) {
-        DurableDesktopRecordStore.wipeDirectory(join(runtime.userDataDirectory, name));
+        const directory = join(runtime.userDataDirectory, name);
+        if (scope) DurableDesktopRecordStore.wipeAccount(directory, scope.recoveryScope, scope.workspaceId);
+        else DurableDesktopRecordStore.wipeDirectory(directory);
       }
       return Promise.resolve();
     },
@@ -77,6 +81,7 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
             const directory = join(runtime.userDataDirectory, "provider-creation-v1");
             // A separate encrypted namespace, scoped to Core's reviewed account.
             const workspaceId = profile.workspaceId;
+            lastClinicalScope = { recoveryScope, workspaceId };
             const custody = await openDeviceCustody(directory, runtime.protection, { recoveryScope, workspaceId }, signal);
             try {
               const store = await DurableDesktopRecordStore.open({ directory, recoveryScope, workspaceId, key: custody.key });
@@ -127,7 +132,10 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
           const connection = createDesktopProviderConnection(backend, { enabled: true,
             audioPreflight,
             directory: join(runtime.userDataDirectory, "provider-records-v1"),
-            openCustody: (scope, operation) => openDeviceCustody(join(runtime.userDataDirectory, "provider-records-v1"), runtime.protection, scope, operation),
+            openCustody: (scope, operation) => {
+              lastClinicalScope = { recoveryScope: scope.recoveryScope, workspaceId: scope.workspaceId };
+              return openDeviceCustody(join(runtime.userDataDirectory, "provider-records-v1"), runtime.protection, scope, operation);
+            },
             indicator: presentation, presentation, selectWindow: presentation.selectWindow,
             prepareInBackground: true,
             listMeetingWindows: presentation.listMeetingWindows,
