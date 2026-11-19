@@ -29,6 +29,10 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
       await purgeLocalClinicalData(clinicalStoresFromKeys({
         list: async () => (await SecureQueue.list()).keys,
         delete: async key => { await SecureQueue.delete({ key }); },
+        // CTO option (a): on iOS, a successful account delete clears this
+        // device's Scribe queue for all accounts until SecureQueue is keyed
+        // per account. Desktop stays per-account through wipeAccount. Tracked
+        // by a separate per-account SecureQueue ticket.
         clearAll: async () => { await SecureQueue.clearAll(); },
       }));
     },
