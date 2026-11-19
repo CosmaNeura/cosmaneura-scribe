@@ -15,7 +15,7 @@ export function mountAccountSelfDeleteDialog(parent: HTMLElement, host: AccountS
   dialog.innerHTML = `<section>
     <h1 id="scribe-account-self-delete-title">Delete your account?</h1>
     <p data-confirm-body></p>
-    <p>Your practice and your colleagues' data are not deleted. Clinical records stay with the practice under its retention policy and are not deleted by this action.</p>
+    <p data-pending-upload-notice></p>
     <p data-ownerless-notice hidden></p>
     <label data-confirmation-label>Type DELETE to confirm
       <input data-confirmation autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Type DELETE to confirm">
@@ -36,8 +36,10 @@ export function mountAccountSelfDeleteDialog(parent: HTMLElement, host: AccountS
   const retry = dialog.querySelector<HTMLButtonElement>("[data-retry]")!;
   const status = dialog.querySelector<HTMLElement>("[data-status]")!;
   const confirmBody = dialog.querySelector<HTMLElement>("[data-confirm-body]")!;
+  const pendingUpload = dialog.querySelector<HTMLElement>("[data-pending-upload-notice]")!;
   const ownerless = dialog.querySelector<HTMLElement>("[data-ownerless-notice]")!;
   confirmBody.textContent = ACCOUNT_SELF_DELETE_MESSAGES.confirmBody;
+  pendingUpload.textContent = ACCOUNT_SELF_DELETE_MESSAGES.pendingUploadNotice;
   ownerless.textContent = ACCOUNT_SELF_DELETE_MESSAGES.practiceLeftOwnerlessNotice;
   let disposed = false;
 

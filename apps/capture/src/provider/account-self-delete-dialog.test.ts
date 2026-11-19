@@ -127,7 +127,7 @@ function host(practiceLeftOwnerless: boolean): AccountSelfDeleteHost {
 }
 
 describe("account self-delete dialog copy", () => {
-  it("shows confirm body (b), hides old permanently-deletes string, and gates ownerless notice (a)", async () => {
+  it("shows confirm body (b), pending-upload notice, gates ownerless (a), and drops conflicting clinical-records copy", async () => {
     const document = new Doc();
     vi.stubGlobal("document", document);
     vi.stubGlobal("HTMLElement", Node);
@@ -137,14 +137,19 @@ describe("account self-delete dialog copy", () => {
     const dialog = parent.children[0]!;
     expect(dialog.querySelector("[data-confirm-body]")?.textContent)
       .toBe(ACCOUNT_SELF_DELETE_MESSAGES.confirmBody);
+    expect(dialog.querySelector("[data-pending-upload-notice]")?.textContent)
+      .toBe(ACCOUNT_SELF_DELETE_MESSAGES.pendingUploadNotice);
     expect(dialog.querySelector("[data-ownerless-notice]")?.textContent)
       .toBe(ACCOUNT_SELF_DELETE_MESSAGES.practiceLeftOwnerlessNotice);
     expect(dialog.querySelector("[data-ownerless-notice]")?.hidden).toBe(true);
     const markup = [
       dialog.querySelector("[data-confirm-body]")?.textContent,
+      dialog.querySelector("[data-pending-upload-notice]")?.textContent,
       dialog.querySelector("[data-ownerless-notice]")?.textContent,
     ].join("\n");
     expect(markup).not.toMatch(/permanently deletes/);
+    expect(markup).not.toMatch(/Clinical records stay with the practice/);
+    expect(markup).not.toMatch(/Your practice and your colleagues/);
     dispose();
   });
 

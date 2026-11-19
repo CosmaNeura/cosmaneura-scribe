@@ -188,9 +188,13 @@ test("Settings > Delete account confirms against a synthetic Cosmas backend and 
   await expect(dialog.locator("[data-confirm-body]")).toHaveText(
     "This removes your Cosmaneura sign-in, including Cosmas web access, and deletes your personal Scribe data for this account on this device. Your practice record and clinical records kept with the practice are not deleted by this action.",
   );
+  await expect(dialog.locator("[data-pending-upload-notice]")).toHaveText(
+    "Recordings on this device that haven't finished uploading will be deleted. On iPhone and iPad, this also removes unsent recordings from any other account on this device.",
+  );
   await expect(dialog).not.toContainText("permanently deletes");
+  await expect(dialog).not.toContainText("Clinical records stay with the practice");
+  await expect(dialog).not.toContainText("Your practice and your colleagues");
   await expect(dialog.locator("[data-ownerless-notice]")).toBeHidden();
-  await expect(dialog).toContainText("Clinical records stay with the practice under its retention policy and are not deleted by this action");
   await expect(dialog.getByRole("button", { name: "Delete account", exact: true })).toBeDisabled();
   await dialog.getByLabel("Type DELETE to confirm").fill("DELETE");
   await dialog.getByRole("button", { name: "Delete account", exact: true }).click();
@@ -211,6 +215,9 @@ test("Delete account shows ownerless notice only when practiceLeftOwnerless is t
   await account(page).click();
   await page.getByRole("button", { name: "Delete account", exact: true }).click();
   const dialog = page.locator("dialog.scribe-account-self-delete");
+  await expect(dialog.locator("[data-pending-upload-notice]")).toHaveText(
+    "Recordings on this device that haven't finished uploading will be deleted. On iPhone and iPad, this also removes unsent recordings from any other account on this device.",
+  );
   await expect(dialog.locator("[data-ownerless-notice]")).toBeHidden();
   await dialog.getByLabel("Type DELETE to confirm").fill("DELETE");
   await dialog.getByRole("button", { name: "Delete account", exact: true }).click();
@@ -219,6 +226,7 @@ test("Delete account shows ownerless notice only when practiceLeftOwnerless is t
   await expect(dialog.locator("[data-ownerless-notice]")).toHaveText(
     "If you were the last owner of this practice, Cosmaneura may keep the practice record so billing and retention obligations can finish. Your sign-in is removed; the practice is not deleted by this action.",
   );
+  await expect(dialog.locator("[data-pending-upload-notice]")).toBeVisible();
 });
 
 test("Delete account 401 signs out; 404/503 keep session", async ({ page }) => {
