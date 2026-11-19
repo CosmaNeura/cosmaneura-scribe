@@ -23,6 +23,8 @@ export interface DesktopProviderMainHost {
   readonly cancellation?: ScribeCancellation;
   /** Trusted fixed account dashboard, independent of a visit connection. */
   readonly openDashboard?: (signal: AbortSignal) => Promise<void>;
+  /** Wipe local clinical SQLite (journal/drafts/review/queue) after account delete. */
+  readonly purgeLocalClinicalData?: () => Promise<void>;
   /** Main-only complete provider workspace; never forward this object to preload. */
   connect(signal: AbortSignal): Promise<{ readonly workspace: ProviderWorkspaceHost<DesktopProviderRecorder>; dispose(): Promise<void> }>;
 }
@@ -146,10 +148,12 @@ export class DesktopProviderWorkspaceMain {
       if (signal.aborted) throw unavailable();
       if (value?.unauthorized === true) {
         await this.closeConnection();
+        await this.host.purgeLocalClinicalData?.();
         return { unauthorized: true };
       }
       if (value?.gone === true) {
         await this.closeConnection();
+        await this.host.purgeLocalClinicalData?.();
         return { gone: true };
       }
       if (value?.unavailable === true) return { unavailable: true };
@@ -158,6 +162,7 @@ export class DesktopProviderWorkspaceMain {
         && typeof value.practiceLeftOwnerless === "boolean"
         && typeof value.clerkIdentityRemoved === "boolean") {
         await this.closeConnection();
+        await this.host.purgeLocalClinicalData?.();
         return {
           status: value.status,
           practiceLeftOwnerless: value.practiceLeftOwnerless,

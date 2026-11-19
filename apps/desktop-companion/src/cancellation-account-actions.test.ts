@@ -7,7 +7,8 @@ async function fixture(phase: ProviderSessionState["phase"] = "ready",
   const state: ProviderSessionState = { phase, revision: crypto.randomUUID() };
   const openDashboard = vi.fn(async () => undefined), status = vi.fn(async () => null);
   const connect = vi.fn(async () => { throw new Error("No recording workspace should open"); });
-  const host: DesktopProviderMainHost = { openDashboard, connect,
+  const purgeLocalClinicalData = vi.fn(async () => undefined);
+  const host: DesktopProviderMainHost = { openDashboard, connect, purgeLocalClinicalData,
     cancellation: { status, load: vi.fn(), submit: vi.fn() },
     session: { getState: async () => state, signIn: async () => state, signOut: async () => state,
       addListener: async () => ({ remove: async () => undefined }),
@@ -17,7 +18,7 @@ async function fixture(phase: ProviderSessionState["phase"] = "ready",
   const send = (method: "open_dashboard" | "cancellation" | "delete_account", payload: Record<string, unknown>, connectionId: string | null = null) => main.request({
     method, payload, requestId: crypto.randomUUID(), connectionId, encounterId: null,
   });
-  return { main, openDashboard, status, connect, send };
+  return { main, openDashboard, status, connect, purgeLocalClinicalData, send };
 }
 describe("fixed account-level desktop cancellation actions", () => {
   it("opens the trusted account dashboard and reads own status without any recording connection", async () => {
@@ -59,6 +60,7 @@ describe("desktop account self-delete IPC", () => {
         result: { status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true },
       });
       expect(deleteAccount).toHaveBeenCalledWith({ confirm: "DELETE" });
+      expect(f.purgeLocalClinicalData).toHaveBeenCalledOnce();
       expect(f.connect).not.toHaveBeenCalled();
       expect(await f.send("delete_account", { confirm: "delete" })).toMatchObject({ ok: false });
       expect(await f.send("delete_account", { confirm: "DELETE" }, crypto.randomUUID())).toMatchObject({ ok: false });
@@ -74,6 +76,8 @@ describe("desktop account self-delete IPC", () => {
           result: { [flag]: true },
         });
         expect(deleteAccount).toHaveBeenCalledOnce();
+        if (flag === "unauthorized" || flag === "gone") expect(f.purgeLocalClinicalData).toHaveBeenCalledOnce();
+        else expect(f.purgeLocalClinicalData).not.toHaveBeenCalled();
       } finally { await f.main.dispose(); }
     }
   });

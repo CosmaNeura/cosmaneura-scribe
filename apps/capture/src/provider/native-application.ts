@@ -1,4 +1,5 @@
 import { Capacitor } from "@capacitor/core";
+import { SecureQueue } from "@cosmaneura-scribe/capacitor-secure-queue";
 import { mountProviderApplication } from "./application";
 import { createProviderIOSHost } from "./ios-host";
 import { connectNativeProviderIOSBackend, type NativeProviderOptions } from "./native-backend";
@@ -8,6 +9,7 @@ import type { ConsentPreparationRelease } from "./consent-preparation";
 import { nativeScribeCancellation } from "./native-cancellation";
 import { activateNativeScribe } from "./native-activation";
 import { interpretAccountSelfDeleteBridge, type AccountSelfDeleteResult } from "./account-self-delete";
+import { clinicalStoresFromKeys, purgeLocalClinicalData } from "./purge-local-clinical";
 
 /** Standalone iOS startup after the host's upload/Core configuration is supplied.
  * Reuses the registered native sign-in/out UI and existing complete provider
@@ -23,6 +25,13 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
   return mountProviderApplication(root, {
     session: native,
     cancellation: nativeScribeCancellation(native),
+    purgeLocalClinicalData: async () => {
+      await purgeLocalClinicalData(clinicalStoresFromKeys({
+        list: async () => (await SecureQueue.list()).keys,
+        delete: async key => { await SecureQueue.delete({ key }); },
+        clearAll: async () => { await SecureQueue.clearAll(); },
+      }));
+    },
     activateScribe: (signal, revision) => activateNativeScribe(native, signal, revision),
     openPracticeSetup: async signal => {
       const before = await native.getState();

@@ -53,6 +53,11 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
   return { dispose, host: {
     session: native,
     cancellation: desktopScribeCancellation(native, runtime.userDataDirectory, runtime.protection, profile.workspaceId, abort.signal),
+    purgeLocalClinicalData: async () => {
+      for (const name of ["provider-records-v1", "provider-creation-v1"] as const) {
+        DurableDesktopRecordStore.wipeDirectory(join(runtime.userDataDirectory, name));
+      }
+    },
     openDashboard: async signal => {
       const before = await native.getState();
       if (profile.enabled !== true || abort.signal.aborted || signal.aborted || before.phase !== "ready") throw unavailable();

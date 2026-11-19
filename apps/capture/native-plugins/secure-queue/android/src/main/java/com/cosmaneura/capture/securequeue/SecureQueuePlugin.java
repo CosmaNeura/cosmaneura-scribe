@@ -135,6 +135,16 @@ public final class SecureQueuePlugin extends Plugin {
         });
     }
 
+    /** Android clear already removes every key; alias for account-delete hosts. */
+    @PluginMethod
+    public void clearAll(PluginCall call) {
+        perform(call, queue -> {
+            JSObject result = new JSObject();
+            result.put("cleared", queue.clear());
+            return result;
+        });
+    }
+
     @Override
     protected void handleOnDestroy() {
         operationExecutor.shutdown();

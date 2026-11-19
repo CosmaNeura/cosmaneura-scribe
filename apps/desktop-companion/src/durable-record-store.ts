@@ -1,5 +1,5 @@
 import { createHash, webcrypto } from "node:crypto";
-import { constants, closeSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
+import { constants, closeSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync, unlinkSync } from "node:fs";
 import { statfs } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -92,6 +92,22 @@ export class DurableDesktopRecordStore {
   close(): void {
     if (this.closed) return;
     this.closed = true; this.key = undefined; this.database.close();
+  }
+  /** Account delete: remove every encrypted SQLite file under the records root. */
+  static wipeDirectory(directory: string): void {
+    requireMain();
+    if (typeof directory !== "string" || !isAbsolute(directory)) throw failure();
+    let names: string[];
+    try { names = readdirSync(directory); } catch (error) {
+      if (hasCode(error, "ENOENT")) return;
+      throw failure();
+    }
+    for (const name of names) {
+      if (!name.includes(".sqlite")) continue;
+      try { unlinkSync(join(directory, name)); } catch (error) {
+        if (!hasCode(error, "ENOENT")) throw failure();
+      }
+    }
   }
   wrapping(namespace: string, sessionId: string): LocalSessionKeyWrapping {
     return { key: this.current(), additionalData: this.aad(namespace, `session-key:${uuid(sessionId)}`, 0) };

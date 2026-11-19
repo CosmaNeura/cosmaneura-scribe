@@ -240,8 +240,7 @@ def main() -> None:
                 ],
             )
             run("mac-account-self-delete-checks", [account_self_delete])
-            # iOS deleteAccount → AccountSelfDeleteContract.attempt (recording before
-            # mintToken/send). Mac keeps inline origin-before-token-before-request.
+            # Fence: iOS attempt() recording-before-token; Mac origin-before-token-before-request.
             contract = (
                 REPO / "apps/capture/native-plugins/cosmas-native-auth/Sources"
                 / "CosmasNativeAuth/AccountSelfDeleteContract.swift"
@@ -297,30 +296,6 @@ def main() -> None:
                         "deleteAccount must fence origin before token "
                         f"before request in {relative}"
                     )
-            results.append(
-                {
-                    "name": "native-deleteAccount-handlers-wire-contract",
-                    "command": ["source-fence", "AccountSelfDeleteContract.resolve"],
-                    "exit_code": 0,
-                    "log": "",
-                    "sha256": hashlib.sha256(b"AccountSelfDeleteContract.resolve").hexdigest(),
-                }
-            )
-            (out / "CHECKS.json").write_text(
-                json.dumps(
-                    {
-                        "commit": subprocess.check_output(
-                            ["git", "rev-parse", "HEAD"], cwd=REPO, text=True
-                        ).strip(),
-                        "synthetic_only": True,
-                        "ambient_audio": False,
-                        "results": results,
-                    },
-                    indent=2,
-                )
-                + "\n"
-            )
-            print("native-deleteAccount-handlers-wire-contract: 0", flush=True)
             binding_executable = str(target / "binding-checks")
             run(
                 "mac-binding-build",

@@ -13,6 +13,7 @@ import {
   type AccountSelfDeleteClient,
 } from "./account-self-delete";
 import { mountAccountSelfDeleteDialog } from "./account-self-delete-dialog";
+import { deleteProviderFlowDatabases } from "./purge-local-clinical";
 
 export type { ProviderSessionState } from "./native-plugin";
 export interface ProviderApplicationHost {
@@ -29,12 +30,10 @@ export interface ProviderApplicationHost {
   readonly supportsWorkspaceCloseReauthentication?: true;
   /** PHI-free native link request; only existing recording navigation is allowed. */
   readonly recordingOpen?: (listener: () => void) => Promise<PluginListenerHandle>;
-  /**
-   * Cosmas self-delete client (DELETE /v1/me/account). When present, Account
-   * shows Delete account beside Cancel Scribe access. Existing users are
-   * unchanged until they open Account and confirm Delete.
-   */
+  /** Cosmas DELETE /v1/me/account client; shows Delete account when present. */
   readonly accountSelfDelete?: AccountSelfDeleteClient;
+  /** Optional SecureQueue.clearAll / desktop SQLite wipe after account delete. */
+  readonly purgeLocalClinicalData?: () => Promise<void>;
   /** Returns the current authorized provider workflow, never credentials. */
   connect(signal: AbortSignal): Promise<{ readonly workspace: ProviderWorkspaceHost; dispose(): Promise<void> }>;
 }
@@ -58,6 +57,8 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   let scope: Scope | undefined, listener: PluginListenerHandle | undefined;
   let recordingListener: PluginListenerHandle | undefined, recordingOpenPending = false;
   let disposed = false, busy = false, stopUnconfirmed = false, accessClosed = false, logoutPending = false;
+  /** True while Cosmas DELETE is in flight — survive mid-flight signedOut. */
+  let accountDeleteInFlight = false;
   let operations = 0, signingOut = false;
   let closeDeletionDialog: (() => void) | undefined;
   let accountNotice: "deleted" | "session_expired" | "gone" | null = null;
@@ -199,8 +200,8 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     const valid = value && ["disabled", "loading", "signedOut", "signingIn", "ready", "signOutPending", "unavailable"].includes(value.phase)
       && isUuid(value.revision);
     if (!valid) {
-      // Keep the post-delete done dialog while local sign-out is finishing.
-      if (!logoutPending) { closeDeletionDialog?.(); closeDeletionDialog = undefined; }
+      // Keep the post-delete done dialog while local sign-out / in-flight DELETE finishes.
+      if (!logoutPending && !accountDeleteInFlight) { closeDeletionDialog?.(); closeDeletionDialog = undefined; }
       setupAbort?.abort(); setup = undefined; practiceHandoffRevision = null;
       state = null; accessClosed = true; notice = "Your secure session could not be verified.";
       invalidate(); closeInBackground(); render(); return;
@@ -209,7 +210,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     // Native polling still observes revocation, but an identical observation
     // must not replace focused controls or retry a previously failed close.
     if (!changed) return;
-    if (!logoutPending) { closeDeletionDialog?.(); closeDeletionDialog = undefined; }
+    if (!logoutPending && !accountDeleteInFlight) { closeDeletionDialog?.(); closeDeletionDialog = undefined; }
     setupAbort?.abort(); setupAbort = undefined; setup = undefined;
     activationAttemptedRevision = null; practiceHandoffRevision = null; practiceReturned = false;
     cancelDialog?.(); cancelDialog = undefined;
@@ -217,7 +218,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     cancellationCheckedRevision = null; cancellationReceipt = null;
     state = { phase: value.phase, revision: value.revision,
       ...(typeof value.providerDisplayName === "string" && value.providerDisplayName.length <= 200 ? { providerDisplayName: value.providerDisplayName } : {}) };
-    if (value.phase === "signedOut") logoutPending = false;
+    if (value.phase === "signedOut" && !accountDeleteInFlight) logoutPending = false;
     if (value.phase === "signOutPending") logoutPending = true;
     if (value.phase !== "signedOut") accountNotice = null;
     if (scope && (value.phase !== "ready" || value.revision !== scope.revision)) {
@@ -435,15 +436,27 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
             if (workflow.dataset.providerRecordingActive === "true") {
               return { outcome: "recording_active" as const };
             }
-            const result = await client.deleteAccount(request, signal);
-            if (result.outcome === "deleted") pendingNotice = "deleted";
-            else if (result.outcome === "unauthorized") pendingNotice = "session_expired";
-            else if (result.outcome === "gone") pendingNotice = "gone";
-            return result;
+            accountDeleteInFlight = true;
+            try {
+              const result = await client.deleteAccount(request, signal);
+              if (result.outcome === "deleted") pendingNotice = "deleted";
+              else if (result.outcome === "unauthorized") pendingNotice = "session_expired";
+              else if (result.outcome === "gone") pendingNotice = "gone";
+              else accountDeleteInFlight = false;
+              return result;
+            } catch (error) {
+              accountDeleteInFlight = false;
+              throw error;
+            }
           },
         },
-        sameAccountSession: () => state?.phase === "ready" && state.revision === revision,
+        sameAccountSession: () =>
+          accountDeleteInFlight || (state?.phase === "ready" && state.revision === revision),
         closeWorkspace: close,
+        purgeLocalClinicalData: async () => {
+          await host.purgeLocalClinicalData?.();
+          await deleteProviderFlowDatabases();
+        },
         clearLocalCredentials: async () => {
           clearCachedProviderPreferences();
           logoutPending = true;
@@ -456,10 +469,13 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
             const signedOut = await host.session.signOut();
             if (before === observations) accept(signedOut);
           } catch {
+            accountDeleteInFlight = false;
             render();
             throw new Error("account_self_delete_local_clear_failed");
           }
           accountNotice = pendingNotice;
+          accountDeleteInFlight = false;
+          logoutPending = false;
           await read();
           render();
         },

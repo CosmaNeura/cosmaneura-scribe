@@ -1,23 +1,4 @@
-/**
- * Cosmas self-delete client contract for T-REL-8b / Apple 5.1.1(v).
- *
- * Locked against CosmaNeura/cosmaneura PR #940
- * (branch grok/rel8-self-delete-account / T-REL-8a):
- *   DELETE <api>/v1/me/account
- *   Authorization: Bearer <Clerk JWT>  (native-owned session token)
- *   JSON body: { "confirm": "DELETE" }  (no other fields; no target user id)
- *   Identity comes only from the verified token — deletes only the signed-in caller.
- *
- * Status → client behavior:
- *   200 deleted|already_deleted → clear local, sign out, "account deleted" done
- *   401 → clear local, sign out, "session expired" (not account-deleted copy)
- *   410 → clear local, sign out, "This account no longer has access"
- *   404 → keep session, "Account deletion isn't available yet, contact support"
- *   503 → keep session, retryable ("Try again")
- *   409 / 422 / other → keep session, generic failure
- *
- * Existing live users: nothing changes unless they open Account and confirm Delete.
- */
+/** Cosmas self-delete (T-REL-8b / Apple 5.1.1(v) / Core #940). */
 
 export type AccountDeleteConfirm = "DELETE";
 
@@ -34,25 +15,11 @@ export interface AccountSelfDeleteSuccess {
   readonly clerkIdentityRemoved: boolean;
 }
 
-export interface AccountSelfDeleteUnauthorized {
-  readonly outcome: "unauthorized";
-}
-
-export interface AccountSelfDeleteGone {
-  readonly outcome: "gone";
-}
-
-export interface AccountSelfDeleteUnavailable {
-  readonly outcome: "unavailable";
-}
-
-export interface AccountSelfDeleteRetryable {
-  readonly outcome: "retryable";
-}
-
-export interface AccountSelfDeleteRecordingActive {
-  readonly outcome: "recording_active";
-}
+export interface AccountSelfDeleteUnauthorized { readonly outcome: "unauthorized"; }
+export interface AccountSelfDeleteGone { readonly outcome: "gone"; }
+export interface AccountSelfDeleteUnavailable { readonly outcome: "unavailable"; }
+export interface AccountSelfDeleteRetryable { readonly outcome: "retryable"; }
+export interface AccountSelfDeleteRecordingActive { readonly outcome: "recording_active"; }
 
 export type AccountSelfDeleteResult =
   | AccountSelfDeleteSuccess
@@ -62,25 +29,15 @@ export type AccountSelfDeleteResult =
   | AccountSelfDeleteRetryable
   | AccountSelfDeleteRecordingActive;
 
-/** Authenticated Cosmas account deletion. Tokens stay in the native host. */
 export interface AccountSelfDeleteClient {
   deleteAccount(request: AccountSelfDeleteRequest, signal?: AbortSignal): Promise<AccountSelfDeleteResult>;
 }
 
 export type AccountSelfDeletePhase =
-  | "confirming"
-  | "submitting"
-  | "failed"
-  | "clearing"
-  | "complete"
-  | "local_clear_failed"
-  | "closed";
+  | "confirming" | "submitting" | "failed" | "clearing" | "complete" | "local_clear_failed" | "closed";
 
 export type AccountSelfDeleteCompletion =
-  | "deleted"
-  | "session_expired"
-  | "gone"
-  | "local_clear_failed";
+  | "deleted" | "session_expired" | "gone" | "local_clear_failed";
 
 export interface AccountSelfDeleteState {
   readonly phase: AccountSelfDeletePhase;
@@ -88,18 +45,16 @@ export interface AccountSelfDeleteState {
   readonly error: string | null;
   readonly retryable: boolean;
   readonly completion: AccountSelfDeleteCompletion | null;
+  /** Set on deleted success; UI copy for ownerless waits on John's words (Core #940). */
+  readonly practiceLeftOwnerless: boolean | null;
 }
 
 export interface AccountSelfDeleteHost {
   readonly client: AccountSelfDeleteClient;
-  /** True while the same signed-in revision remains ready. */
   sameAccountSession(): boolean;
-  /** Close clinical workspace after a remote success that requires local clear. */
   closeWorkspace(): Promise<void>;
-  /**
-   * After a remote outcome that ends the session: clear Keychain/session and
-   * preferences. Must attempt sign-out even when workspace close failed.
-   */
+  /** Wipe journal/drafts/review/queued audio/recordings so "Clearing this device" is true. */
+  purgeLocalClinicalData(): Promise<void>;
   clearLocalCredentials(): Promise<void>;
 }
 
@@ -114,13 +69,11 @@ const MESSAGES = {
   sessionExpired: "Your session has expired. You are signed out.",
   gone: "This account no longer has access. You are signed out.",
   deleted: "Your account has been deleted. You are signed out.",
-  /** Shared iPhone + Mac refuse copy while a recording is owned or in progress. */
   recordingActive: "Stop the recording before deleting your account.",
 } as const;
 
 export const ACCOUNT_SELF_DELETE_MESSAGES = MESSAGES;
 
-/** Map Cosmas HTTP status + JSON body to the client result. */
 export function interpretAccountSelfDeleteResponse(status: number, body: unknown): AccountSelfDeleteResult {
   if (status === 401) return { outcome: "unauthorized" };
   if (status === 410) return { outcome: "gone" };
@@ -137,14 +90,11 @@ export function interpretAccountSelfDeleteResponse(status: number, body: unknown
     throw new Error("account_self_delete_body");
   }
   return {
-    outcome: "deleted",
-    status: row.status,
-    practiceLeftOwnerless: row.practice_left_ownerless,
-    clerkIdentityRemoved: row.clerk_identity_removed,
+    outcome: "deleted", status: row.status,
+    practiceLeftOwnerless: row.practice_left_ownerless, clerkIdentityRemoved: row.clerk_identity_removed,
   };
 }
 
-/** Map a native/IPC bridge payload into the typed client result. */
 export function interpretAccountSelfDeleteBridge(value: unknown): AccountSelfDeleteResult {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("account_self_delete_bridge");
   const row = value as Record<string, unknown>;
@@ -158,10 +108,8 @@ export function interpretAccountSelfDeleteBridge(value: unknown): AccountSelfDel
     && typeof row.clerkIdentityRemoved === "boolean"
     && Object.keys(row).sort().join(",") === "clerkIdentityRemoved,practiceLeftOwnerless,status") {
     return {
-      outcome: "deleted",
-      status: row.status,
-      practiceLeftOwnerless: row.practiceLeftOwnerless,
-      clerkIdentityRemoved: row.clerkIdentityRemoved,
+      outcome: "deleted", status: row.status,
+      practiceLeftOwnerless: row.practiceLeftOwnerless, clerkIdentityRemoved: row.clerkIdentityRemoved,
     };
   }
   throw new Error("account_self_delete_bridge");
@@ -178,6 +126,10 @@ function endsSession(result: AccountSelfDeleteResult): boolean {
   return result.outcome === "deleted" || result.outcome === "unauthorized" || result.outcome === "gone";
 }
 
+const idle = (): AccountSelfDeleteState => ({
+  phase: "confirming", confirmation: "", error: null, retryable: false, completion: null, practiceLeftOwnerless: null,
+});
+
 /** Exact confirm fencing; cancel is a no-op; keep-session failures leave credentials. */
 export function accountSelfDelete(
   host: AccountSelfDeleteHost,
@@ -191,9 +143,7 @@ export function accountSelfDelete(
   dispose(): void;
 } {
   const abort = new AbortController();
-  let state: AccountSelfDeleteState = {
-    phase: "confirming", confirmation: "", error: null, retryable: false, completion: null,
-  };
+  let state: AccountSelfDeleteState = idle();
   let running = false;
   let serverEndedSession = false;
   const publish = (next: AccountSelfDeleteState): void => {
@@ -201,80 +151,63 @@ export function accountSelfDelete(
     if (!abort.signal.aborted) changed(state);
   };
   const active = (): boolean => !abort.signal.aborted && host.sameAccountSession();
+  const base = (phase: AccountSelfDeletePhase, rest: Partial<AccountSelfDeleteState> = {}): AccountSelfDeleteState => ({
+    phase, confirmation: "", error: null, retryable: false, completion: null, practiceLeftOwnerless: null, ...rest,
+  });
 
   return {
     read: () => state,
     confirm: value => {
       if (running || abort.signal.aborted) return;
-      // Keep-session failures (including retryable 503) may edit confirmation.
       if (state.phase !== "confirming" && state.phase !== "failed") return;
       if (state.completion !== null) return;
-      publish({
-        phase: "confirming",
-        confirmation: value,
-        error: null,
-        retryable: false,
-        completion: null,
-      });
+      publish(base("confirming", { confirmation: value }));
     },
     submit: async () => {
       if (running || abort.signal.aborted || state.phase === "complete" || state.phase === "local_clear_failed") return;
       if (state.confirmation !== CONFIRM) return;
       if (!["confirming", "failed"].includes(state.phase)) return;
       running = true;
-      publish({ phase: "submitting", confirmation: state.confirmation, error: null, retryable: false, completion: null });
+      publish(base("submitting", { confirmation: CONFIRM }));
       try {
         if (!active()) throw new Error("account_self_delete_session_changed");
         const result = await host.client.deleteAccount({ confirm: CONFIRM }, abort.signal);
         if (result.outcome === "unavailable") {
-          publish({
-            phase: "failed", confirmation: CONFIRM, error: MESSAGES.unavailable, retryable: false, completion: null,
-          });
+          publish(base("failed", { confirmation: CONFIRM, error: MESSAGES.unavailable }));
           return;
         }
         if (result.outcome === "retryable") {
-          publish({
-            phase: "failed", confirmation: CONFIRM, error: MESSAGES.retryable, retryable: true, completion: null,
-          });
+          publish(base("failed", { confirmation: CONFIRM, error: MESSAGES.retryable, retryable: true }));
           return;
         }
         if (result.outcome === "recording_active") {
-          publish({
-            phase: "failed", confirmation: CONFIRM, error: MESSAGES.recordingActive, retryable: false, completion: null,
-          });
+          publish(base("failed", { confirmation: CONFIRM, error: MESSAGES.recordingActive }));
           return;
         }
         if (!endsSession(result)) throw new Error("account_self_delete_unconfirmed");
         const completion = completionFor(result);
         if (completion === null) throw new Error("account_self_delete_unconfirmed");
         serverEndedSession = true;
-        if (abort.signal.aborted) throw new Error("account_self_delete_aborted");
-        publish({ phase: "clearing", confirmation: "", error: null, retryable: false, completion });
-        // Always attempt sign-out even when workspace close fails.
+        const ownerless = result.outcome === "deleted" ? result.practiceLeftOwnerless : false;
+        // Survive signedOut/dispose during in-flight DELETE: still purge + clear + notice.
+        publish(base("clearing", { completion, practiceLeftOwnerless: ownerless }));
         await host.closeWorkspace().catch(() => undefined);
+        let purgeFailed = false;
+        try { await host.purgeLocalClinicalData(); } catch { purgeFailed = true; }
         await host.clearLocalCredentials();
-        if (!abort.signal.aborted) {
-          publish({ phase: "complete", confirmation: "", error: null, retryable: false, completion });
-        }
+        if (purgeFailed) throw new Error("clinical_purge_failed");
+        publish(base("complete", { completion, practiceLeftOwnerless: ownerless }));
       } catch {
-        if (!abort.signal.aborted) {
-          if (serverEndedSession) {
-            publish({
-              phase: "local_clear_failed",
-              confirmation: "",
-              error: MESSAGES.localClearFailed,
-              retryable: false,
-              completion: "local_clear_failed",
-            });
-          } else {
-            publish({
-              phase: "failed",
-              confirmation: state.confirmation === CONFIRM ? CONFIRM : state.confirmation,
-              error: MESSAGES.keepSession,
-              retryable: false,
-              completion: null,
-            });
-          }
+        if (serverEndedSession) {
+          publish(base("local_clear_failed", {
+            error: MESSAGES.localClearFailed, completion: "local_clear_failed",
+            practiceLeftOwnerless: state.practiceLeftOwnerless,
+          }));
+        } else if (!abort.signal.aborted) {
+          publish(base("failed", {
+            confirmation: state.confirmation === CONFIRM ? CONFIRM : state.confirmation,
+            error: MESSAGES.keepSession,
+          }));
         }
       } finally {
         running = false;
@@ -285,19 +218,18 @@ export function accountSelfDelete(
         return false;
       }
       abort.abort();
-      state = { phase: "closed", confirmation: "", error: null, retryable: false, completion: null };
+      state = base("closed");
       return true;
     },
-    /** Close/Done after a finished remote outcome (including local-clear failure). */
     acknowledge: () => {
       if (state.phase !== "complete" && state.phase !== "local_clear_failed") return false;
       abort.abort();
-      state = { phase: "closed", confirmation: "", error: null, retryable: false, completion: state.completion };
+      state = base("closed", { completion: state.completion, practiceLeftOwnerless: state.practiceLeftOwnerless });
       return true;
     },
     dispose: () => {
       abort.abort();
-      state = { phase: "closed", confirmation: "", error: null, retryable: false, completion: state.completion };
+      state = base("closed", { completion: state.completion, practiceLeftOwnerless: state.practiceLeftOwnerless });
     },
   };
 }

@@ -141,6 +141,10 @@ class FakeSecureQueuePlugin implements SecureQueuePlugin {
     return { cleared };
   }
 
+  async clearAll() {
+    return this.clear();
+  }
+
   async #write(options: SecureQueueRecord) {
     const revision = (this.#records.get(options.key)?.revision ?? 0n) + 1n;
     this.lastData = options.data;
