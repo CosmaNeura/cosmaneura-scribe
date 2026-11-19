@@ -15,7 +15,7 @@ export type AccountSelfDeleteCompletion = "deleted" | "session_expired" | "gone"
 export interface AccountSelfDeleteState {
   readonly phase: AccountSelfDeletePhase; readonly confirmation: string; readonly error: string | null;
   readonly retryable: boolean; readonly completion: AccountSelfDeleteCompletion | null;
-    readonly practiceLeftOwnerless: boolean | null;
+  readonly practiceLeftOwnerless: boolean | null;
 }
 export interface AccountSelfDeleteClient {
   deleteAccount(request: AccountSelfDeleteRequest, signal?: AbortSignal): Promise<AccountSelfDeleteResult>;
@@ -24,7 +24,7 @@ export interface AccountSelfDeleteHost {
   readonly client: AccountSelfDeleteClient;
   sameAccountSession(): boolean;
   closeWorkspace(): Promise<void>;
-    purgeLocalClinicalData(): Promise<void>;
+  purgeLocalClinicalData(): Promise<void>;
   clearLocalCredentials(): Promise<void>;
 }
 
@@ -42,6 +42,16 @@ const MESSAGES = {
 } as const;
 export const ACCOUNT_SELF_DELETE_MESSAGES = MESSAGES;
 
+function deletedSuccess(
+  row: Record<string, unknown>, statusKey: string, ownerlessKey: string, clerkKey: string, err: string,
+): AccountSelfDeleteSuccess {
+  const status = row[statusKey], ownerless = row[ownerlessKey], clerk = row[clerkKey];
+  // H11: require the three fields; ignore extras.
+  if ((status !== "deleted" && status !== "already_deleted")
+    || typeof ownerless !== "boolean" || typeof clerk !== "boolean") throw new Error(err);
+  return { outcome: "deleted", status, practiceLeftOwnerless: ownerless, clerkIdentityRemoved: clerk };
+}
+
 export function interpretAccountSelfDeleteResponse(status: number, body: unknown): AccountSelfDeleteResult {
   if (status === 401) return { outcome: "unauthorized" };
   if (status === 410) return { outcome: "gone" };
@@ -49,37 +59,23 @@ export function interpretAccountSelfDeleteResponse(status: number, body: unknown
   if (status === 503) return { outcome: "retryable" };
   if (status !== 200) throw new Error(`account_self_delete_http_${status}`);
   if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("account_self_delete_body");
-  const row = body as Record<string, unknown>;
-  // H11: require the three fields; ignore extras.
-  if ((row.status !== "deleted" && row.status !== "already_deleted")
-    || typeof row.practice_left_ownerless !== "boolean" || typeof row.clerk_identity_removed !== "boolean") {
-    throw new Error("account_self_delete_body");
-  }
-  return {
-    outcome: "deleted", status: row.status,
-    practiceLeftOwnerless: row.practice_left_ownerless, clerkIdentityRemoved: row.clerk_identity_removed,
-  };
+  return deletedSuccess(body as Record<string, unknown>, "status", "practice_left_ownerless",
+    "clerk_identity_removed", "account_self_delete_body");
 }
 
 export function interpretAccountSelfDeleteBridge(value: unknown): AccountSelfDeleteResult {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("account_self_delete_bridge");
   const row = value as Record<string, unknown>, keys = Object.keys(row);
   if (keys.length === 1) {
-    if (row.unauthorized === true) return { outcome: "unauthorized" };
-    if (row.gone === true) return { outcome: "gone" };
-    if (row.unavailable === true) return { outcome: "unavailable" };
-    if (row.retryable === true) return { outcome: "retryable" };
-    if (row.recordingActive === true) return { outcome: "recording_active" };
+    for (const [k, o] of [["unauthorized", "unauthorized"], ["gone", "gone"], ["unavailable", "unavailable"],
+      ["retryable", "retryable"], ["recordingActive", "recording_active"]] as const) {
+      if (row[k] === true) return { outcome: o };
+    }
   }
-  if ((row.status === "deleted" || row.status === "already_deleted")
-    && typeof row.practiceLeftOwnerless === "boolean"
-    && typeof row.clerkIdentityRemoved === "boolean") {
-    return {
-      outcome: "deleted", status: row.status,
-      practiceLeftOwnerless: row.practiceLeftOwnerless, clerkIdentityRemoved: row.clerkIdentityRemoved,
-    };
-  }
-  throw new Error("account_self_delete_bridge");
+  try {
+    return deletedSuccess(row, "status", "practiceLeftOwnerless", "clerkIdentityRemoved",
+      "account_self_delete_bridge");
+  } catch { throw new Error("account_self_delete_bridge"); }
 }
 
 function completionFor(result: AccountSelfDeleteResult): AccountSelfDeleteCompletion | null {

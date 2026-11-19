@@ -156,6 +156,13 @@ export class DesktopProviderWorkspaceMain {
         return { recordingActive: true };
       }
       if (signal.aborted) throw unavailable();
+      const closeQuiet = async (): Promise<void> => {
+        try { await this.closeConnection(); } catch { /* H12: still return server outcome */ }
+      };
+      const runWipe = async (fn?: () => Promise<void>): Promise<boolean> => {
+        try { if (fn) await fn(); else await this.host.purgeLocalClinicalData?.(); return false; }
+        catch { return true; }
+      };
       let wipe: (() => Promise<void>) | undefined;
       let prepared = false, sent = false;
       try {
@@ -169,12 +176,10 @@ export class DesktopProviderWorkspaceMain {
         sent = true;
         if (value?.unauthorized === true) {
           // H3: 401 with pending marker counts as confirmed delete.
-          if (prepared) this.host.confirmClinicalPurge?.();
-          else this.host.abandonClinicalPurge?.();
-          try { await this.closeConnection(); } catch { /* H12: still return server outcome */ }
+          if (prepared) this.host.confirmClinicalPurge?.(); else this.host.abandonClinicalPurge?.();
+          await closeQuiet();
           if (prepared && wipe) {
-            let clinicalPurgeFailed = false;
-            try { await wipe(); } catch { clinicalPurgeFailed = true; }
+            const clinicalPurgeFailed = await runWipe(wipe);
             return {
               status: "already_deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true,
               ...(clinicalPurgeFailed ? { clinicalPurgeFailed: true } : {}),
@@ -183,9 +188,7 @@ export class DesktopProviderWorkspaceMain {
           return { unauthorized: true };
         }
         if (value?.gone === true) {
-          this.host.abandonClinicalPurge?.();
-          try { await this.closeConnection(); } catch { /* H12 */ }
-          return { gone: true };
+          this.host.abandonClinicalPurge?.(); await closeQuiet(); return { gone: true };
         }
         if (value?.unavailable === true) { this.host.abandonClinicalPurge?.(); return { unavailable: true }; }
         if (value?.retryable === true) { this.host.abandonClinicalPurge?.(); return { retryable: true }; }
@@ -193,16 +196,10 @@ export class DesktopProviderWorkspaceMain {
         if ((value?.status === "deleted" || value?.status === "already_deleted")
           && typeof value.practiceLeftOwnerless === "boolean"
           && typeof value.clerkIdentityRemoved === "boolean") {
-          this.host.confirmClinicalPurge?.();
-          try { await this.closeConnection(); } catch { /* H12: still return server outcome */ }
-          let clinicalPurgeFailed = false;
-          try {
-            if (wipe) await wipe();
-            else await this.host.purgeLocalClinicalData?.();
-          } catch { clinicalPurgeFailed = true; }
+          this.host.confirmClinicalPurge?.(); await closeQuiet();
+          const clinicalPurgeFailed = await runWipe(wipe);
           return {
-            status: value.status,
-            practiceLeftOwnerless: value.practiceLeftOwnerless,
+            status: value.status, practiceLeftOwnerless: value.practiceLeftOwnerless,
             clerkIdentityRemoved: value.clerkIdentityRemoved,
             ...(clinicalPurgeFailed ? { clinicalPurgeFailed: true } : {}),
           };

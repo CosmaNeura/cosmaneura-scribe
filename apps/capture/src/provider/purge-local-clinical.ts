@@ -41,11 +41,7 @@ export function clinicalStoresFromKeys(
     return remaining.length === 0;
   };
   const store = (prefixes: readonly string[]): ClinicalStore => ({ clear: wipe, isEmpty: empty(prefixes) });
-  return {
-    journal: store(CLINICAL_KEY_PREFIXES.journal), drafts: store(CLINICAL_KEY_PREFIXES.drafts),
-    review: store(CLINICAL_KEY_PREFIXES.review), queuedAudio: store(CLINICAL_KEY_PREFIXES.queuedAudio),
-    recordings: store(CLINICAL_KEY_PREFIXES.recordings),
-  };
+  return Object.fromEntries(CLINICAL_STORE_NAMES.map(n => [n, store(CLINICAL_KEY_PREFIXES[n])])) as LocalClinicalStores;
 }
 
 export async function deleteProviderFlowDatabases(
@@ -70,6 +66,8 @@ export async function purgeLocalClinicalWithFlowDatabases(
   factory?: IDBFactory,
 ): Promise<void> {
   const results = await Promise.allSettled([hostPurge(), deleteProviderFlowDatabases(factory)]);
-  const failed = results.find(result => result.status === "rejected") as PromiseRejectedResult | undefined;
-  if (failed) throw failed.reason instanceof Error ? failed.reason : new Error("clinical_purge_failed");
+  const failed = results.find(result => result.status === "rejected");
+  if (failed?.status === "rejected") {
+    throw failed.reason instanceof Error ? failed.reason : new Error("clinical_purge_failed");
+  }
 }

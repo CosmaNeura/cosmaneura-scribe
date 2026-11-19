@@ -70,20 +70,16 @@ describe("desktop clinical purge", () => {
         if (failOnce) { failOnce = false; throw new Error("wipe_failed"); }
         wipeDesktopClinicalPurgePlan(dir, next);
       });
-      const host2 = createDesktopClinicalPurgeHost({
-        userDataDirectory: root, creationWorkspaceId: wa,
-        loadCatalog: async () => ({ recoveryScope: ra, encounters: [] }), wipe: wipeFn,
-      });
+      const hostAt = (opts: Parameters<typeof createDesktopClinicalPurgeHost>[0]) =>
+        createDesktopClinicalPurgeHost({ userDataDirectory: root, creationWorkspaceId: wa, ...opts });
+      const host2 = hostAt({ loadCatalog: async () => ({ recoveryScope: ra, encounters: [] }), wipe: wipeFn });
       await expect((await host2.prepareClinicalPurge())()).rejects.toThrow(/clinical_purge_wipe_failed/);
       expect(readClinicalPurgePending(root, ra)?.state).toBe("confirmed");
       expect(retryClinicalPurgePending(root, { wipe: wipeFn })).toBe(true);
       expect(readClinicalPurgePending(root, ra)).toBeNull();
 
       // prepared not wiped at launch; catalog fail does not block (H15)
-      const host3 = createDesktopClinicalPurgeHost({
-        userDataDirectory: root, creationWorkspaceId: wa, recoveryScope: () => rb,
-        loadCatalog: async () => { throw new Error("catalog_down"); },
-      });
+      const host3 = hostAt({ recoveryScope: () => rb, loadCatalog: async () => { throw new Error("catalog_down"); } });
       await host3.prepareClinicalPurge();
       expect(readClinicalPurgePending(root, rb)?.state).toBe("prepared");
       expect(retryClinicalPurgePending(root)).toBe(false);
@@ -94,9 +90,8 @@ describe("desktop clinical purge", () => {
       confirmClinicalPurgePending(root, {
         recoveryScope: ra, creationWorkspaceId: wa, recordsWorkspaceIds: [wa], state: "confirmed",
       });
-      const other = createDesktopClinicalPurgeHost({
-        userDataDirectory: root, creationWorkspaceId: wb, recoveryScope: () => rb,
-        loadCatalog: async () => ({ recoveryScope: rb }),
+      const other = hostAt({
+        creationWorkspaceId: wb, recoveryScope: () => rb, loadCatalog: async () => ({ recoveryScope: rb }),
       });
       await other.prepareClinicalPurge(); other.abandonClinicalPurge();
       expect(readClinicalPurgePending(root, ra)?.state).toBe("confirmed");
@@ -104,7 +99,7 @@ describe("desktop clinical purge", () => {
       expect(readClinicalPurgePending(root, ra)?.state).toBe("confirmed");
       expect(listClinicalPurgePending(root).some(p => p.recoveryScope === ra)).toBe(true);
       expect(existsSync(purgePendingPath(root, ra))).toBe(true);
-      expect(planDesktopClinicalPurge(ra, wa, [wb]).recordsWorkspaceIds.sort()).toEqual([wa, wb].sort());
+      expect([...planDesktopClinicalPurge(ra, wa, [wb]).recordsWorkspaceIds].sort()).toEqual([wa, wb].sort());
       clearClinicalPurgePending(root, ra);
     } finally {
       clearClinicalPurgePending(root, ra); clearClinicalPurgePending(root, rb);

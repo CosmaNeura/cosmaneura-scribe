@@ -13,7 +13,6 @@ const unavailable = (): Error => new Error("desktop_clinical_scope_unavailable")
 const scopeUuid = (v: unknown): string | null => typeof v === "string" && UUID.test(v) ? v.toLowerCase() : null;
 const scopeDigest = (r: string) => createHash("sha256").update(r.toLowerCase()).digest("hex").slice(0, 32);
 type WipeFn = (dir: string, plan: DesktopClinicalPurgePlan) => void;
-const purgeOpts = (wipe: WipeFn, log?: (reason: string) => void) => (log ? { wipe, log } : { wipe });
 export function resolveDesktopClinicalDirectoryScopes(i: {
   readonly recoveryScope: unknown; readonly recordsWorkspaceId: unknown; readonly creationWorkspaceId: unknown;
 }): DesktopClinicalDirectoryScopes {
@@ -29,7 +28,7 @@ export function rememberDesktopClinicalWorkspace(userDataDirectory: string, reco
   const path = join(userDataDirectory, CLINICAL_WORKSPACE_INDEX_NAME);
   let index: Record<string, string[]> = {};
   try { if (existsSync(path)) index = JSON.parse(readFileSync(path, "utf8")) as Record<string, string[]>; } catch { index = {}; }
-  const rows = new Set((Array.isArray(index[scope]) ? index[scope]! : []).filter(id => !!scopeUuid(id)));
+  const prior = index[scope], rows = new Set((Array.isArray(prior) ? prior : []).filter(id => !!scopeUuid(id)));
   rows.add(workspace); index[scope] = [...rows];
   const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(index), { encoding: "utf8", mode: 0o600 }); renameSync(tmp, path);
@@ -82,12 +81,10 @@ function writeMarker(userDataDirectory: string, plan: DesktopClinicalPurgePlan, 
   renameSync(tmp, path);
 }
 
-export function writeClinicalPurgePending(userDataDirectory: string, plan: DesktopClinicalPurgePlan, reason?: string): void {
-  writeMarker(userDataDirectory, { ...plan, state: plan.state ?? "prepared" }, reason);
-}
-export function confirmClinicalPurgePending(userDataDirectory: string, plan: DesktopClinicalPurgePlan): void {
-  writeMarker(userDataDirectory, { ...plan, state: "confirmed" });
-}
+export const writeClinicalPurgePending = (d: string, plan: DesktopClinicalPurgePlan, reason?: string): void =>
+  writeMarker(d, { ...plan, state: plan.state ?? "prepared" }, reason);
+export const confirmClinicalPurgePending = (d: string, plan: DesktopClinicalPurgePlan): void =>
+  writeMarker(d, { ...plan, state: "confirmed" });
 
 function readOneMarker(path: string): DesktopClinicalPurgePlan | null {
   if (!existsSync(path)) return null;
@@ -96,11 +93,11 @@ function readOneMarker(path: string): DesktopClinicalPurgePlan | null {
     if (typeof raw.recoveryScope !== "string" || typeof raw.creationWorkspaceId !== "string" || !Array.isArray(raw.recordsWorkspaceIds)) return null;
     const state = raw.state === "confirmed" ? "confirmed" : raw.state === "prepared" ? "prepared" : null;
     if (!state) return null;
-    const recordsWorkspaceIds = raw.recordsWorkspaceIds.map(scopeUuid);
-    if (recordsWorkspaceIds.some(id => !id)) return null;
+    const recordsWorkspaceIds = raw.recordsWorkspaceIds.map(scopeUuid).filter((id): id is string => !!id);
+    if (recordsWorkspaceIds.length !== raw.recordsWorkspaceIds.length) return null;
     const recoveryScope = scopeUuid(raw.recoveryScope), creationWorkspaceId = scopeUuid(raw.creationWorkspaceId);
     if (!recoveryScope || !creationWorkspaceId) return null;
-    return { recoveryScope, creationWorkspaceId, recordsWorkspaceIds: recordsWorkspaceIds as string[], state };
+    return { recoveryScope, creationWorkspaceId, recordsWorkspaceIds, state };
   } catch { return null; }
 }
 
@@ -173,7 +170,7 @@ export function createDesktopClinicalPurgeHost(options: {
   hasPendingPurge: () => boolean; currentPlan: () => DesktopClinicalPurgePlan | null;
 } {
   const { userDataDirectory, creationWorkspaceId, recoveryScope, loadCatalog, log } = options;
-  const wipe = options.wipe ?? wipeDesktopClinicalPurgePlan, ro = purgeOpts(wipe, log);
+  const wipe = options.wipe ?? wipeDesktopClinicalPurgePlan, ro = { wipe, ...(log ? { log } : {}) };
   let current: DesktopClinicalPurgePlan | null = null;
   return {
     currentPlan: () => current,
