@@ -6,7 +6,6 @@ public enum AccountSelfDeleteContract {
         case deleted(status: String, practiceLeftOwnerless: Bool, clerkIdentityRemoved: Bool)
         case unauthorized, gone, unavailable, retryable, recordingActive, rejected
     }
-
     public static func allowsCoreOrigin(_ origin: String) -> Bool {
         origin == "https://staging-app.cosmaneura.com" || origin == "https://app.cosmaneura.com"
             || isExactLocalhostHTTP(origin)
@@ -83,8 +82,9 @@ public enum AccountSelfDeleteContract {
         if holdsOrOpeningRecording { return bridgePayload(for: .recordingActive) }
         guard let origin, accountDeleteURL(origin: origin) != nil else { return nil }
         do {
+            let token = try await mintToken()
             guard let request = makeAuthorizedAccountDeleteRequest(
-                origin: origin, bearerToken: try await mintToken()) else { return nil }
+                origin: origin, bearerToken: token) else { return nil }
             let (data, response) = try await send(request)
             guard let http = response as? HTTPURLResponse else { return nil }
             return resolve(origin: origin, statusCode: http.statusCode, body: data)
