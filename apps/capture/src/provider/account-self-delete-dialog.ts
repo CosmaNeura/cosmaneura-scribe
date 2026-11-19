@@ -1,8 +1,6 @@
 import {
-  ACCOUNT_SELF_DELETE_MESSAGES,
-  accountSelfDelete,
-  type AccountSelfDeleteHost,
-  type AccountSelfDeleteState,
+  ACCOUNT_SELF_DELETE_MESSAGES, accountSelfDelete,
+  type AccountSelfDeleteHost, type AccountSelfDeleteState,
 } from "./account-self-delete";
 import "./account-self-delete-dialog.css";
 
@@ -26,27 +24,25 @@ export function mountAccountSelfDeleteDialog(parent: HTMLElement, host: AccountS
       <button data-done type="button" hidden>Done</button>
       <button data-retry type="button" hidden>Try again</button>
     </div></section>`;
-  const input = dialog.querySelector<HTMLInputElement>("[data-confirmation]")!;
-  const label = dialog.querySelector<HTMLElement>("[data-confirmation-label]")!;
-  const cancel = dialog.querySelector<HTMLButtonElement>("[data-cancel]")!;
-  const submit = dialog.querySelector<HTMLButtonElement>("[data-submit]")!;
-  const done = dialog.querySelector<HTMLButtonElement>("[data-done]")!;
-  const retry = dialog.querySelector<HTMLButtonElement>("[data-retry]")!;
-  const status = dialog.querySelector<HTMLElement>("[data-status]")!;
+  const q = <T extends Element>(sel: string) => dialog.querySelector<T>(sel)!;
+  const input = q<HTMLInputElement>("[data-confirmation]");
+  const label = q<HTMLElement>("[data-confirmation-label]");
+  const cancel = q<HTMLButtonElement>("[data-cancel]");
+  const submit = q<HTMLButtonElement>("[data-submit]");
+  const done = q<HTMLButtonElement>("[data-done]");
+  const retry = q<HTMLButtonElement>("[data-retry]");
+  const status = q<HTMLElement>("[data-status]");
   let disposed = false;
-
   const render = (state: AccountSelfDeleteState): void => {
     if (disposed) return;
     const editable = state.phase === "confirming" || (state.phase === "failed" && state.completion === null);
     const finished = state.phase === "complete" || state.phase === "local_clear_failed";
-    label.hidden = !editable;
-    input.disabled = !editable;
+    label.hidden = !editable; input.disabled = !editable;
     if (input.value !== state.confirmation) input.value = state.confirmation;
     submit.hidden = finished || state.phase === "clearing" || state.phase === "submitting" || state.retryable;
     submit.disabled = !editable || state.confirmation !== "DELETE" || state.retryable;
     cancel.hidden = state.phase === "submitting" || state.phase === "clearing" || finished;
-    retry.hidden = !(state.phase === "failed" && state.retryable);
-    done.hidden = !finished;
+    retry.hidden = !(state.phase === "failed" && state.retryable); done.hidden = !finished;
     status.dataset.kind = state.error ? "error" : "";
     status.textContent = state.phase === "submitting" ? "Deleting your Cosmaneura account…"
       : state.phase === "clearing" ? "Clearing this device and signing out…"
@@ -55,17 +51,12 @@ export function mountAccountSelfDeleteDialog(parent: HTMLElement, host: AccountS
       : state.phase === "complete" && state.completion === "gone" ? ACCOUNT_SELF_DELETE_MESSAGES.gone
       : state.error ?? "";
   };
-
   const flow = accountSelfDelete(host, render);
   const dispose = (): void => {
     if (disposed) return;
-    disposed = true;
-    flow.dispose();
-    dialog.close();
-    dialog.remove();
+    disposed = true; flow.dispose(); dialog.close(); dialog.remove();
     if (priorFocus instanceof HTMLElement && priorFocus.isConnected) priorFocus.focus();
   };
-
   input.addEventListener("input", () => flow.confirm(input.value));
   cancel.addEventListener("click", () => { if (flow.cancel()) dispose(); });
   submit.addEventListener("click", () => { void flow.submit(); });
@@ -74,15 +65,9 @@ export function mountAccountSelfDeleteDialog(parent: HTMLElement, host: AccountS
   dialog.addEventListener("cancel", event => {
     event.preventDefault();
     const phase = flow.read().phase;
-    if (phase === "complete" || phase === "local_clear_failed") {
-      if (flow.acknowledge()) dispose();
-      return;
-    }
+    if (phase === "complete" || phase === "local_clear_failed") { if (flow.acknowledge()) dispose(); return; }
     if (flow.cancel()) dispose();
   });
-  parent.append(dialog);
-  dialog.showModal();
-  render(flow.read());
-  input.focus();
+  parent.append(dialog); dialog.showModal(); render(flow.read()); input.focus();
   return dispose;
 }

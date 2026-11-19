@@ -118,8 +118,7 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
         req => port.request(req), body, {
           closed: () => closed, ...(signal ? { signal } : {}),
           onClinicalPurgeFailed: () => { clinicalPurgeFailed = true; },
-        },
-      ),
+        }),
     },
     purgeLocalClinicalData: () => {
       if (!clinicalPurgeFailed) return Promise.resolve();

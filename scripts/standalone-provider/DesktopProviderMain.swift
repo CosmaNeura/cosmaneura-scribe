@@ -149,10 +149,9 @@ import ScribeStorePipe
                   AccountSelfDeleteContract.accountDeleteURL(origin: origin) != nil
             else { throw ProviderNativeError.unavailable }
             let token = try await auth.token(expectedRevision: revision)
-            guard auth.state().phase == .ready, auth.state().revision == revision
-            else { throw ProviderNativeError.unavailable }
-            guard let request = AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(
-                origin: origin, bearerToken: token)
+            guard auth.state().phase == .ready, auth.state().revision == revision,
+                  let request = AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(
+                    origin: origin, bearerToken: token)
             else { throw ProviderNativeError.unavailable }
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse,
@@ -300,8 +299,7 @@ import ScribeStorePipe
     /// Fixed Clerk → Cosmas origin map from Info.plist; never invent hosts.
     private static func coreOriginForSelfDelete() -> String? {
         guard let auth = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any],
-              let frontend = auth["frontendOrigin"] as? String
-        else { return nil }
+              let frontend = auth["frontendOrigin"] as? String else { return nil }
         return AccountSelfDeleteContract.coreOrigin(forFrontendOrigin: frontend)
     }
     private func state(_ value: NativeAuthState) -> [String: Any] {

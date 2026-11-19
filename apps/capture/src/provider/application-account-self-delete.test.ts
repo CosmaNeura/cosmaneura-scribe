@@ -30,8 +30,7 @@ class Surface extends EventTarget {
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const dispose of cleanups.splice(0)) await dispose();
-  vi.unstubAllGlobals();
-  vi.mocked(mountAccountSelfDeleteDialog).mockClear();
+  vi.unstubAllGlobals(); vi.mocked(mountAccountSelfDeleteDialog).mockClear();
 });
 
 async function fixture() {
@@ -86,7 +85,6 @@ describe("account self-delete recording guard", () => {
     workflow.dataset.providerUploadPending = "true";
     await pending.click("delete-account");
     expect(mountAccountSelfDeleteDialog).toHaveBeenCalledOnce();
-
     vi.mocked(mountAccountSelfDeleteDialog).mockClear();
     const idle = await fixture();
     await idle.click("delete-account");
@@ -111,16 +109,10 @@ describe("account self-delete recording guard", () => {
     await live.click("delete-account");
     const liveDialog = vi.mocked(mountAccountSelfDeleteDialog).mock.calls.at(-1)?.[1] as AccountSelfDeleteHost;
     const pending = liveDialog.client.deleteAccount({ confirm: "DELETE" });
-    await live.settle();
-    live.emitSignedOut();
-    await live.settle();
+    await live.settle(); live.emitSignedOut(); await live.settle();
     expect(disposeDialog).not.toHaveBeenCalled();
-    release({
-      outcome: "deleted", status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true,
-    });
-    await pending;
-    await liveDialog.purgeLocalClinicalData();
-    await liveDialog.clearLocalCredentials();
+    release({ outcome: "deleted", status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true });
+    await pending; await liveDialog.purgeLocalClinicalData(); await liveDialog.clearLocalCredentials();
     expect(live.root.querySelector("[data-session-title]")?.textContent).toBe("Account deleted");
   });
 });

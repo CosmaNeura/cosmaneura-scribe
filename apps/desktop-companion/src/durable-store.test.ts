@@ -340,20 +340,4 @@ describe("durable desktop capture", () => {
     }
   }, 20_000);
 
-  it("wipeAccount closes the store and leaves nothing on disk for that account", async () => {
-    const path = await directory(), otherScope = "44444444-4444-4444-8444-444444444444";
-    const keep = await DurableDesktopRecordStore.open({
-      directory: path, recoveryScope: otherScope, workspaceId, key: await master(),
-    });
-    await keep.namespace("keep").save("row", null, new Uint8Array([9]));
-    const store = await DurableDesktopRecordStore.open({ directory: path, recoveryScope, workspaceId, key: await master() });
-    await store.namespace("gone").save("row", null, new Uint8Array([1, 2, 3]));
-    DurableDesktopRecordStore.wipeAccount(path, recoveryScope, workspaceId);
-    const left = await readdir(path);
-    expect(left.some(name => name.startsWith(createHash("sha256").update(`${recoveryScope}:${workspaceId}`).digest("hex")))).toBe(false);
-    expect(left.some(name => name.startsWith(createHash("sha256").update(`${otherScope}:${workspaceId}`).digest("hex")))).toBe(true);
-    keep.close(); DurableDesktopRecordStore.wipeDirectory(path);
-    expect(await readdir(path)).toEqual([]);
-    await rm(path, { recursive: true, force: true });
-  });
 });

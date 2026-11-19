@@ -23,7 +23,10 @@ export interface DesktopProviderMainHost {
   readonly cancellation?: ScribeCancellation;
   /** Trusted fixed account dashboard, independent of a visit connection. */
   readonly openDashboard?: (signal: AbortSignal) => Promise<void>;
-  /** Wipe local clinical SQLite (journal/drafts/review/queue) after account delete. */
+  /** Capture wipe scopes before DELETE; closure never calls Core. */
+  readonly prepareClinicalPurge?: () => Promise<() => Promise<void>>;
+  readonly abandonClinicalPurge?: () => void;
+  /** Test fallback wipe when prepareClinicalPurge is absent. */
   readonly purgeLocalClinicalData?: () => Promise<void>;
   /** Main-only complete provider workspace; never forward this object to preload. */
   connect(signal: AbortSignal): Promise<{ readonly workspace: ProviderWorkspaceHost<DesktopProviderRecorder>; dispose(): Promise<void> }>;
@@ -142,33 +145,43 @@ export class DesktopProviderWorkspaceMain {
         || typeof this.host.session.deleteAccount !== "function") throw unavailable();
       exact(payload, ["confirm"]); if (payload.confirm !== "DELETE") throw unavailable();
       const state = await this.readSession(); if (state?.phase !== "ready" || signal.aborted) throw unavailable();
-      // Refuse while a recorder is opening or actively capturing. Pending
-      // uploads do not block delete (John, 12:15pm ET Nov 19 2026: "Delete anyway").
+      // Non-terminal recorder refuses; uploading/processing/complete/idle do not.
       const encounter = this.connection?.encounter;
       if (encounter?.recorderOpening) throw unavailable();
-      if (encounter?.liveRecorder?.snapshot.state === "recording") throw unavailable();
+      const recorderState = encounter?.liveRecorder?.snapshot.state;
+      if (recorderState && !["uploading", "processing", "complete", "idle"].includes(recorderState)) {
+        throw unavailable();
+      }
       if (signal.aborted) throw unavailable();
-      // Once DELETE is sent, always return the bridge result — even if the
-      // renderer aborted mid-flight (signedOut / dialog teardown).
+      let wipe: (() => Promise<void>) | undefined;
+      if (this.host.prepareClinicalPurge) {
+        try { wipe = await this.host.prepareClinicalPurge(); }
+        catch { throw unavailable(); }
+      }
+      if (signal.aborted) throw unavailable();
+      // Once DELETE is sent, always return the bridge result (even mid-flight abort).
       const value = await this.host.session.deleteAccount({ confirm: "DELETE" });
       if (value?.unauthorized === true) {
-        await this.closeConnection();
-        return { unauthorized: true };
+        this.host.abandonClinicalPurge?.(); await this.closeConnection(); return { unauthorized: true };
       }
       if (value?.gone === true) {
-        await this.closeConnection();
-        return { gone: true };
+        this.host.abandonClinicalPurge?.(); await this.closeConnection(); return { gone: true };
       }
-      if (value?.unavailable === true) return { unavailable: true };
-      if (value?.retryable === true) return { retryable: true };
+      if (value?.unavailable === true) {
+        this.host.abandonClinicalPurge?.(); return { unavailable: true };
+      }
+      if (value?.retryable === true) {
+        this.host.abandonClinicalPurge?.(); return { retryable: true };
+      }
       if ((value?.status === "deleted" || value?.status === "already_deleted")
         && typeof value.practiceLeftOwnerless === "boolean"
         && typeof value.clerkIdentityRemoved === "boolean") {
         await this.closeConnection();
-        // Purge only on deleted; clinicalPurgeFailed → local_clear_failed after interpret.
         let clinicalPurgeFailed = false;
-        try { await this.host.purgeLocalClinicalData?.(); }
-        catch { clinicalPurgeFailed = true; }
+        try {
+          if (wipe) await wipe();
+          else await this.host.purgeLocalClinicalData?.();
+        } catch { clinicalPurgeFailed = true; }
         return {
           status: value.status,
           practiceLeftOwnerless: value.practiceLeftOwnerless,
@@ -176,6 +189,7 @@ export class DesktopProviderWorkspaceMain {
           ...(clinicalPurgeFailed ? { clinicalPurgeFailed: true } : {}),
         };
       }
+      this.host.abandonClinicalPurge?.();
       throw unavailable();
     }
     if (["session_read", "sign_in", "sign_out", "connect"].includes(request.method)) {

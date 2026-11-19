@@ -17,10 +17,8 @@ import { DesktopAudioPreflight } from "./desktop-audio-preflight.js";
 import { microphonePreferenceScope, openMicrophonePreferences } from "./microphone-preferences.js";
 import { resolveStandaloneNativeHelpers } from "./standalone-native-helpers.js";
 import { desktopScribeCancellation } from "./native-cancellation.js";
-import {
-  resolveDesktopClinicalDirectoryScopes, wipeDesktopClinicalDirectories,
-} from "./desktop-clinical-purge.js";
-import { exact, object, uuid } from "../../capture/src/provider/desktop-host-protocol";
+import { createDesktopClinicalPurgeHost } from "./desktop-clinical-purge.js";
+import { exact, object } from "../../capture/src/provider/desktop-host-protocol";
 
 interface PackagedRuntime {
   readonly packageDirectory: string;
@@ -48,7 +46,7 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
   const connections = new Set<ReturnType<typeof createDesktopProviderConnection>>();
   const opening = new Set<Promise<unknown>>();
   let closing: Promise<void> | undefined;
-  /** Authenticated Core catalog at delete time — same source connect/creation use. */
+  /** Catalog only while authenticated — never after Cosmas DELETE. */
   const sessionCatalog = async (): Promise<Record<string, unknown>> => {
     const state = await native.getState();
     if (state.phase !== "ready" || abort.signal.aborted || !native.isReady()) {
@@ -57,11 +55,18 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
     const reply = exact(await native.request("providerRequest", {
       revision: state.revision, action: "catalog", key: crypto.randomUUID(), body: "{}",
     }), ["status", "body"]);
-    if (reply.status !== 200 || typeof reply.body !== "string") throw new Error("desktop_clinical_scope_unavailable");
+    if (reply.status !== 200 || typeof reply.body !== "string") {
+      throw new Error("desktop_clinical_scope_unavailable");
+    }
     const catalog = object(JSON.parse(reply.body));
     if (catalog.revision !== state.revision) throw new Error("desktop_clinical_scope_unavailable");
     return catalog;
   };
+  const clinicalPurge = createDesktopClinicalPurgeHost({
+    userDataDirectory: runtime.userDataDirectory, creationWorkspaceId: profile.workspaceId,
+    loadCatalog: sessionCatalog,
+  });
+  clinicalPurge.retryPendingPurge();
   const dispose = (): Promise<void> => closing ??= (async () => {
     abort.abort(); await Promise.allSettled([...opening]);
     // Keep native identity/custody alive until every actual source confirms stop.
@@ -71,26 +76,8 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
   return { dispose, host: {
     session: native,
     cancellation: desktopScribeCancellation(native, runtime.userDataDirectory, runtime.protection, profile.workspaceId, abort.signal),
-    purgeLocalClinicalData: async () => {
-      // Session scopes at delete time — never lastClinicalScope / wipeDirectory.
-      const catalog = await sessionCatalog();
-      let recoveryScope: string;
-      try { recoveryScope = uuid(catalog.recoveryScope); }
-      catch { throw new Error("desktop_clinical_scope_unavailable"); }
-      const workspaceIds = new Set<string>([profile.workspaceId]);
-      if (Array.isArray(catalog.encounters)) {
-        for (const row of catalog.encounters) {
-          if (!row || typeof row !== "object" || !("workspaceId" in row)) continue;
-          try { workspaceIds.add(uuid((row as { workspaceId: unknown }).workspaceId)); }
-          catch { throw new Error("desktop_clinical_scope_unavailable"); }
-        }
-      }
-      for (const workspaceId of workspaceIds) {
-        wipeDesktopClinicalDirectories(runtime.userDataDirectory, resolveDesktopClinicalDirectoryScopes({
-          recoveryScope, recordsWorkspaceId: workspaceId, creationWorkspaceId: profile.workspaceId,
-        }));
-      }
-    },
+    prepareClinicalPurge: clinicalPurge.prepareClinicalPurge,
+    abandonClinicalPurge: clinicalPurge.abandonClinicalPurge,
     openDashboard: async signal => {
       const before = await native.getState();
       if (profile.enabled !== true || abort.signal.aborted || signal.aborted || before.phase !== "ready") throw unavailable();

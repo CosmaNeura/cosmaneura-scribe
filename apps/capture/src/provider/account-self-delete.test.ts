@@ -15,11 +15,9 @@ function memoryStorage(): Storage {
     setItem(key: string, value: string) { values.set(key, String(value)); },
   };
 }
-
 const deleted: AccountSelfDeleteResult = {
   outcome: "deleted", status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true,
 };
-
 function fixture(overrides: Partial<AccountSelfDeleteHost> = {}) {
   const states: AccountSelfDeleteState[] = [];
   const deleteAccount = vi.fn(async () => deleted);
@@ -35,8 +33,10 @@ function fixture(overrides: Partial<AccountSelfDeleteHost> = {}) {
   return { host, states, flow, deleteAccount, clearLocalCredentials, purgeLocalClinicalData, closeWorkspace, sameAccountSession };
 }
 
-describe("interpretAccountSelfDeleteResponse", () => {
-  it("maps locked Cosmas statuses; rejects 409/422/500 and malformed-200", () => {
+describe("account self-delete interpret + flow", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("maps locked Cosmas/bridge payloads; rejects malformed", () => {
     expect(interpretAccountSelfDeleteResponse(200, {
       status: "deleted", practice_left_ownerless: false, clerk_identity_removed: true,
     })).toEqual({
@@ -53,29 +53,22 @@ describe("interpretAccountSelfDeleteResponse", () => {
       expect(() => interpretAccountSelfDeleteResponse(status, {})).toThrow(new RegExp(`account_self_delete_http_${status}`));
     }
     expect(() => interpretAccountSelfDeleteResponse(200, { status: "deleted" })).toThrow(/account_self_delete_body/);
-  });
-});
-
-describe("interpretAccountSelfDeleteBridge", () => {
-  it("accepts locked success and flag payloads; rejects mutation", () => {
     expect(interpretAccountSelfDeleteBridge({
       status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true,
     })).toMatchObject({ outcome: "deleted" });
-    expect(interpretAccountSelfDeleteBridge({ unauthorized: true })).toEqual({ outcome: "unauthorized" });
-    expect(interpretAccountSelfDeleteBridge({ gone: true })).toEqual({ outcome: "gone" });
-    expect(interpretAccountSelfDeleteBridge({ unavailable: true })).toEqual({ outcome: "unavailable" });
-    expect(interpretAccountSelfDeleteBridge({ retryable: true })).toEqual({ outcome: "retryable" });
-    expect(interpretAccountSelfDeleteBridge({ recordingActive: true })).toEqual({ outcome: "recording_active" });
+    for (const [payload, outcome] of [
+      [{ unauthorized: true }, "unauthorized"], [{ gone: true }, "gone"],
+      [{ unavailable: true }, "unavailable"], [{ retryable: true }, "retryable"],
+      [{ recordingActive: true }, "recording_active"],
+    ] as const) {
+      expect(interpretAccountSelfDeleteBridge(payload)).toEqual({ outcome });
+    }
     expect(() => interpretAccountSelfDeleteBridge({ unauthorized: true, status: "deleted" }))
       .toThrow(/account_self_delete_bridge/);
     expect(() => interpretAccountSelfDeleteBridge({
       status: "deleted", practiceLeftOwnerless: false,
     })).toThrow(/account_self_delete_bridge/);
   });
-});
-
-describe("accountSelfDelete", () => {
-  afterEach(() => { vi.unstubAllGlobals(); });
 
   it("200 deleted purges then clears; keep-session paths and cancel do not purge", async () => {
     const ok = fixture();

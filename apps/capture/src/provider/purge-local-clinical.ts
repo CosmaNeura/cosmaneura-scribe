@@ -1,23 +1,14 @@
 /** Wipe local clinical custody after Cosmas account delete ("Clearing this device"). */
 
 export type ClinicalStoreName = "journal" | "drafts" | "review" | "queuedAudio" | "recordings";
-
-export interface ClinicalStore {
-  clear(): Promise<void>;
-  isEmpty(): Promise<boolean>;
-}
-
+export interface ClinicalStore { clear(): Promise<void>; isEmpty(): Promise<boolean>; }
 export type LocalClinicalStores = Record<ClinicalStoreName, ClinicalStore>;
-
 export const CLINICAL_STORE_NAMES: readonly ClinicalStoreName[] = [
   "journal", "drafts", "review", "queuedAudio", "recordings",
 ] as const;
-
 export const CLINICAL_KEY_PREFIXES: Record<ClinicalStoreName, readonly string[]> = {
-  journal: ["provider-workspace-v1:"],
-  drafts: ["creator-transcript-edit-v1:"],
-  review: ["creator-review-v1:"],
-  queuedAudio: ["scribe-provider-queue:v1:"],
+  journal: ["provider-workspace-v1:"], drafts: ["creator-transcript-edit-v1:"],
+  review: ["creator-review-v1:"], queuedAudio: ["scribe-provider-queue:v1:"],
   recordings: ["scribe-native-"],
 };
 
@@ -41,15 +32,12 @@ export function clinicalStoresFromKeys(
   };
   const empty = (prefixes: readonly string[]) => async (): Promise<boolean> => {
     if (cleared && keys.clearAll) return true;
-    const remaining = await keys.list();
-    return !remaining.some(key => prefixes.some(prefix => key.startsWith(prefix)));
+    return !(await keys.list()).some(key => prefixes.some(prefix => key.startsWith(prefix)));
   };
   const store = (prefixes: readonly string[]): ClinicalStore => ({ clear: wipe, isEmpty: empty(prefixes) });
   return {
-    journal: store(CLINICAL_KEY_PREFIXES.journal),
-    drafts: store(CLINICAL_KEY_PREFIXES.drafts),
-    review: store(CLINICAL_KEY_PREFIXES.review),
-    queuedAudio: store(CLINICAL_KEY_PREFIXES.queuedAudio),
+    journal: store(CLINICAL_KEY_PREFIXES.journal), drafts: store(CLINICAL_KEY_PREFIXES.drafts),
+    review: store(CLINICAL_KEY_PREFIXES.review), queuedAudio: store(CLINICAL_KEY_PREFIXES.queuedAudio),
     recordings: store(CLINICAL_KEY_PREFIXES.recordings),
   };
 }

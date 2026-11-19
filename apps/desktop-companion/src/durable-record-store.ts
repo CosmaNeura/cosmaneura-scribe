@@ -266,21 +266,17 @@ function hasCode(error: unknown, code: string): boolean { return typeof error ==
 function wipeTree(directory: string, match: (name: string) => boolean): void {
   let names: string[];
   try { names = readdirSync(directory); } catch (error) {
-    if (hasCode(error, "ENOENT")) return;
-    throw failure();
+    if (hasCode(error, "ENOENT")) return; throw failure();
   }
   for (const name of names) {
     const path = join(directory, name);
     let info;
     try { info = lstatSync(path); } catch (error) {
-      if (hasCode(error, "ENOENT")) continue;
-      throw failure();
+      if (hasCode(error, "ENOENT")) continue; throw failure();
     }
     if (info.isDirectory()) { wipeTree(path, match); continue; }
     if (!match(name)) continue;
-    try { unlinkSync(path); } catch (error) {
-      if (!hasCode(error, "ENOENT")) throw failure();
-    }
+    try { unlinkSync(path); } catch (error) { if (!hasCode(error, "ENOENT")) throw failure(); }
   }
 }
 export function failure(): Error { return new Error("desktop_storage_unavailable"); }

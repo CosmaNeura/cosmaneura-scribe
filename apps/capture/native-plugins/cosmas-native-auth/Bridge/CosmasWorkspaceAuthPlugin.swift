@@ -563,15 +563,14 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
     /// Cosmas self-delete (T-REL-8a): DELETE /v1/me/account; token stays native.
     @objc nonisolated public func deleteAccount(_ call: CAPPluginCall) {
         Task { @MainActor in
-            guard Set(call.options.keys) == ["confirm"],
-                  call.getString("confirm") == "DELETE" else { return Self.reject(call) }
+            guard Set(call.options.keys) == ["confirm"], call.getString("confirm") == "DELETE"
+            else { return Self.reject(call) }
             self.initializeAuth()
             guard let auth = self.auth, auth.state().phase == .ready else { return Self.reject(call) }
             let revision = auth.state().revision
             let origin = Self.providerApplicationConfiguration()?["coreOrigin"] as? String
             guard let payload = await AccountSelfDeleteContract.attempt(
-                holdsOrOpeningRecording: Self.recordingBridge.holdsOrOpeningRecording,
-                origin: origin,
+                holdsOrOpeningRecording: Self.recordingBridge.holdsOrOpeningRecording, origin: origin,
                 mintToken: {
                     let token = try await auth.token(expectedRevision: revision)
                     guard auth.state().phase == .ready, auth.state().revision == revision
@@ -579,10 +578,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                     return token
                 },
                 send: { try await URLSession.shared.data(for: $0) })
-            else {
-                call.reject("Account deletion unavailable", "account_self_delete_failed")
-                return
-            }
+            else { call.reject("Account deletion unavailable", "account_self_delete_failed"); return }
             call.resolve(payload)
         }
     }

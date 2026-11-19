@@ -29,7 +29,6 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
       await purgeLocalClinicalData(clinicalStoresFromKeys({
         list: async () => (await SecureQueue.list()).keys,
         delete: async key => { await SecureQueue.delete({ key }); },
-        // CTO option (a): iOS clearAll is device-wide until SecureQueue is per-account.
         clearAll: async () => { await SecureQueue.clearAll(); },
       }));
     },

@@ -7,18 +7,9 @@ export interface AccountSelfDeleteSuccess {
   readonly outcome: "deleted"; readonly status: AccountSelfDeleteStatus;
   readonly practiceLeftOwnerless: boolean; readonly clerkIdentityRemoved: boolean;
 }
-export interface AccountSelfDeleteUnauthorized { readonly outcome: "unauthorized"; }
-export interface AccountSelfDeleteGone { readonly outcome: "gone"; }
-export interface AccountSelfDeleteUnavailable { readonly outcome: "unavailable"; }
-export interface AccountSelfDeleteRetryable { readonly outcome: "retryable"; }
-export interface AccountSelfDeleteRecordingActive { readonly outcome: "recording_active"; }
 export type AccountSelfDeleteResult =
-  | AccountSelfDeleteSuccess | AccountSelfDeleteUnauthorized | AccountSelfDeleteGone
-  | AccountSelfDeleteUnavailable | AccountSelfDeleteRetryable | AccountSelfDeleteRecordingActive;
-
-export interface AccountSelfDeleteClient {
-  deleteAccount(request: AccountSelfDeleteRequest, signal?: AbortSignal): Promise<AccountSelfDeleteResult>;
-}
+  | AccountSelfDeleteSuccess
+  | { readonly outcome: "unauthorized" | "gone" | "unavailable" | "retryable" | "recording_active" };
 export type AccountSelfDeletePhase =
   | "confirming" | "submitting" | "failed" | "clearing" | "complete" | "local_clear_failed" | "closed";
 export type AccountSelfDeleteCompletion = "deleted" | "session_expired" | "gone" | "local_clear_failed";
@@ -27,6 +18,9 @@ export interface AccountSelfDeleteState {
   readonly retryable: boolean; readonly completion: AccountSelfDeleteCompletion | null;
   /** Set on deleted success; UI copy for ownerless waits on John's words (Core #940). */
   readonly practiceLeftOwnerless: boolean | null;
+}
+export interface AccountSelfDeleteClient {
+  deleteAccount(request: AccountSelfDeleteRequest, signal?: AbortSignal): Promise<AccountSelfDeleteResult>;
 }
 export interface AccountSelfDeleteHost {
   readonly client: AccountSelfDeleteClient;
@@ -59,11 +53,9 @@ export function interpretAccountSelfDeleteResponse(status: number, body: unknown
   if (status !== 200) throw new Error(`account_self_delete_http_${status}`);
   if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("account_self_delete_body");
   const row = body as Record<string, unknown>;
-  if (Object.keys(row).sort().join(",") !== "clerk_identity_removed,practice_left_ownerless,status") {
-    throw new Error("account_self_delete_body");
-  }
-  if (row.status !== "deleted" && row.status !== "already_deleted") throw new Error("account_self_delete_body");
-  if (typeof row.practice_left_ownerless !== "boolean" || typeof row.clerk_identity_removed !== "boolean") {
+  if (Object.keys(row).sort().join(",") !== "clerk_identity_removed,practice_left_ownerless,status"
+    || (row.status !== "deleted" && row.status !== "already_deleted")
+    || typeof row.practice_left_ownerless !== "boolean" || typeof row.clerk_identity_removed !== "boolean") {
     throw new Error("account_self_delete_body");
   }
   return {
@@ -74,16 +66,18 @@ export function interpretAccountSelfDeleteResponse(status: number, body: unknown
 
 export function interpretAccountSelfDeleteBridge(value: unknown): AccountSelfDeleteResult {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("account_self_delete_bridge");
-  const row = value as Record<string, unknown>;
-  if (row.unauthorized === true && Object.keys(row).length === 1) return { outcome: "unauthorized" };
-  if (row.gone === true && Object.keys(row).length === 1) return { outcome: "gone" };
-  if (row.unavailable === true && Object.keys(row).length === 1) return { outcome: "unavailable" };
-  if (row.retryable === true && Object.keys(row).length === 1) return { outcome: "retryable" };
-  if (row.recordingActive === true && Object.keys(row).length === 1) return { outcome: "recording_active" };
+  const row = value as Record<string, unknown>, keys = Object.keys(row);
+  if (keys.length === 1) {
+    if (row.unauthorized === true) return { outcome: "unauthorized" };
+    if (row.gone === true) return { outcome: "gone" };
+    if (row.unavailable === true) return { outcome: "unavailable" };
+    if (row.retryable === true) return { outcome: "retryable" };
+    if (row.recordingActive === true) return { outcome: "recording_active" };
+  }
   if ((row.status === "deleted" || row.status === "already_deleted")
     && typeof row.practiceLeftOwnerless === "boolean"
     && typeof row.clerkIdentityRemoved === "boolean"
-    && Object.keys(row).sort().join(",") === "clerkIdentityRemoved,practiceLeftOwnerless,status") {
+    && keys.sort().join(",") === "clerkIdentityRemoved,practiceLeftOwnerless,status") {
     return {
       outcome: "deleted", status: row.status,
       practiceLeftOwnerless: row.practiceLeftOwnerless, clerkIdentityRemoved: row.clerkIdentityRemoved,
@@ -98,9 +92,8 @@ function completionFor(result: AccountSelfDeleteResult): AccountSelfDeleteComple
   if (result.outcome === "gone") return "gone";
   return null;
 }
-function endsSession(result: AccountSelfDeleteResult): boolean {
-  return result.outcome === "deleted" || result.outcome === "unauthorized" || result.outcome === "gone";
-}
+const endsSession = (result: AccountSelfDeleteResult): boolean =>
+  result.outcome === "deleted" || result.outcome === "unauthorized" || result.outcome === "gone";
 const idle = (): AccountSelfDeleteState => ({
   phase: "confirming", confirmation: "", error: null, retryable: false, completion: null, practiceLeftOwnerless: null,
 });
@@ -132,8 +125,7 @@ export function accountSelfDelete(
     },
     submit: async () => {
       if (running || abort.signal.aborted || state.phase === "complete" || state.phase === "local_clear_failed") return;
-      if (state.confirmation !== CONFIRM) return;
-      if (!["confirming", "failed"].includes(state.phase)) return;
+      if (state.confirmation !== CONFIRM || !["confirming", "failed"].includes(state.phase)) return;
       running = true;
       publish(base("submitting", { confirmation: CONFIRM }));
       try {
@@ -153,12 +145,10 @@ export function accountSelfDelete(
         if (completion === null) throw new Error("account_self_delete_unconfirmed");
         serverEndedSession = true;
         const ownerless = result.outcome === "deleted" ? result.practiceLeftOwnerless : false;
-        // Clinical purge only on deleted — 401/410 clear credentials but keep local clinical data.
-        const shouldPurge = result.outcome === "deleted";
         publish(base("clearing", { completion, practiceLeftOwnerless: ownerless }));
         await host.closeWorkspace().catch(() => undefined);
         let purgeFailed = false;
-        if (shouldPurge) {
+        if (result.outcome === "deleted") {
           try { await host.purgeLocalClinicalData(); } catch { purgeFailed = true; }
         }
         await host.clearLocalCredentials();

@@ -1,7 +1,6 @@
 import Foundation
 import CosmasNativeAuth
 
-/// Offline synthetic checks for the shared T-REL-8a / PR #940 self-delete contract.
 enum AccountSelfDeleteCheckFailure: Error { case failed }
 
 func require(_ value: Bool, file: StaticString = #fileID, line: UInt = #line) throws {
@@ -19,10 +18,10 @@ func body(_ status: String, practiceLeftOwnerless: Bool, clerkIdentityRemoved: B
 }
 
 func expectDeleted(_ payload: [String: Any]?, status: String) throws {
-    try require(payload != nil && payload?["status"] as? String == status)
-    try require(payload?["practiceLeftOwnerless"] as? Bool != nil)
-    try require(payload?["clerkIdentityRemoved"] as? Bool != nil)
-    try require(Set(payload!.keys) == ["status", "practiceLeftOwnerless", "clerkIdentityRemoved"])
+    try require(payload != nil && payload?["status"] as? String == status
+        && payload?["practiceLeftOwnerless"] as? Bool != nil
+        && payload?["clerkIdentityRemoved"] as? Bool != nil
+        && Set(payload!.keys) == ["status", "practiceLeftOwnerless", "clerkIdentityRemoved"])
 }
 func expectFlag(_ payload: [String: Any]?, key: String) throws {
     try require(payload != nil && payload?[key] as? Bool == true && payload!.count == 1)
@@ -31,10 +30,10 @@ func expectFlag(_ payload: [String: Any]?, key: String) throws {
 @main
 struct CheckAccountSelfDelete {
     static func main() throws {
-        try require(AccountSelfDeleteContract.allowsCoreOrigin("https://staging-app.cosmaneura.com"))
-        try require(AccountSelfDeleteContract.allowsCoreOrigin("https://app.cosmaneura.com"))
-        try require(AccountSelfDeleteContract.allowsCoreOrigin("http://127.0.0.1:8787"))
-        try require(AccountSelfDeleteContract.allowsCoreOrigin("http://localhost:8787"))
+        for origin in ["https://staging-app.cosmaneura.com", "https://app.cosmaneura.com",
+                       "http://127.0.0.1:8787", "http://localhost:8787"] {
+            try require(AccountSelfDeleteContract.allowsCoreOrigin(origin))
+        }
         for origin in ["http://127.0.0.1", "http://localhost", "http://evil.example/",
                        "http://127.0.0.1:8787/v1", "http://127.0.0.1:8787?x=1",
                        "https://staging-app.cosmaneura.com.evil", "http://192.168.1.10:8787", "https://example.com"] {
@@ -45,24 +44,20 @@ struct CheckAccountSelfDelete {
             origin: "http://evil.example", bearerToken: "synthetic") == nil)
         let allowed = AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(
             origin: "https://staging-app.cosmaneura.com", bearerToken: "synthetic")
-        try require(allowed?.httpMethod == "DELETE")
-        try require(allowed?.url?.absoluteString == "https://staging-app.cosmaneura.com/v1/me/account")
-        try require(allowed?.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic")
+        try require(allowed?.httpMethod == "DELETE"
+            && allowed?.url?.absoluteString == "https://staging-app.cosmaneura.com/v1/me/account"
+            && allowed?.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic")
         try require(AccountSelfDeleteContract.coreOrigin(
-            forFrontendOrigin: "https://resolved-emu-53.clerk.accounts.dev")
-            == "https://staging-app.cosmaneura.com")
+            forFrontendOrigin: "https://resolved-emu-53.clerk.accounts.dev") == "https://staging-app.cosmaneura.com")
         try require(AccountSelfDeleteContract.coreOrigin(
             forFrontendOrigin: "https://clerk.cosmaneura.com") == "https://app.cosmaneura.com")
         try require(AccountSelfDeleteContract.coreOrigin(forFrontendOrigin: "https://other.clerk.dev") == nil)
-        try expectDeleted(
-            AccountSelfDeleteContract.resolve(
-                origin: "https://staging-app.cosmaneura.com", statusCode: 200,
-                body: try body("deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true)),
-            status: "deleted")
-        try expectDeleted(
-            AccountSelfDeleteContract.resolve(
-                origin: "https://app.cosmaneura.com", statusCode: 200,
-                body: try body("already_deleted", practiceLeftOwnerless: true, clerkIdentityRemoved: true)),
+        try expectDeleted(AccountSelfDeleteContract.resolve(
+            origin: "https://staging-app.cosmaneura.com", statusCode: 200,
+            body: try body("deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true)), status: "deleted")
+        try expectDeleted(AccountSelfDeleteContract.resolve(
+            origin: "https://app.cosmaneura.com", statusCode: 200,
+            body: try body("already_deleted", practiceLeftOwnerless: true, clerkIdentityRemoved: true)),
             status: "already_deleted")
         for (code, key) in [(401, "unauthorized"), (410, "gone"), (404, "unavailable"), (503, "retryable")] {
             try expectFlag(AccountSelfDeleteContract.resolve(

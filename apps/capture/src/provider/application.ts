@@ -57,7 +57,6 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   let scope: Scope | undefined, listener: PluginListenerHandle | undefined;
   let recordingListener: PluginListenerHandle | undefined, recordingOpenPending = false;
   let disposed = false, busy = false, stopUnconfirmed = false, accessClosed = false, logoutPending = false;
-  /** True while Cosmas DELETE is in flight — survive mid-flight signedOut. */
   let accountDeleteInFlight = false;
   let operations = 0, signingOut = false;
   let closeDeletionDialog: (() => void) | undefined;
@@ -110,19 +109,14 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
       if (state === null) title.textContent = "Session unavailable";
       message.textContent = notice;
     } else if (accountNotice && phase === "signedOut") {
-      if (accountNotice === "deleted") {
-        title.textContent = "Account deleted";
-        message.textContent = "Your Cosmaneura account has been deleted. You are signed out.";
-      } else if (accountNotice === "session_expired") {
-        title.textContent = "Session expired";
-        message.textContent = "Your session has expired. You are signed out.";
-      } else {
-        title.textContent = "Access ended";
-        message.textContent = "This account no longer has access. You are signed out.";
-      }
+      title.textContent = accountNotice === "deleted" ? "Account deleted"
+        : accountNotice === "session_expired" ? "Session expired" : "Access ended";
+      message.textContent = accountNotice === "deleted"
+        ? "Your Cosmaneura account has been deleted. You are signed out."
+        : accountNotice === "session_expired"
+          ? "Your session has expired. You are signed out."
+          : "This account no longer has access. You are signed out.";
     }
-    // Keep Cancel Scribe access / Cancellation status exactly as today, next to
-    // Delete account when self-delete is wired.
     actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><div class="provider-account-panel" role="group" aria-label="Account options">${button("sign-out", "Sign out")}${host.accountSelfDelete ? button("delete-account", "Delete account") : ""}<p data-provider-name></p>${host.cancellation ? button("cancel-scribe", cancellationReceipt ? "Cancellation status" : "Cancel Scribe access") : ""}<a href="mailto:dev@cosmaneura.com">Get help</a></div></details>`
       : phase === "signingIn" ? button("sign-out", "Sign out") : "";
     const providerName = actions.querySelector<HTMLElement>("[data-provider-name]"); if (providerName) providerName.textContent = state?.providerDisplayName ?? "Your account";
@@ -200,7 +194,6 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     const valid = value && ["disabled", "loading", "signedOut", "signingIn", "ready", "signOutPending", "unavailable"].includes(value.phase)
       && isUuid(value.revision);
     if (!valid) {
-      // Keep the post-delete done dialog while local sign-out / in-flight DELETE finishes.
       if (!logoutPending && !accountDeleteInFlight) { closeDeletionDialog?.(); closeDeletionDialog = undefined; }
       setupAbort?.abort(); setup = undefined; practiceHandoffRevision = null;
       state = null; accessClosed = true; notice = "Your secure session could not be verified.";
@@ -238,7 +231,6 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         if (!disposed && before === observations) accept(value);
       } catch {
         if (!disposed && before === observations) {
-          // Keep the in-flight delete dialog; adapters still return the Cosmas result.
           if (!accountDeleteInFlight) { closeDeletionDialog?.(); closeDeletionDialog = undefined; }
           setupAbort?.abort(); setup = undefined; practiceHandoffRevision = null;
           state = null;
@@ -415,30 +407,20 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     const action = target.closest<HTMLButtonElement>("button[data-session-action]")?.dataset.sessionAction;
     if (action === "delete-account") {
       if (disposed || busy || stopUnconfirmed || logoutPending || state?.phase !== "ready" || !host.accountSelfDelete) return;
-      // Refuse live capture only. Pending uploads do not block (John "Delete anyway").
-      if (workflow.dataset.providerRecordingActive === "true"
-        && workflow.dataset.providerUploadPending !== "true") {
-        const menu = actions.querySelector<HTMLDetailsElement>(".provider-account-menu");
-        if (menu) menu.open = false;
-        notice = ACCOUNT_SELF_DELETE_MESSAGES.recordingActive;
-        render();
-        return;
-      }
-      const revision = state.revision;
-      const client = host.accountSelfDelete;
+      const live = workflow.dataset.providerRecordingActive === "true"
+        && workflow.dataset.providerUploadPending !== "true";
       const menu = actions.querySelector<HTMLDetailsElement>(".provider-account-menu");
       if (menu) menu.open = false;
-      notice = "";
-      closeDeletionDialog?.();
+      if (live) { notice = ACCOUNT_SELF_DELETE_MESSAGES.recordingActive; render(); return; }
+      const revision = state.revision, client = host.accountSelfDelete;
+      notice = ""; closeDeletionDialog?.();
       let pendingNotice: "deleted" | "session_expired" | "gone" = "deleted";
+      const recordingActive = (): boolean => workflow.dataset.providerRecordingActive === "true"
+        && workflow.dataset.providerUploadPending !== "true";
       closeDeletionDialog = mountAccountSelfDeleteDialog(document.body, {
         client: {
           deleteAccount: async (request, signal) => {
-            // Re-check at submit: live capture only — pending uploads purge with delete.
-            if (workflow.dataset.providerRecordingActive === "true"
-              && workflow.dataset.providerUploadPending !== "true") {
-              return { outcome: "recording_active" as const };
-            }
+            if (recordingActive()) return { outcome: "recording_active" as const };
             accountDeleteInFlight = true;
             try {
               const result = await client.deleteAccount(request, signal);
@@ -447,40 +429,29 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
               else if (result.outcome === "gone") pendingNotice = "gone";
               else accountDeleteInFlight = false;
               return result;
-            } catch (error) {
-              accountDeleteInFlight = false;
-              throw error;
-            }
+            } catch (error) { accountDeleteInFlight = false; throw error; }
           },
         },
         sameAccountSession: () =>
           accountDeleteInFlight || (state?.phase === "ready" && state.revision === revision),
         closeWorkspace: close,
         purgeLocalClinicalData: async () => {
-          await host.purgeLocalClinicalData?.();
-          await deleteProviderFlowDatabases();
+          await host.purgeLocalClinicalData?.(); await deleteProviderFlowDatabases();
         },
         clearLocalCredentials: async () => {
           clearCachedProviderPreferences();
-          logoutPending = true;
-          accessClosed = true;
-          invalidate();
-          // Always attempt sign-out even when workspace close fails.
+          logoutPending = true; accessClosed = true; invalidate();
           await close().catch(() => undefined);
           const before = observations;
           try {
             const signedOut = await host.session.signOut();
             if (before === observations) accept(signedOut);
           } catch {
-            accountDeleteInFlight = false;
-            render();
+            accountDeleteInFlight = false; render();
             throw new Error("account_self_delete_local_clear_failed");
           }
-          accountNotice = pendingNotice;
-          accountDeleteInFlight = false;
-          logoutPending = false;
-          await read();
-          render();
+          accountNotice = pendingNotice; accountDeleteInFlight = false; logoutPending = false;
+          await read(); render();
         },
       });
       return;

@@ -18,8 +18,7 @@ describe("purgeLocalClinicalData", () => {
     });
     await purgeLocalClinicalData(stores);
     for (const name of CLINICAL_STORE_NAMES) {
-      expect(bags[name]).toEqual([]);
-      expect(await stores[name].isEmpty()).toBe(true);
+      expect(bags[name]).toEqual([]); expect(await stores[name].isEmpty()).toBe(true);
     }
     const empty = { clear: async () => undefined, isEmpty: async () => true };
     await expect(purgeLocalClinicalData({
@@ -27,9 +26,7 @@ describe("purgeLocalClinicalData", () => {
       drafts: empty, review: empty, queuedAudio: empty, recordings: empty,
     })).rejects.toThrow(/clinical_store_not_empty:journal/);
   });
-});
 
-describe("deleteProviderFlowDatabases", () => {
   it("deletes only scribe-provider-flow IndexedDB databases", async () => {
     const deleted: string[] = [];
     await deleteProviderFlowDatabases({

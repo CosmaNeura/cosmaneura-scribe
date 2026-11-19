@@ -9,13 +9,13 @@ export async function nativeAccountSelfDeleteAdapter(
   if (signal?.aborted) throw new Error("account_self_delete_aborted");
   return interpretAccountSelfDeleteBridge(await nativeDelete({ confirm: "DELETE" }));
 }
+
 export async function desktopAccountSelfDeleteAdapter(
   portRequest: (request: DesktopProviderRequest) => Promise<unknown>,
   body: { confirm: "DELETE" },
   options: { closed: () => boolean; signal?: AbortSignal; onClinicalPurgeFailed?: () => void },
 ): Promise<AccountSelfDeleteResult> {
-  if (body.confirm !== "DELETE") throw unavailable();
-  if (options.closed() || options.signal?.aborted) throw unavailable();
+  if (body.confirm !== "DELETE" || options.closed() || options.signal?.aborted) throw unavailable();
   const requestId = crypto.randomUUID();
   const reply = exact(await portRequest({
     method: "delete_account", requestId, payload: { confirm: "DELETE" },

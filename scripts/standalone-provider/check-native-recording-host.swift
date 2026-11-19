@@ -1172,22 +1172,21 @@ import Security
         await AccountSelfDeleteContract.attempt(
           holdsOrOpeningRecording: bridge.holdsOrOpeningRecording,
           origin: "https://staging-app.cosmaneura.com", mintToken: { "synthetic" },
-          send: { request in
+          send: { req in
             sends += 1
-            return (deleted, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            return (deleted, HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
           })
       }
       try check((await run())?["status"] as? String == "deleted" && sends == 1); sends = 0
       let rev = UUID().uuidString.lowercased()
-      let opened = try await bridge.open(
-        try NativeProviderRecordingSelection([
-          "requestId": UUID().uuidString.lowercased(), "revision": rev,
-          "workspaceId": f.scope.workspaceID.uuidString.lowercased(),
-          "sessionId": f.scope.sessionID.uuidString.lowercased(),
-          "bindingRef": "scribe_capture_binding_01j00000000000000000000000",
-        ]), current: {}, make: {
-          try check((await run())?["recordingActive"] as? Bool == true && sends == 0); return f.host()
-        }, inputMuted: { false })
+      let opened = try await bridge.open(try NativeProviderRecordingSelection([
+        "requestId": UUID().uuidString.lowercased(), "revision": rev,
+        "workspaceId": f.scope.workspaceID.uuidString.lowercased(),
+        "sessionId": f.scope.sessionID.uuidString.lowercased(),
+        "bindingRef": "scribe_capture_binding_01j00000000000000000000000",
+      ]), current: {}, make: {
+        try check((await run())?["recordingActive"] as? Bool == true && sends == 0); return f.host()
+      }, inputMuted: { false })
       try check((await run())?["recordingActive"] as? Bool == true && sends == 0)
       let id = (opened["recording"] as! [String: Any])["recorderId"] as! String
       _ = try await bridge.command(try NativeProviderRecordingCommand([
