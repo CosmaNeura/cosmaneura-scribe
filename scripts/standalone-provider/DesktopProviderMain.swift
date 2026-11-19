@@ -140,14 +140,11 @@ import ScribeStorePipe
             if method == "signOut" { return self.state(try await auth.signOut()) }
             return self.state(auth.state())
         case "deleteAccount":
-            // Cosmas T-REL-8a (PR #940): DELETE /v1/me/account for the signed-in
-            // caller only. Token stays in this native process; shared origin fence.
+            // Cosmas T-REL-8a: DELETE /v1/me/account; token stays native; origin fence first.
             guard Set(payload.keys) == ["confirm"], payload["confirm"] as? String == "DELETE"
             else { throw ProviderNativeError.invalidRequest }
             guard auth.state().phase == .ready else { throw ProviderNativeError.unavailable }
             let revision = auth.state().revision
-            // Origin fence before minting a Clerk token — no Bearer DELETE to a
-            // non-allow-listed host.
             guard let origin = Self.coreOriginForSelfDelete(),
                   AccountSelfDeleteContract.accountDeleteURL(origin: origin) != nil
             else { throw ProviderNativeError.unavailable }
@@ -300,8 +297,7 @@ import ScribeStorePipe
         return id
     }
 
-    /// Fixed Clerk → Cosmas origin map. Desktop auth Info.plist has no selectable
-    /// coreOrigin; never invent hosts from argv, env, or renderer input.
+    /// Fixed Clerk → Cosmas origin map from Info.plist; never invent hosts.
     private static func coreOriginForSelfDelete() -> String? {
         guard let auth = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any],
               let frontend = auth["frontendOrigin"] as? String

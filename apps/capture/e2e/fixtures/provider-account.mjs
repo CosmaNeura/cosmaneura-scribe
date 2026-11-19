@@ -8,7 +8,7 @@ let state = { phase: "ready", revision: crypto.randomUUID(), providerDisplayName
 let listener, releaseSignOut, releaseDelete;
 const stats = {
   signOutCalls: 0, signInCalls: 0, connections: 0, disposals: 0, aborts: 0, sourceCalls: 0,
-  deleteAccountCalls: 0, clearLocalCalls: 0,
+  deleteAccountCalls: 0,
 };
 const forbidden = () => { stats.sourceCalls += 1; throw new Error("No recording or provider requests in account fixture"); };
 const session = {
@@ -39,12 +39,7 @@ const accountSelfDelete = {
     if (options.has("delete-gone")) return { outcome: "gone" };
     if (options.has("delete-unavailable")) return { outcome: "unavailable" };
     if (options.has("delete-retryable")) return { outcome: "retryable" };
-    return {
-      outcome: "deleted",
-      status: "deleted",
-      practiceLeftOwnerless: false,
-      clerkIdentityRemoved: true,
-    };
+    return { outcome: "deleted", status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true };
   },
 };
 const cancellation = {

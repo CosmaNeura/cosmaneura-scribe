@@ -46,6 +46,7 @@ interface Encounter {
   readonly value: AuthorizedProviderEncounter<DesktopProviderRecorder>;
   patientMatchJournal?: Promise<PatientMatchJournal>;
   recorder?: { dispose(): Promise<void> };
+  liveRecorder?: DesktopProviderRecorder;
   recordReadyDiagnostic?: (durationMs: number) => void;
   recorderOpening?: boolean;
   preparationAttempt?: { readonly key: string; readonly began: number };
@@ -141,10 +142,11 @@ export class DesktopProviderWorkspaceMain {
         || typeof this.host.session.deleteAccount !== "function") throw unavailable();
       exact(payload, ["confirm"]); if (payload.confirm !== "DELETE") throw unavailable();
       const state = await this.readSession(); if (state?.phase !== "ready" || signal.aborted) throw unavailable();
-      // Refuse only while a recorder is opening or actively capturing. Pending
+      // Refuse while a recorder is opening or actively capturing. Pending
       // uploads do not block delete (John, 12:15pm ET Nov 19 2026: "Delete anyway").
       const encounter = this.connection?.encounter;
       if (encounter?.recorderOpening) throw unavailable();
+      if (encounter?.liveRecorder?.snapshot.state === "recording") throw unavailable();
       if (signal.aborted) throw unavailable();
       // Once DELETE is sent, always return the bridge result — even if the
       // renderer aborted mid-flight (signedOut / dialog teardown).
@@ -163,13 +165,15 @@ export class DesktopProviderWorkspaceMain {
         && typeof value.practiceLeftOwnerless === "boolean"
         && typeof value.clerkIdentityRemoved === "boolean") {
         await this.closeConnection();
-        // Purge only on deleted. A purge error must not hide Cosmas success —
-        // failure is observed via the purge call itself (not the locked keys).
-        try { await this.host.purgeLocalClinicalData?.(); } catch { /* signalled separately */ }
+        // Purge only on deleted; clinicalPurgeFailed → local_clear_failed after interpret.
+        let clinicalPurgeFailed = false;
+        try { await this.host.purgeLocalClinicalData?.(); }
+        catch { clinicalPurgeFailed = true; }
         return {
           status: value.status,
           practiceLeftOwnerless: value.practiceLeftOwnerless,
           clerkIdentityRemoved: value.clerkIdentityRemoved,
+          ...(clinicalPurgeFailed ? { clinicalPurgeFailed: true } : {}),
         };
       }
       throw unavailable();
@@ -400,6 +404,7 @@ export class DesktopProviderWorkspaceMain {
             const recorder = await encounter.value.recorder(uuid(payload.sessionId), AbortSignal.any([signal, encounter.abort.signal, connection.abort.signal]));
             // Retain cleanup ownership even if IPC attachment fails or native
             // stop remains unconfirmed. Close waits for this handoff to settle.
+            encounter.liveRecorder = recorder;
             encounter.recorder = { dispose: () => recorder.deactivate() };
             encounter.recorder = this.attachRecorder(recorder);
             let timingReported = false;

@@ -8,8 +8,8 @@ import { subscribeIOSRecordingOpen } from "./recording-open";
 import type { ConsentPreparationRelease } from "./consent-preparation";
 import { nativeScribeCancellation } from "./native-cancellation";
 import { activateNativeScribe } from "./native-activation";
-import { interpretAccountSelfDeleteBridge, type AccountSelfDeleteResult } from "./account-self-delete";
 import { clinicalStoresFromKeys, purgeLocalClinicalData } from "./purge-local-clinical";
+import { nativeAccountSelfDeleteAdapter } from "./account-self-delete-host";
 
 /** Standalone iOS startup after the host's upload/Core configuration is supplied.
  * Reuses the registered native sign-in/out UI and existing complete provider
@@ -29,10 +29,7 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
       await purgeLocalClinicalData(clinicalStoresFromKeys({
         list: async () => (await SecureQueue.list()).keys,
         delete: async key => { await SecureQueue.delete({ key }); },
-        // CTO option (a): on iOS, a successful account delete clears this
-        // device's Scribe queue for all accounts until SecureQueue is keyed
-        // per account. Desktop stays per-account through wipeAccount. Tracked
-        // by a separate per-account SecureQueue ticket.
+        // CTO option (a): iOS clearAll is device-wide until SecureQueue is per-account.
         clearAll: async () => { await SecureQueue.clearAll(); },
       }));
     },
@@ -55,14 +52,7 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
     recordingOpen: listener => subscribeIOSRecordingOpen(native, listener),
     ...(typeof native.deleteAccount === "function" ? {
       accountSelfDelete: {
-        deleteAccount: async (request: { confirm: "DELETE" }, signal?: AbortSignal): Promise<AccountSelfDeleteResult> => {
-          if (request.confirm !== "DELETE") throw new Error("account_self_delete_unconfirmed");
-          if (signal?.aborted) throw new Error("account_self_delete_aborted");
-          // Once Cosmas DELETE is sent, always return the result — even if the
-          // dialog aborted afterwards (signedOut during in-flight DELETE).
-          const value = await native.deleteAccount!({ confirm: "DELETE" });
-          return interpretAccountSelfDeleteBridge(value);
-        },
+        deleteAccount: (request, signal) => nativeAccountSelfDeleteAdapter(native.deleteAccount!, request, signal),
       },
     } : {}),
     connect: async signal => {

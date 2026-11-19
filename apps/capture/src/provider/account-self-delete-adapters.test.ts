@@ -1,46 +1,52 @@
 import { describe, expect, it, vi } from "vitest";
-import { interpretAccountSelfDeleteBridge } from "./account-self-delete";
+import { desktopAccountSelfDeleteAdapter, nativeAccountSelfDeleteAdapter } from "./account-self-delete-host";
+import type { DesktopProviderRequest } from "./desktop-host-protocol";
 
-/** Teardown through the real adapter shapes (native + desktop bridge interpret). */
-describe("account self-delete adapters after abort", () => {
-  it("native-shaped adapter returns Cosmas result even if aborted after DELETE", async () => {
+describe("account self-delete real adapters", () => {
+  it("native adapter returns Cosmas result even if aborted after DELETE", async () => {
     let release!: (value: Record<string, unknown>) => void;
     const nativeDelete = vi.fn(() => new Promise<Record<string, unknown>>(resolve => { release = resolve; }));
-    const adapter = async (request: { confirm: "DELETE" }, signal?: AbortSignal) => {
-      if (request.confirm !== "DELETE") throw new Error("account_self_delete_unconfirmed");
-      if (signal?.aborted) throw new Error("account_self_delete_aborted");
-      const value = await nativeDelete();
-      return interpretAccountSelfDeleteBridge(value);
-    };
     const abort = new AbortController();
-    const pending = adapter({ confirm: "DELETE" }, abort.signal);
-    await Promise.resolve();
-    abort.abort();
+    const pending = nativeAccountSelfDeleteAdapter(nativeDelete, { confirm: "DELETE" }, abort.signal);
+    await Promise.resolve(); abort.abort();
     release({ status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true });
     expect(await pending).toEqual({
       outcome: "deleted", status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true,
     });
   });
 
-  it("desktop-shaped adapter returns Cosmas result when cancel arrives after DELETE", async () => {
+  it("native refuses pre-flight abort and missing clerkIdentityRemoved; desktop strips clinicalPurgeFailed", async () => {
+    const abort = new AbortController(); abort.abort();
+    await expect(nativeAccountSelfDeleteAdapter(vi.fn(), { confirm: "DELETE" }, abort.signal))
+      .rejects.toThrow(/account_self_delete_aborted/);
+    await expect(nativeAccountSelfDeleteAdapter(
+      vi.fn(async () => ({ status: "deleted", practiceLeftOwnerless: false })), { confirm: "DELETE" },
+    )).rejects.toThrow(/account_self_delete_bridge/);
+
     let release!: (value: { requestId: string; ok: true; result: Record<string, unknown> }) => void;
     let capturedId = "";
-    const portRequest = vi.fn(() => {
-      capturedId = crypto.randomUUID();
-      return new Promise<{ requestId: string; ok: true; result: Record<string, unknown> }>(resolve => { release = resolve; });
+    const portRequest = vi.fn(async (request: DesktopProviderRequest) => {
+      capturedId = request.requestId;
+      return new Promise(resolve => { release = resolve; });
     });
-    const adapter = async (confirm: "DELETE") => {
-      if (confirm !== "DELETE") throw new Error("unavailable");
-      const reply = await portRequest();
-      if (reply.requestId !== capturedId || reply.ok !== true) throw new Error("unavailable");
-      return interpretAccountSelfDeleteBridge(reply.result);
-    };
-    const pending = adapter("DELETE");
+    const pending = desktopAccountSelfDeleteAdapter(portRequest, { confirm: "DELETE" }, { closed: () => false });
     await Promise.resolve();
     release({
       requestId: capturedId, ok: true,
       result: { status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true },
     });
     expect(await pending).toMatchObject({ outcome: "deleted", status: "deleted" });
+    const onClinicalPurgeFailed = vi.fn();
+    expect(await desktopAccountSelfDeleteAdapter(
+      async request => ({
+        requestId: request.requestId, ok: true as const,
+        result: {
+          status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true,
+          clinicalPurgeFailed: true,
+        },
+      }),
+      { confirm: "DELETE" }, { closed: () => false, onClinicalPurgeFailed },
+    )).toMatchObject({ outcome: "deleted" });
+    expect(onClinicalPurgeFailed).toHaveBeenCalledOnce();
   });
 });

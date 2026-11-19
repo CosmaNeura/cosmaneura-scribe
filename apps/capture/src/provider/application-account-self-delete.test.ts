@@ -36,9 +36,7 @@ afterEach(async () => {
 
 async function fixture() {
   vi.stubGlobal("Element", Surface);
-  vi.stubGlobal("document", Object.assign(new EventTarget(), {
-    visibilityState: "visible", body: new Surface(),
-  }));
+  vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "visible", body: new Surface() }));
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   let state: ProviderSessionState = { phase: "ready", revision: crypto.randomUUID() };
   let observe!: (value: ProviderSessionState) => void;
@@ -70,69 +68,59 @@ async function fixture() {
   await settle();
   return {
     root, click, deleteAccount, settle,
-    emitSignedOut: () => {
-      state = { phase: "signedOut", revision: crypto.randomUUID() };
-      observe(state);
-    },
+    emitSignedOut: () => { state = { phase: "signedOut", revision: crypto.randomUUID() }; observe(state); },
   };
 }
 
 describe("account self-delete recording guard", () => {
-  it("refuses Delete account while recording is active", async () => {
-    const f = await fixture();
-    f.root.querySelector("[data-provider-workflow]")!.dataset.providerRecordingActive = "true";
-    await f.click("delete-account");
+  it("refuses while recording; allows pending upload (Delete anyway); opens when idle", async () => {
+    const blocked = await fixture();
+    blocked.root.querySelector("[data-provider-workflow]")!.dataset.providerRecordingActive = "true";
+    await blocked.click("delete-account");
     expect(mountAccountSelfDeleteDialog).not.toHaveBeenCalled();
-    expect(f.root.querySelector("[data-session-message]")?.textContent)
+    expect(blocked.root.querySelector("[data-session-message]")?.textContent)
       .toBe(ACCOUNT_SELF_DELETE_MESSAGES.recordingActive);
-  });
-
-  it("allows Delete account while a pending upload is held (John Delete anyway)", async () => {
-    const f = await fixture();
-    const workflow = f.root.querySelector("[data-provider-workflow]")!;
+    const pending = await fixture();
+    const workflow = pending.root.querySelector("[data-provider-workflow]")!;
     workflow.dataset.providerRecordingActive = "true";
     workflow.dataset.providerUploadPending = "true";
-    await f.click("delete-account");
+    await pending.click("delete-account");
+    expect(mountAccountSelfDeleteDialog).toHaveBeenCalledOnce();
+
+    vi.mocked(mountAccountSelfDeleteDialog).mockClear();
+    const idle = await fixture();
+    await idle.click("delete-account");
     expect(mountAccountSelfDeleteDialog).toHaveBeenCalledOnce();
   });
 
-  it("opens the delete dialog when no recording is active", async () => {
-    const f = await fixture();
-    await f.click("delete-account");
-    expect(mountAccountSelfDeleteDialog).toHaveBeenCalledOnce();
-  });
-
-  it("re-checks providerRecordingActive at submit and skips Cosmas", async () => {
+  it("re-checks recording at submit; keeps dialog across mid-flight signedOut", async () => {
     const f = await fixture();
     await f.click("delete-account");
     const dialog = vi.mocked(mountAccountSelfDeleteDialog).mock.calls.at(-1)?.[1] as AccountSelfDeleteHost;
     f.root.querySelector("[data-provider-workflow]")!.dataset.providerRecordingActive = "true";
     expect(await dialog.client.deleteAccount({ confirm: "DELETE" })).toEqual({ outcome: "recording_active" });
     expect(f.deleteAccount).not.toHaveBeenCalled();
-  });
 
-  it("keeps dialog across signedOut during in-flight DELETE and still clears", async () => {
     let release!: (value: {
       outcome: "deleted"; status: "deleted"; practiceLeftOwnerless: false; clerkIdentityRemoved: true;
     }) => void;
     const disposeDialog = vi.fn();
     vi.mocked(mountAccountSelfDeleteDialog).mockImplementationOnce(() => disposeDialog);
-    const f = await fixture();
-    f.deleteAccount.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
-    await f.click("delete-account");
-    const dialog = vi.mocked(mountAccountSelfDeleteDialog).mock.calls.at(-1)?.[1] as AccountSelfDeleteHost;
-    const pending = dialog.client.deleteAccount({ confirm: "DELETE" });
-    await f.settle();
-    f.emitSignedOut();
-    await f.settle();
+    const live = await fixture();
+    live.deleteAccount.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    await live.click("delete-account");
+    const liveDialog = vi.mocked(mountAccountSelfDeleteDialog).mock.calls.at(-1)?.[1] as AccountSelfDeleteHost;
+    const pending = liveDialog.client.deleteAccount({ confirm: "DELETE" });
+    await live.settle();
+    live.emitSignedOut();
+    await live.settle();
     expect(disposeDialog).not.toHaveBeenCalled();
     release({
       outcome: "deleted", status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true,
     });
     await pending;
-    await dialog.purgeLocalClinicalData();
-    await dialog.clearLocalCredentials();
-    expect(f.root.querySelector("[data-session-title]")?.textContent).toBe("Account deleted");
+    await liveDialog.purgeLocalClinicalData();
+    await liveDialog.clearLocalCredentials();
+    expect(live.root.querySelector("[data-session-title]")?.textContent).toBe("Account deleted");
   });
-
 });

@@ -1167,18 +1167,14 @@ import Security
       // Real AccountSelfDeleteContract.attempt: refuse while held/opening; send when idle.
       let f = try Fixture(), bridge = NativeProviderRecordingBridge()
       var sends = 0
-      let deleted = Data(
-        #"{"status":"deleted","practice_left_ownerless":false,"clerk_identity_removed":true}"#.utf8)
+      let deleted = Data(#"{"status":"deleted","practice_left_ownerless":false,"clerk_identity_removed":true}"#.utf8)
       let run: () async -> [String: Any]? = {
         await AccountSelfDeleteContract.attempt(
           holdsOrOpeningRecording: bridge.holdsOrOpeningRecording,
-          origin: "https://staging-app.cosmaneura.com",
-          mintToken: { "synthetic" },
+          origin: "https://staging-app.cosmaneura.com", mintToken: { "synthetic" },
           send: { request in
             sends += 1
-            let response = HTTPURLResponse(
-              url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
-            return (deleted, response)
+            return (deleted, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
           })
       }
       try check((await run())?["status"] as? String == "deleted" && sends == 1); sends = 0
@@ -1190,16 +1186,13 @@ import Security
           "sessionId": f.scope.sessionID.uuidString.lowercased(),
           "bindingRef": "scribe_capture_binding_01j00000000000000000000000",
         ]), current: {}, make: {
-          try check((await run())?["recordingActive"] as? Bool == true && sends == 0)
-          return f.host()
+          try check((await run())?["recordingActive"] as? Bool == true && sends == 0); return f.host()
         }, inputMuted: { false })
       try check((await run())?["recordingActive"] as? Bool == true && sends == 0)
       let id = (opened["recording"] as! [String: Any])["recorderId"] as! String
-      _ = try await bridge.command(
-        try NativeProviderRecordingCommand([
-          "requestId": UUID().uuidString.lowercased(), "revision": rev,
-          "recorderId": id, "kind": "close",
-        ]), current: {}, inputMuted: { false })
+      _ = try await bridge.command(try NativeProviderRecordingCommand([
+        "requestId": UUID().uuidString.lowercased(), "revision": rev, "recorderId": id, "kind": "close",
+      ]), current: {}, inputMuted: { false })
       try check((await run())?["status"] as? String == "deleted" && sends == 1); checks += 1
     }
     return checks

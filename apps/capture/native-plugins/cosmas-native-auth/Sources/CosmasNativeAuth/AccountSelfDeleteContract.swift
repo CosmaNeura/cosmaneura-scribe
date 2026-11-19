@@ -1,7 +1,6 @@
 import Foundation
 
-/// Shared Cosmas T-REL-8a / PR #940 self-delete contract for iPhone and Mac.
-/// Pure parsing and origin fencing — no network, tokens, or UI.
+/// Shared Cosmas T-REL-8a / PR #940 self-delete contract (iPhone + Mac).
 public enum AccountSelfDeleteContract {
     public enum Outcome: Equatable, Sendable {
         case deleted(status: String, practiceLeftOwnerless: Bool, clerkIdentityRemoved: Bool)
@@ -9,13 +8,11 @@ public enum AccountSelfDeleteContract {
         case gone
         case unavailable
         case retryable
-        /// Client-side refuse while a native recording entry is held or opening.
         case recordingActive
         case rejected
     }
 
-    /// HTTPS Cosmas hosts plus exact localhost HTTP for sealed local dev only.
-    /// Never allow arbitrary plain-http hosts to carry a Bearer token.
+    /// HTTPS Cosmas + exact localhost HTTP; never arbitrary plain-http Bearer.
     public static func allowsCoreOrigin(_ origin: String) -> Bool {
         if origin == "https://staging-app.cosmaneura.com" || origin == "https://app.cosmaneura.com" {
             return true
@@ -23,15 +20,13 @@ public enum AccountSelfDeleteContract {
         return isExactLocalhostHTTP(origin)
     }
 
-    /// DELETE URL only after the origin allow-list passes. Callers must invoke
-    /// this before minting a Clerk token so a disallowed origin never receives Bearer.
+    /// DELETE URL after origin allow-list; call before minting a Clerk token.
     public static func accountDeleteURL(origin: String) -> URL? {
         guard allowsCoreOrigin(origin) else { return nil }
         return URL(string: origin + "/v1/me/account")
     }
 
-    /// Builds the authenticated DELETE request, or nil when the origin is refused.
-    /// A nil result means no URLRequest exists — so no Bearer DELETE can be sent.
+    /// Authenticated DELETE request, or nil when the origin is refused.
     public static func makeAuthorizedAccountDeleteRequest(origin: String, bearerToken: String) -> URLRequest? {
         guard let url = accountDeleteURL(origin: origin) else { return nil }
         var request = URLRequest(url: url)
@@ -43,7 +38,7 @@ public enum AccountSelfDeleteContract {
         return request
     }
 
-    /// Map sealed Clerk frontendOrigin → Cosmas coreOrigin (Mac Info.plist path).
+    /// Map sealed Clerk frontendOrigin → Cosmas coreOrigin.
     public static func coreOrigin(forFrontendOrigin frontend: String) -> String? {
         switch frontend {
         case "https://resolved-emu-53.clerk.accounts.dev":
@@ -94,16 +89,13 @@ public enum AccountSelfDeleteContract {
         }
     }
 
-    /// Shared iPhone + Mac deleteAccount decision: origin fence then HTTP interpret.
-    /// Returns nil when the origin is forbidden or the response is rejected.
+    /// Origin fence then HTTP interpret; nil when forbidden/rejected.
     public static func resolve(origin: String, statusCode: Int, body: Data?) -> [String: Any]? {
         guard allowsCoreOrigin(origin) else { return nil }
         return bridgePayload(for: interpret(statusCode: statusCode, body: body))
     }
 
-    /// Production deleteAccount core (iOS handler + offline proofs).
-    /// Recording refuse runs before mintToken/send — inject fakes in tests.
-    /// MainActor: matches CosmasWorkspaceAuthPlugin.deleteAccount and host proofs.
+    /// Production deleteAccount core. Recording refuse before mintToken/send.
     @MainActor
     public static func attempt(
         holdsOrOpeningRecording: Bool, origin: String?,

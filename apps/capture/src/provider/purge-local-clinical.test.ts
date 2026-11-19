@@ -5,7 +5,7 @@ import {
 } from "./purge-local-clinical";
 
 describe("purgeLocalClinicalData", () => {
-  it("empties journal, drafts, review, queued audio, and recordings", async () => {
+  it("empties clinical stores; throws when a store remains non-empty", async () => {
     const bags = Object.fromEntries(CLINICAL_STORE_NAMES.map(name => [name, [
       `${CLINICAL_KEY_PREFIXES[name][0]}synthetic`,
     ]])) as Record<ClinicalStoreName, string[]>;
@@ -21,16 +21,12 @@ describe("purgeLocalClinicalData", () => {
       expect(bags[name]).toEqual([]);
       expect(await stores[name].isEmpty()).toBe(true);
     }
-  });
-
-  it("throws when a store remains non-empty after clear", async () => {
     const empty = { clear: async () => undefined, isEmpty: async () => true };
     await expect(purgeLocalClinicalData({
       journal: { clear: async () => undefined, isEmpty: async () => false },
       drafts: empty, review: empty, queuedAudio: empty, recordings: empty,
     })).rejects.toThrow(/clinical_store_not_empty:journal/);
   });
-
 });
 
 describe("deleteProviderFlowDatabases", () => {

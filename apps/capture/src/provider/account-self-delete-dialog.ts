@@ -25,8 +25,7 @@ export function mountAccountSelfDeleteDialog(parent: HTMLElement, host: AccountS
       <button data-submit type="button" disabled>Delete account</button>
       <button data-done type="button" hidden>Done</button>
       <button data-retry type="button" hidden>Try again</button>
-    </div>
-  </section>`;
+    </div></section>`;
   const input = dialog.querySelector<HTMLInputElement>("[data-confirmation]")!;
   const label = dialog.querySelector<HTMLElement>("[data-confirmation-label]")!;
   const cancel = dialog.querySelector<HTMLButtonElement>("[data-cancel]")!;

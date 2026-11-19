@@ -560,9 +560,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         }
     }
 
-    /// Cosmas self-delete (T-REL-8a / PR #940):
-    /// DELETE <coreOrigin>/v1/me/account with Bearer Clerk JWT and {"confirm":"DELETE"}.
-    /// Token never leaves native code. Origin allow-list matches Mac.
+    /// Cosmas self-delete (T-REL-8a): DELETE /v1/me/account; token stays native.
     @objc nonisolated public func deleteAccount(_ call: CAPPluginCall) {
         Task { @MainActor in
             guard Set(call.options.keys) == ["confirm"],
@@ -571,7 +569,6 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             guard let auth = self.auth, auth.state().phase == .ready else { return Self.reject(call) }
             let revision = auth.state().revision
             let origin = Self.providerApplicationConfiguration()?["coreOrigin"] as? String
-            // Shared production path: recording refuse before mintToken/send.
             guard let payload = await AccountSelfDeleteContract.attempt(
                 holdsOrOpeningRecording: Self.recordingBridge.holdsOrOpeningRecording,
                 origin: origin,

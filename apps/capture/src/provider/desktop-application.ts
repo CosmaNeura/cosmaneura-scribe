@@ -16,7 +16,7 @@ import { reference, type CoreCaptureScope } from "./core-client";
 import { parseCancellation } from "./cancellation";
 import { parseOpeningRecovery, parseOpeningReview } from "./opening-review";
 import type { ConsentPreparationRelease } from "./consent-preparation";
-import { interpretAccountSelfDeleteBridge, type AccountSelfDeleteResult } from "./account-self-delete";
+import { desktopAccountSelfDeleteAdapter } from "./account-self-delete-host";
 import { parseDesktopProviderEvent, sessionState, exact, object, uuid, jsonCopy, unavailable,
   type DesktopProviderMethod, type DesktopProviderPort, type DesktopProviderRequest } from "./desktop-host-protocol";
 
@@ -40,6 +40,7 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
   const connections = new Map<string, { abort: AbortController; dispose(): Promise<void> }>();
   const encounters = new Map<string, AbortController>(), closedIds = new Set<string>();
   let state: ProviderSessionState | null = null, observations = 0, closed = false;
+  let clinicalPurgeFailed = false;
   const emitState = (value: unknown): ProviderSessionState => {
     state = sessionState(value); observations++;
     for (const listener of sessionListeners) listener({ ...state }); return state;
@@ -113,19 +114,17 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
       },
     },
     accountSelfDelete: {
-      deleteAccount: async (body, signal?: AbortSignal): Promise<AccountSelfDeleteResult> => {
-        if (body.confirm !== "DELETE") throw unavailable();
-        if (closed || signal?.aborted) throw unavailable();
-        // Once Cosmas DELETE is in flight, always surface the bridge result — even
-        // if the dialog aborted afterwards (signedOut / dispose mid-flight).
-        const requestId = crypto.randomUUID();
-        const reply = exact(await port.request({
-          method: "delete_account", requestId, payload: { confirm: "DELETE" },
-          connectionId: null, encounterId: null,
-        }), ["requestId", "ok", "result"]);
-        if (closed || reply.requestId !== requestId || reply.ok !== true) throw unavailable();
-        return interpretAccountSelfDeleteBridge(object(jsonCopy(reply.result)));
-      },
+      deleteAccount: (body, signal) => desktopAccountSelfDeleteAdapter(
+        req => port.request(req), body, {
+          closed: () => closed, ...(signal ? { signal } : {}),
+          onClinicalPurgeFailed: () => { clinicalPurgeFailed = true; },
+        },
+      ),
+    },
+    purgeLocalClinicalData: async () => {
+      if (!clinicalPurgeFailed) return;
+      clinicalPurgeFailed = false;
+      throw new Error("clinical_purge_failed");
     },
     supportsRecorderStopReauthentication: true,
     supportsWorkspaceCloseReauthentication: true,

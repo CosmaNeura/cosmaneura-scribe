@@ -95,9 +95,7 @@ private func recordingUUID(_ value: Any?) throws -> UUID {
     openingRevision == nil && (entry.map { [.sealed, .closed].contains($0.host.phase) && !$0.host.busy } ?? true)
   }
 
-  /// True while open() is in flight or a live capture is retained.
-  /// Sealed/closed entries hold pending uploads only — delete purges them
-  /// (John, 12:15pm ET Nov 19 2026, relayed via CoS: "Delete anyway").
+  /// True while open() is in flight or a live capture is retained (not sealed/closed).
   var holdsOrOpeningRecording: Bool {
     if openingRevision != nil { return true }
     guard let entry else { return false }

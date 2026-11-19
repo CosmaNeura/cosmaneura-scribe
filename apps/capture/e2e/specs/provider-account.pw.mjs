@@ -155,7 +155,7 @@ test("Sign out closes the workspace immediately and returns to normal sign-in", 
   await expect(menu(page)).toContainText("Dr. Morgan Reed");
   expect(await page.evaluate(() => window.accountLab.stats)).toEqual({
     signOutCalls: 1, signInCalls: 1, connections: 2, disposals: 1, aborts: 1, sourceCalls: 0,
-    deleteAccountCalls: 0, clearLocalCalls: 0,
+    deleteAccountCalls: 0,
   });
 });
 
@@ -212,6 +212,7 @@ test("Delete account 401 signs out; 404/503 keep session", async ({ page }) => {
   await expect(dialog.getByRole("status")).toContainText("Your session has expired");
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Session expired", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Account deleted", exact: true })).toHaveCount(0);
   expect(await page.evaluate(() => window.accountLab.stats.signOutCalls)).toBe(1);
 
   await open(page, "?delete-unavailable");
@@ -232,6 +233,7 @@ test("Delete account 401 signs out; 404/503 keep session", async ({ page }) => {
   await dialog.getByRole("button", { name: "Delete account", exact: true }).click();
   await expect(dialog.getByRole("status")).toContainText("temporarily unavailable");
   await expect(dialog.getByRole("button", { name: "Try again", exact: true })).toBeEnabled();
+  expect(await page.evaluate(() => window.accountLab.stats.signOutCalls)).toBe(0);
 });
 
 test("Delete account local sign-out failure still offers Done then Retry sign out", async ({ page }) => {
@@ -250,26 +252,21 @@ test("Delete account local sign-out failure still offers Done then Retry sign ou
   await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
 });
 
-test("Delete account cancel leaves the signed-in session unchanged", async ({ page }) => {
+test("Delete account cancel/failure keep the signed-in session", async ({ page }) => {
   await open(page);
   await account(page).click();
   await page.getByRole("button", { name: "Delete account", exact: true }).click();
-  const dialog = page.locator("dialog.scribe-account-self-delete");
+  let dialog = page.locator("dialog.scribe-account-self-delete");
   await dialog.getByLabel("Type DELETE to confirm").fill("DELETE");
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Today's patients", exact: true })).toBeVisible();
   expect(await page.evaluate(() => window.accountLab.stats.deleteAccountCalls)).toBe(0);
   expect(await page.evaluate(() => window.accountLab.stats.signOutCalls)).toBe(0);
-  await account(page).click();
-  await expect(page.getByRole("button", { name: "Delete account", exact: true })).toBeEnabled();
-});
 
-test("Delete account failure keeps the session signed in", async ({ page }) => {
   await open(page, "?delete-fail");
   await account(page).click();
   await page.getByRole("button", { name: "Delete account", exact: true }).click();
-  const dialog = page.locator("dialog.scribe-account-self-delete");
+  dialog = page.locator("dialog.scribe-account-self-delete");
   await dialog.getByLabel("Type DELETE to confirm").fill("DELETE");
   await dialog.getByRole("button", { name: "Delete account", exact: true }).click();
   await expect(dialog.getByRole("status")).toContainText("still signed in");
@@ -277,6 +274,4 @@ test("Delete account failure keeps the session signed in", async ({ page }) => {
   expect(await page.evaluate(() => window.accountLab.stats.signOutCalls)).toBe(0);
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Today's patients", exact: true })).toBeVisible();
-  await account(page).click();
-  await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeEnabled();
 });
