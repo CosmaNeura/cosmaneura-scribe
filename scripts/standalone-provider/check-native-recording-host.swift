@@ -1165,8 +1165,9 @@ import Security
     }
     do {
       // Real AccountSelfDeleteContract.attempt: refuse while held/opening; send when idle.
+      // B3: beginDeletion must not fence holdsOrOpeningRecording — online delete still reaches send.
       let f = try Fixture(), bridge = NativeProviderRecordingBridge()
-      var sends = 0
+      var sends = 0, began = 0
       let deleted = Data(#"{"status":"deleted","practice_left_ownerless":false,"clerk_identity_removed":true}"#.utf8)
       let run: () async -> [String: Any]? = {
         await AccountSelfDeleteContract.attempt(
@@ -1175,9 +1176,11 @@ import Security
           send: { req in
             sends += 1
             return (deleted, HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
-          })
+          },
+          beginDeletion: { began += 1; bridge.beginAccountDeletion() },
+          endDeletion: { bridge.endAccountDeletion() })
       }
-      try check((await run())?["status"] as? String == "deleted" && sends == 1); sends = 0
+      try check((await run())?["status"] as? String == "deleted" && sends == 1 && began == 1); sends = 0; began = 0
       let rev = UUID().uuidString.lowercased()
       let opened = try await bridge.open(try NativeProviderRecordingSelection([
         "requestId": UUID().uuidString.lowercased(), "revision": rev,
@@ -1192,7 +1195,7 @@ import Security
       _ = try await bridge.command(try NativeProviderRecordingCommand([
         "requestId": UUID().uuidString.lowercased(), "revision": rev, "recorderId": id, "kind": "close",
       ]), current: {}, inputMuted: { false })
-      try check((await run())?["status"] as? String == "deleted" && sends == 1); checks += 1
+      try check((await run())?["status"] as? String == "deleted" && sends == 1 && began >= 1); checks += 1
     }
     return checks
   }

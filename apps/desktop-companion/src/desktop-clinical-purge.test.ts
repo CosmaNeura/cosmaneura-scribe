@@ -9,8 +9,9 @@ import {
   abandonPreparedClinicalPurge, clearClinicalPurgePending, confirmClinicalPurgePending,
   createDesktopClinicalPurgeHost, listClinicalPurgePending, planDesktopClinicalPurge,
   purgePendingPath, readClinicalPurgePending, rememberDesktopClinicalWorkspace,
-  resolveDesktopClinicalDirectoryScopes, retryClinicalPurgePending, wipeDesktopClinicalDirectories,
-  wipeDesktopClinicalPurgePlan, type DesktopClinicalPurgePlan,
+  resolveDesktopClinicalDirectoryScopes, resolvePreparedClinicalPurge, retryClinicalPurgePending,
+  wipeDesktopClinicalDirectories, wipeDesktopClinicalPurgePlan, writeClinicalPurgePending,
+  type DesktopClinicalPurgePlan,
 } from "./desktop-clinical-purge.js";
 
 const crypto = webcrypto as unknown as Crypto;
@@ -106,6 +107,21 @@ describe("desktop clinical purge", () => {
       expect(existsSync(purgePendingPath(root, ra))).toBe(true);
       expect([...planDesktopClinicalPurge(ra, wa, [wb]).recordsWorkspaceIds].sort()).toEqual([wa, wb].sort());
       clearClinicalPurgePending(root, ra);
+
+      // B4/B5: prepared at launch does not wipe; signedOut/unavailable observation does not wipe.
+      const wipeSpy = vi.fn(wipeDesktopClinicalPurgePlan);
+      writeClinicalPurgePending(root, {
+        recoveryScope: ra, creationWorkspaceId: wa, recordsWorkspaceIds: [wa], state: "prepared",
+      });
+      expect(retryClinicalPurgePending(root, { wipe: wipeSpy })).toBe(false);
+      expect(wipeSpy).not.toHaveBeenCalled();
+      expect(readClinicalPurgePending(root, ra)?.state).toBe("prepared");
+      resolvePreparedClinicalPurge(root, { revoked: true });
+      expect(wipeSpy).not.toHaveBeenCalled();
+      expect(readClinicalPurgePending(root, ra)?.state).toBe("prepared");
+      resolvePreparedClinicalPurge(root, { recoveryScope: ra, revoked: false });
+      expect(readClinicalPurgePending(root, ra)).toBeNull();
+      expect(wipeSpy).not.toHaveBeenCalled();
     } finally {
       clearClinicalPurgePending(root, ra); clearClinicalPurgePending(root, rb);
       await rm(root, { recursive: true, force: true });

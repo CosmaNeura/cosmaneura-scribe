@@ -26,9 +26,12 @@ export interface DesktopProviderMainHost {
   /** Capture wipe scopes before DELETE; closure never calls Core. */
   readonly prepareClinicalPurge?: () => Promise<() => Promise<void>>;
   readonly abandonClinicalPurge?: () => void;
+  readonly markClinicalPurgeSent?: () => void;
   readonly confirmClinicalPurge?: () => void;
   readonly hasPendingPurge?: () => boolean;
   readonly resolvePreparedPurge?: (observation: { recoveryScope?: string | null; revoked?: boolean }) => void;
+  /** Clear cached recoveryScope on every auth session change (B6). */
+  readonly resetRecoveryScope?: () => void;
   /** Test fallback wipe when prepareClinicalPurge is absent. */
   readonly purgeLocalClinicalData?: () => Promise<void>;
   /** Main-only complete provider workspace; never forward this object to preload. */
@@ -164,27 +167,20 @@ export class DesktopProviderWorkspaceMain {
         catch { return true; }
       };
       let wipe: (() => Promise<void>) | undefined;
-      let prepared = false, sent = false;
+      let prepared = false, reachedSend = false;
       try {
         if (this.host.prepareClinicalPurge) {
           try { wipe = await this.host.prepareClinicalPurge(); prepared = true; }
           catch { throw unavailable(); }
         }
         if (signal.aborted) throw unavailable();
-        // Once DELETE is sent, always return the bridge result (even mid-flight abort).
+        // Mark sent just before DELETE; wipe only on definitive 200 deleted/already_deleted.
+        this.host.markClinicalPurgeSent?.();
         const value = await this.host.session.deleteAccount({ confirm: "DELETE" });
-        sent = true;
+        reachedSend = true;
         if (value?.unauthorized === true) {
-          // H3: 401 with pending marker counts as confirmed delete.
-          if (prepared) this.host.confirmClinicalPurge?.(); else this.host.abandonClinicalPurge?.();
+          // 401 is never a delete (B2). Leave sent marker; no wipe.
           await closeQuiet();
-          if (prepared && wipe) {
-            const clinicalPurgeFailed = await runWipe(wipe);
-            return {
-              status: "already_deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true,
-              ...(clinicalPurgeFailed ? { clinicalPurgeFailed: true } : {}),
-            };
-          }
           return { unauthorized: true };
         }
         if (value?.gone === true) {
@@ -207,15 +203,15 @@ export class DesktopProviderWorkspaceMain {
         this.host.abandonClinicalPurge?.();
         throw unavailable();
       } finally {
-        // H1: abandon prepared on every path that never sent DELETE.
-        if (prepared && !sent) this.host.abandonClinicalPurge?.();
+        // H1: abandon prepared only when DELETE never reached send.
+        if (prepared && !reachedSend) this.host.abandonClinicalPurge?.();
       }
     }
     if (["session_read", "sign_in", "sign_out", "connect"].includes(request.method)) {
       if (request.connectionId !== null || request.encounterId !== null) throw unavailable();
       exact(payload, []);
       if (request.method === "session_read") return this.readSession();
-      // H6: refuse sign_in/connect while any purge marker exists; retry first.
+      // H6: refuse sign_in/connect while a confirmed purge remains; retry first.
       if ((request.method === "sign_in" || request.method === "connect")
         && this.host.hasPendingPurge?.()) {
         throw unavailable();
@@ -564,9 +560,11 @@ export class DesktopProviderWorkspaceMain {
     if (this.closed) return;
     let value: ProviderSessionState;
     try { value = sessionState(input); } catch { value = { phase: "unavailable", revision: crypto.randomUUID() }; }
-    // H1: resolve prepared markers from the next auth observation.
-    if (value.phase === "signedOut" || value.phase === "unavailable") {
-      this.host.resolvePreparedPurge?.({ revoked: true });
+    // B6: clear cached recoveryScope on every session change.
+    this.host.resetRecoveryScope?.();
+    // B5: never wipe on signedOut/unavailable. Discard prepared only on ready same-scope.
+    if (value.phase === "ready") {
+      this.host.resolvePreparedPurge?.({ recoveryScope: null, revoked: false });
     }
     this.observations++; this.state = value;
     if (this.connection && (value.phase !== "ready" || value.revision !== this.connection.revision)) void this.closeConnection().catch(() => undefined);

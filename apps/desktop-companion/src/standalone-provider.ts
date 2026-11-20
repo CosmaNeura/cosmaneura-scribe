@@ -47,6 +47,7 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
   const opening = new Set<Promise<unknown>>();
   let closing: Promise<void> | undefined;
   let lastRecoveryScope: string | null = null;
+  const resetRecoveryScope = (): void => { lastRecoveryScope = null; };
   /** Catalog only while authenticated — never after Cosmas DELETE. Optional (H15). */
   const sessionCatalog = async (): Promise<Record<string, unknown>> => {
     const state = await native.getState();
@@ -80,7 +81,9 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
     cancellation: desktopScribeCancellation(native, runtime.userDataDirectory, runtime.protection, profile.workspaceId, abort.signal),
     prepareClinicalPurge: clinicalPurge.prepareClinicalPurge,
     abandonClinicalPurge: clinicalPurge.abandonClinicalPurge,
+    markClinicalPurgeSent: clinicalPurge.markClinicalPurgeSent,
     confirmClinicalPurge: clinicalPurge.confirmClinicalPurge,
+    resetRecoveryScope,
     resolvePreparedPurge: observation => clinicalPurge.resolvePreparedPurge(
       observation.revoked ? observation : { ...observation, recoveryScope: observation.recoveryScope ?? lastRecoveryScope },
     ),

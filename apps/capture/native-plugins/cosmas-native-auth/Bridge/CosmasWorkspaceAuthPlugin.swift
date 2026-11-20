@@ -98,13 +98,13 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         }
     }
 
-    /// H2/H6: retry confirmed native purge before auth proceeds; refuse while uncleared.
+    /// H2/H6: retry confirmed native purge only; refuse while a confirmed marker remains.
     @MainActor private func ensureClinicalPurgeCleared() -> Bool {
 #if os(iOS)
-        guard ClinicalPurgeMarker.exists else { return true }
+        guard ClinicalPurgeMarker.readState() == .confirmed else { return true }
         do {
             _ = try ClinicalPurgeMarker.retryPurge { try ClinicalSecureQueuePurge.clearAllRemaining() }
-            return !ClinicalPurgeMarker.exists
+            return ClinicalPurgeMarker.readState() != .confirmed
         } catch { return false }
 #else
         return true
@@ -596,7 +596,11 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                 send: { try await URLSession.shared.data(for: $0) },
                 beginDeletion: { Self.recordingBridge.beginAccountDeletion() },
                 endDeletion: { Self.recordingBridge.endAccountDeletion() },
-                markerPrepared: { ClinicalPurgeMarker.write(.prepared) },
+                markerPrepared: {
+                    // Never demote an earlier-attempt sent marker (B1 recovery).
+                    if ClinicalPurgeMarker.readState() != .sent { ClinicalPurgeMarker.write(.prepared) }
+                },
+                markerSent: { ClinicalPurgeMarker.write(.sent) },
                 markerConfirm: { ClinicalPurgeMarker.write(.confirmed) },
                 markerAbandonPrepared: { ClinicalPurgeMarker.abandonPrepared() })
             else { call.reject("Account deletion unavailable", "account_self_delete_failed"); return }

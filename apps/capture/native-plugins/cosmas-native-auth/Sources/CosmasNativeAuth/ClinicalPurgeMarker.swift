@@ -1,8 +1,8 @@
 import Foundation
 
-/// Durable native purge marker (H2). Device-wide SecureQueue clearAll; retry until empty.
+/// Durable native purge marker (H2). Wipe only after `confirmed`.
 public enum ClinicalPurgeMarker {
-    public enum State: String { case prepared, confirmed }
+    public enum State: String { case prepared, sent, confirmed }
     private static var fileURL: URL {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -26,10 +26,10 @@ public enum ClinicalPurgeMarker {
         try? FileManager.default.removeItem(at: fileURL)
     }
     public static func clear() { try? FileManager.default.removeItem(at: fileURL) }
+    /// Launch/sign-in retry: wipe only when already confirmed — never promote prepared/sent.
     @MainActor
     public static func retryPurge(clearAll: () throws -> Int) throws -> Bool {
-        guard exists else { return false }
-        write(.confirmed)
+        guard readState() == .confirmed else { return false }
         if try clearAll() != 0 { throw NSError(domain: "clinical_purge", code: 1) }
         clear(); return true
     }

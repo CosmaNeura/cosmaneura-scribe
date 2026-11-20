@@ -97,9 +97,10 @@ private func recordingUUID(_ value: Any?) throws -> UUID {
     openingRevision == nil && (entry.map { [.sealed, .closed].contains($0.host.phase) && !$0.host.busy } ?? true)
   }
 
-  /// True while open() is in flight, host.busy, deletion in flight, or live capture retained.
+  /// True while open() is in flight, host.busy, or live capture retained.
+  /// Deletion-in-progress is enforced only in open() — never here (B3).
   var holdsOrOpeningRecording: Bool {
-    if accountDeletionInProgress || openingRevision != nil { return true }
+    if openingRevision != nil { return true }
     guard let entry else { return false }
     if entry.host.busy { return true }
     return ![.sealed, .closed].contains(entry.host.phase)

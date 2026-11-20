@@ -80,12 +80,11 @@ export function interpretAccountSelfDeleteBridge(value: unknown): AccountSelfDel
 
 function completionFor(result: AccountSelfDeleteResult): AccountSelfDeleteCompletion | null {
   if (result.outcome === "deleted") return "deleted";
-  if (result.outcome === "unauthorized") return "session_expired";
   if (result.outcome === "gone") return "gone";
   return null;
 }
 const endsSession = (result: AccountSelfDeleteResult): boolean =>
-  result.outcome === "deleted" || result.outcome === "unauthorized" || result.outcome === "gone";
+  result.outcome === "deleted" || result.outcome === "gone";
 const idle = (): AccountSelfDeleteState => ({
   phase: "confirming", confirmation: "", error: null, retryable: false, completion: null, practiceLeftOwnerless: null,
 });
@@ -131,13 +130,15 @@ export function accountSelfDelete(
         if (result.outcome === "recording_active") {
           publish(base("failed", { confirmation: CONFIRM, error: MESSAGES.recordingActive })); return;
         }
+        // 401 is never a delete: keepSession copy + re-auth (clear credentials), no clinical wipe.
+        if (result.outcome === "unauthorized") {
+          publish(base("failed", { confirmation: CONFIRM, error: MESSAGES.keepSession }));
+          try { await host.clearLocalCredentials(); } catch { /* re-auth best effort */ }
+          return;
+        }
         if (!endsSession(result)) throw new Error("account_self_delete_unconfirmed");
         const completion = completionFor(result);
         if (completion === null) throw new Error("account_self_delete_unconfirmed");
-        if (result.outcome === "deleted" && result.clerkIdentityRemoved === false) {
-          publish(base("failed", { confirmation: CONFIRM, error: MESSAGES.keepSession }));
-          return;
-        }
         serverEndedSession = true;
         const ownerless = result.outcome === "deleted" ? result.practiceLeftOwnerless : false;
         publish(base("clearing", { completion, practiceLeftOwnerless: ownerless }));

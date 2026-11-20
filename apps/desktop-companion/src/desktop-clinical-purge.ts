@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSyn
 import { DurableDesktopRecordStore } from "./durable-record-store.js";
 export interface DesktopClinicalScope { readonly recoveryScope: string; readonly workspaceId: string; }
 export interface DesktopClinicalDirectoryScopes { readonly records: DesktopClinicalScope; readonly creation: DesktopClinicalScope; }
-export type ClinicalPurgeMarkerState = "prepared" | "confirmed";
+export type ClinicalPurgeMarkerState = "prepared" | "sent" | "confirmed";
 export interface DesktopClinicalPurgePlan { readonly recoveryScope: string; readonly recordsWorkspaceIds: readonly string[]; readonly creationWorkspaceId: string; readonly state: ClinicalPurgeMarkerState; }
 export const CLINICAL_PURGE_PENDING_PREFIX = "clinical-purge-pending-v1.";
 export const CLINICAL_WORKSPACE_INDEX_NAME = "clinical-workspace-index-v1.json";
@@ -83,6 +83,8 @@ function writeMarker(userDataDirectory: string, plan: DesktopClinicalPurgePlan, 
 
 export const writeClinicalPurgePending = (d: string, plan: DesktopClinicalPurgePlan, reason?: string): void =>
   writeMarker(d, { ...plan, state: plan.state ?? "prepared" }, reason);
+export const writeClinicalPurgeSent = (d: string, plan: DesktopClinicalPurgePlan): void =>
+  writeMarker(d, { ...plan, state: "sent" });
 export const confirmClinicalPurgePending = (d: string, plan: DesktopClinicalPurgePlan): void =>
   writeMarker(d, { ...plan, state: "confirmed" });
 
@@ -91,7 +93,9 @@ function readOneMarker(path: string): DesktopClinicalPurgePlan | null {
   try {
     const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     if (typeof raw.recoveryScope !== "string" || typeof raw.creationWorkspaceId !== "string" || !Array.isArray(raw.recordsWorkspaceIds)) return null;
-    const state = raw.state === "confirmed" ? "confirmed" : raw.state === "prepared" ? "prepared" : null;
+    const state = raw.state === "confirmed" ? "confirmed"
+      : raw.state === "sent" ? "sent"
+      : raw.state === "prepared" ? "prepared" : null;
     if (!state) return null;
     const recordsWorkspaceIds = raw.recordsWorkspaceIds.map(scopeUuid).filter((id): id is string => !!id);
     if (recordsWorkspaceIds.length !== raw.recordsWorkspaceIds.length) return null;
@@ -127,6 +131,9 @@ export function abandonPreparedClinicalPurge(userDataDirectory: string, recovery
 export function anyClinicalPurgePending(userDataDirectory: string): boolean {
   return listClinicalPurgePending(userDataDirectory).length > 0;
 }
+export function anyConfirmedClinicalPurgePending(userDataDirectory: string): boolean {
+  return listClinicalPurgePending(userDataDirectory).some(p => p.state === "confirmed");
+}
 
 export function retryClinicalPurgePending(
   userDataDirectory: string, options?: { readonly wipe?: WipeFn; readonly log?: (reason: string) => void },
@@ -142,20 +149,17 @@ export function retryClinicalPurgePending(
   return any;
 }
 
+/** Discard prepared when the account is alive again. Never wipe from signedOut/unavailable (B5). */
 export function resolvePreparedClinicalPurge(
-  userDataDirectory: string, observation: { readonly recoveryScope?: string | null; readonly revoked?: boolean },
-  options?: { readonly wipe?: WipeFn; readonly log?: (reason: string) => void },
+  userDataDirectory: string,
+  observation: { readonly recoveryScope?: string | null; readonly revoked?: boolean },
 ): void {
-  const wipe = options?.wipe ?? wipeDesktopClinicalPurgePlan;
+  if (observation.revoked) return;
   for (const plan of listClinicalPurgePending(userDataDirectory)) {
     if (plan.state !== "prepared") continue;
-    const same = observation.recoveryScope && scopeUuid(observation.recoveryScope) === plan.recoveryScope;
-    if (same && !observation.revoked) { clearClinicalPurgePending(userDataDirectory, plan.recoveryScope); continue; }
-    if (observation.revoked || (observation.recoveryScope && !same)) {
-      confirmClinicalPurgePending(userDataDirectory, plan);
-      try { wipe(userDataDirectory, { ...plan, state: "confirmed" }); clearClinicalPurgePending(userDataDirectory, plan.recoveryScope); }
-      catch { options?.log?.("clinical_purge_resolve_failed"); writeMarker(userDataDirectory, { ...plan, state: "confirmed" }, "clinical_purge_resolve_failed"); }
-    }
+    const same = !observation.recoveryScope
+      || scopeUuid(observation.recoveryScope) === plan.recoveryScope;
+    if (same) clearClinicalPurgePending(userDataDirectory, plan.recoveryScope);
   }
 }
 
@@ -164,7 +168,8 @@ export function createDesktopClinicalPurgeHost(options: {
   readonly recoveryScope?: () => string | null; readonly loadCatalog?: () => Promise<Record<string, unknown>>;
   readonly wipe?: WipeFn; readonly log?: (reason: string) => void;
 }): {
-  prepareClinicalPurge: () => Promise<() => Promise<void>>; abandonClinicalPurge: () => void; confirmClinicalPurge: () => void;
+  prepareClinicalPurge: () => Promise<() => Promise<void>>; abandonClinicalPurge: () => void;
+  markClinicalPurgeSent: () => void; confirmClinicalPurge: () => void;
   retryPendingPurge: () => boolean;
   resolvePreparedPurge: (observation: { recoveryScope?: string | null; revoked?: boolean }) => void;
   hasPendingPurge: () => boolean; currentPlan: () => DesktopClinicalPurgePlan | null;
@@ -174,11 +179,16 @@ export function createDesktopClinicalPurgeHost(options: {
   let current: DesktopClinicalPurgePlan | null = null;
   return {
     currentPlan: () => current,
-    hasPendingPurge: () => anyClinicalPurgePending(userDataDirectory),
+    // H6: only confirmed markers block sign_in/connect after retry.
+    hasPendingPurge: () => anyConfirmedClinicalPurgePending(userDataDirectory),
     abandonClinicalPurge: () => { const s = current?.recoveryScope ?? recoveryScope?.(); if (s) abandonPreparedClinicalPurge(userDataDirectory, s); current = null; },
+    markClinicalPurgeSent: () => {
+      if (!current) return;
+      writeClinicalPurgeSent(userDataDirectory, current); current = { ...current, state: "sent" };
+    },
     confirmClinicalPurge: () => { if (!current) return; confirmClinicalPurgePending(userDataDirectory, current); current = { ...current, state: "confirmed" }; },
     retryPendingPurge: () => retryClinicalPurgePending(userDataDirectory, ro),
-    resolvePreparedPurge: o => resolvePreparedClinicalPurge(userDataDirectory, o, ro),
+    resolvePreparedPurge: o => resolvePreparedClinicalPurge(userDataDirectory, o),
     prepareClinicalPurge: async () => {
       let rs = recoveryScope?.() ?? null;
       const known = new Set<string>();
@@ -197,6 +207,23 @@ export function createDesktopClinicalPurgeHost(options: {
       }
       if (!rs) throw unavailable();
       for (const id of listedDesktopClinicalWorkspaces(userDataDirectory, rs)) known.add(id);
+      // Never demote an earlier-attempt sent marker (B1 recovery).
+      const prior = readClinicalPurgePending(userDataDirectory, rs);
+      if (prior?.state === "sent") {
+        current = prior;
+        return () => {
+          try {
+            confirmClinicalPurgePending(userDataDirectory, prior);
+            wipe(userDataDirectory, { ...prior, state: "confirmed" });
+            clearClinicalPurgePending(userDataDirectory, prior.recoveryScope);
+            current = null; return Promise.resolve();
+          } catch {
+            log?.("clinical_purge_wipe_failed");
+            writeMarker(userDataDirectory, { ...prior, state: "confirmed" }, "clinical_purge_wipe_failed");
+            return Promise.reject(new Error("clinical_purge_wipe_failed"));
+          }
+        };
+      }
       const plan = planDesktopClinicalPurge(rs, creationWorkspaceId, [...known]);
       writeClinicalPurgePending(userDataDirectory, plan); current = plan;
       return () => {

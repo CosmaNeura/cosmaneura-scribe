@@ -72,6 +72,8 @@ public enum AccountSelfDeleteContract {
         allowsCoreOrigin(origin) ? bridgePayload(for: interpret(statusCode: statusCode, body: body)) : nil
     }
 
+    /// Wipe only on definitive 200 deleted/already_deleted. Never on throw or same-attempt 401.
+    /// `sent` markers from an earlier attempt may confirm when a later answer is definitive 200.
     @MainActor
     public static func attempt(
         holdsOrOpeningRecording: () -> Bool, origin: String?,
@@ -80,45 +82,34 @@ public enum AccountSelfDeleteContract {
         beginDeletion: (() -> Void)? = nil,
         endDeletion: (() -> Void)? = nil,
         markerPrepared: (() -> Void)? = nil,
+        markerSent: (() -> Void)? = nil,
         markerConfirm: (() -> Void)? = nil,
         markerAbandonPrepared: (() -> Void)? = nil
     ) async -> [String: Any]? {
         if holdsOrOpeningRecording() { return bridgePayload(for: .recordingActive) }
         guard let origin, accountDeleteURL(origin: origin) != nil else { return nil }
-        var sent = false
+        var reachedSend = false
         markerPrepared?()
         beginDeletion?()
-        defer { endDeletion?(); if !sent { markerAbandonPrepared?() } }
+        defer { endDeletion?(); if !reachedSend { markerAbandonPrepared?() } }
         do {
             let token = try await mintToken()
-            // H9: recheck recording after mint await.
-            if holdsOrOpeningRecording() {
-                markerAbandonPrepared?()
-                return bridgePayload(for: .recordingActive)
-            }
+            // H9: recheck recording after mint await (deletion flag is not part of holds).
+            if holdsOrOpeningRecording() { return bridgePayload(for: .recordingActive) }
             guard let request = makeAuthorizedAccountDeleteRequest(
                 origin: origin, bearerToken: token) else { return nil }
+            markerSent?()
+            reachedSend = true
             let (data, response) = try await send(request)
-            sent = true
             guard let http = response as? HTTPURLResponse else { return nil }
-            // H3: 401 with pending marker → confirmed already_deleted.
-            if http.statusCode == 401, ClinicalPurgeMarker.exists {
-                markerConfirm?()
-                return bridgePayload(for: .deleted(
-                    status: "already_deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true))
-            }
+            // 401 is never a delete — keepSession / re-auth upstream; leave sent marker if any.
+            if http.statusCode == 401 { return bridgePayload(for: .unauthorized) }
             let payload = resolve(origin: origin, statusCode: http.statusCode, body: data)
             if payload?["status"] != nil { markerConfirm?() }
-            else { markerAbandonPrepared?() }
+            else if http.statusCode != 401 { markerAbandonPrepared?() }
             return payload
         } catch {
-            // H3: mint failure with pending marker → confirmed already_deleted.
-            if ClinicalPurgeMarker.exists {
-                sent = true
-                markerConfirm?()
-                return bridgePayload(for: .deleted(
-                    status: "already_deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true))
-            }
+            // Offline / mint / transport throw: never invent already_deleted.
             return nil
         }
     }

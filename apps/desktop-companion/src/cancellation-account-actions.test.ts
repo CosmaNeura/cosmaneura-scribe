@@ -51,11 +51,25 @@ describe("desktop account self-delete IPC", () => {
       expect(f.purgeLocalClinicalData).toHaveBeenCalledOnce();
       expect(await f.send("delete_account", { confirm: "delete" })).toMatchObject({ ok: false });
     });
-    // H3: 401 with prepared marker confirms already_deleted and wipes.
-    await withFix(["ready", vi.fn(async () => ({ unauthorized: true as const }))], async unauthorized => {
+    // B2: 401 on a first attempt never wipes; reaches send marker only.
+    const markSent401 = vi.fn(), confirm401 = vi.fn();
+    await withFix(["ready", vi.fn(async () => ({ unauthorized: true as const })), undefined, undefined, {
+      markClinicalPurgeSent: markSent401, confirmClinicalPurge: confirm401,
+    }], async unauthorized => {
       expect(await unauthorized.send("delete_account", { confirm: "DELETE" }))
-        .toMatchObject({ ok: true, result: { status: "already_deleted" } });
-      expect(unauthorized.purgeLocalClinicalData).toHaveBeenCalledOnce();
+        .toMatchObject({ ok: true, result: { unauthorized: true } });
+      expect(unauthorized.purgeLocalClinicalData).not.toHaveBeenCalled();
+      expect(markSent401).toHaveBeenCalledOnce();
+      expect(confirm401).not.toHaveBeenCalled();
+    });
+    // Offline / transport throw before definitive answer: no wipe.
+    const markSentThrow = vi.fn(), confirmThrow = vi.fn();
+    await withFix(["ready", vi.fn(async () => { throw new Error("offline"); }), undefined, undefined, {
+      markClinicalPurgeSent: markSentThrow, confirmClinicalPurge: confirmThrow,
+    }], async offline => {
+      expect(await offline.send("delete_account", { confirm: "DELETE" })).toMatchObject({ ok: false });
+      expect(offline.purgeLocalClinicalData).not.toHaveBeenCalled();
+      expect(confirmThrow).not.toHaveBeenCalled();
     });
     for (const flag of ["gone", "unavailable", "retryable"] as const) {
       await withFix(["ready", vi.fn(async () => ({ [flag]: true as const }))], async row => {
@@ -216,5 +230,46 @@ describe("desktop account self-delete IPC", () => {
       expect(await f.send("sign_in", {})).toMatchObject({ ok: false });
       expect(hasPendingPurge).toHaveBeenCalled();
     });
+  });
+
+  it("Mac online delete succeeds end-to-end; sign-out with prepared does not wipe", async () => {
+    const wipe = vi.fn(async () => undefined);
+    const markClinicalPurgeSent = vi.fn();
+    const confirmClinicalPurge = vi.fn();
+    const resolvePreparedPurge = vi.fn();
+    const resetRecoveryScope = vi.fn();
+    await withFix(["ready", vi.fn(async () => okDelete()), wipe, vi.fn(async () => wipe), {
+      markClinicalPurgeSent, confirmClinicalPurge, resolvePreparedPurge, resetRecoveryScope,
+    }], async f => {
+      expect(await f.send("delete_account", { confirm: "DELETE" })).toMatchObject({
+        ok: true, result: { status: "deleted" },
+      });
+      expect(markClinicalPurgeSent).toHaveBeenCalled();
+      expect(confirmClinicalPurge).toHaveBeenCalled();
+      expect(wipe).toHaveBeenCalledOnce();
+    });
+    // B5: session accept on signedOut must not revoke-wipe prepared markers.
+    const hostResolve = vi.fn();
+    const hostReset = vi.fn();
+    const state: ProviderSessionState = { phase: "ready", revision: crypto.randomUUID() };
+    const host: DesktopProviderMainHost = {
+      connect: vi.fn(async () => { throw new Error("no"); }),
+      resolvePreparedPurge: hostResolve, resetRecoveryScope: hostReset,
+      session: {
+        getState: async () => state,
+        signIn: async () => state,
+        signOut: async () => ({ phase: "signedOut", revision: crypto.randomUUID() }),
+        addListener: async () => ({ remove: async () => undefined }),
+      },
+    };
+    const main = new DesktopProviderWorkspaceMain(host, () => ({ dispose: async () => undefined }));
+    await main.initialize();
+    try {
+      await main.request({
+        method: "sign_out", payload: {}, requestId: crypto.randomUUID(), connectionId: null, encounterId: null,
+      });
+      expect(hostReset).toHaveBeenCalled();
+      expect(hostResolve).not.toHaveBeenCalledWith(expect.objectContaining({ revoked: true }));
+    } finally { await main.dispose(); }
   });
 });
