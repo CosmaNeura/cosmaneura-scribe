@@ -167,6 +167,11 @@ SCRIBE_FOUNDER_PRODUCTION_UNLOCK=1 \
   # …plus existing host/native/receipt paths from the production flight plans
 ```
 
+Offline helper `scripts/standalone-provider/write_production_inputs.py` writes the
+founder `--production-inputs` JSON (schema 1) from a Core `production_live_settings.tf`
+pin plus local helper build directories (assemble auth/audio layout); it never prints
+binding values. Live inputs stay outside git.
+
 `scripts/standalone-provider/prepare_production_profiles.py` projects that input
 into sealed `provider-profile.json` / Info.plist fragments. **Those live values
 are not in git.** Do not invent them. Before a production-sealed Store assemble
