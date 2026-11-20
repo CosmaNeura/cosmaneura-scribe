@@ -188,9 +188,10 @@ test("Delete account confirms, maps failures, keeps cancel signed in", async ({ 
   await expect(d.getByRole("status")).toContainText("Your account has been deleted");
   await d.getByRole("button", { name: "Done", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Account deleted", exact: true })).toBeVisible();
+  // 401 is never a delete: existing keepSession copy + re-auth (Cancel, not Done).
   d = await openDelete("?delete-unauthorized"); await confirm(d);
-  await expect(d.getByRole("status")).toContainText("Your session has expired");
-  await d.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(d.getByRole("status")).toContainText("still signed in");
+  await d.getByRole("button", { name: "Cancel", exact: true }).click();
   d = await openDelete("?delete-unavailable"); await confirm(d);
   await expect(d.getByRole("status")).toContainText("isn't available yet");
   await d.getByRole("button", { name: "Cancel", exact: true }).click();

@@ -87,11 +87,16 @@ struct CheckAccountSelfDelete {
 }
 
 @MainActor
+final class AttemptCounters {
+    var began = 0, ended = 0, sends = 0, prepared = 0, sent = 0, confirmed = 0
+    func reset() { began = 0; ended = 0; sends = 0; prepared = 0; sent = 0; confirmed = 0 }
+}
+
+@MainActor
 func runAttemptChecks() async throws {
     ClinicalPurgeMarker.clear()
-    var began = 0, ended = 0, sends = 0, prepared = 0, sent = 0, confirmed = 0
+    let counts = AttemptCounters()
     let deleted = try body("deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true)
-    func resetCounts() { began = 0; ended = 0; sends = 0; prepared = 0; sent = 0; confirmed = 0 }
 
     func attempt(
         status: Int = 200,
@@ -106,58 +111,59 @@ func runAttemptChecks() async throws {
                 return "synthetic"
             },
             send: { req in
-                sends += 1
+                counts.sends += 1
                 let data = bodyData ?? deleted
                 return (data, HTTPURLResponse(url: req.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
             },
-            beginDeletion: { began += 1 },
-            endDeletion: { ended += 1 },
+            beginDeletion: { counts.began += 1 },
+            endDeletion: { counts.ended += 1 },
             markerPrepared: {
-                prepared += 1
+                counts.prepared += 1
                 if ClinicalPurgeMarker.readState() != .sent { ClinicalPurgeMarker.write(.prepared) }
             },
-            markerSent: { sent += 1; ClinicalPurgeMarker.write(.sent) },
-            markerConfirm: { confirmed += 1; ClinicalPurgeMarker.write(.confirmed) },
+            markerSent: { counts.sent += 1; ClinicalPurgeMarker.write(.sent) },
+            markerConfirm: { counts.confirmed += 1; ClinicalPurgeMarker.write(.confirmed) },
             markerAbandonPrepared: { ClinicalPurgeMarker.abandonPrepared() })
     }
 
     // B1: offline / mint failure — no wipe, no deleted payload.
-    resetCounts(); ClinicalPurgeMarker.clear()
+    counts.reset(); ClinicalPurgeMarker.clear()
     let offline = await attempt(mintThrows: true)
-    try require(offline == nil && sends == 0 && confirmed == 0)
+    try require(offline == nil && counts.sends == 0 && counts.confirmed == 0)
     try require(ClinicalPurgeMarker.readState() != .confirmed)
     try require(ClinicalPurgeMarker.readState() != .sent)
 
     // B2: same-attempt 401 — unauthorized, never wipe.
-    resetCounts(); ClinicalPurgeMarker.clear()
+    counts.reset(); ClinicalPurgeMarker.clear()
     let unauthorized = await attempt(status: 401)
     try require(unauthorized?["unauthorized"] as? Bool == true)
-    try require(sends == 1 && began == 1 && confirmed == 0)
+    try require(counts.sends == 1 && counts.began == 1 && counts.confirmed == 0)
     try require(ClinicalPurgeMarker.readState() != .confirmed)
 
     // Online delete reaches send with beginDeletion wired.
-    resetCounts(); ClinicalPurgeMarker.clear()
+    counts.reset(); ClinicalPurgeMarker.clear()
     let ok = await attempt(status: 200, bodyData: deleted)
     try require(ok?["status"] as? String == "deleted")
-    try require(sends == 1 && began == 1 && ended == 1 && sent == 1 && confirmed == 1)
+    try require(counts.sends == 1 && counts.began == 1 && counts.ended == 1
+        && counts.sent == 1 && counts.confirmed == 1)
     try require(ClinicalPurgeMarker.readState() == .confirmed)
 
     // B4: prepared marker at launch does not wipe.
     ClinicalPurgeMarker.write(.prepared)
-    var wiped = false
+    let wipeProbe = AttemptCounters()
     let retried = try ClinicalPurgeMarker.retryPurge {
-        wiped = true
+        wipeProbe.began += 1
         return 0
     }
-    try require(retried == false && wiped == false)
+    try require(retried == false && wipeProbe.began == 0)
     try require(ClinicalPurgeMarker.readState() == .prepared)
     ClinicalPurgeMarker.clear()
 
     // Earlier-attempt sent + definitive later 200 confirms (does not demote sent).
     ClinicalPurgeMarker.write(.sent)
-    resetCounts()
+    counts.reset()
     let recovered = await attempt(status: 200, bodyData: deleted)
     try require(recovered?["status"] as? String == "deleted")
-    try require(confirmed == 1 && ClinicalPurgeMarker.readState() == .confirmed)
+    try require(counts.confirmed == 1 && ClinicalPurgeMarker.readState() == .confirmed)
     ClinicalPurgeMarker.clear()
 }
