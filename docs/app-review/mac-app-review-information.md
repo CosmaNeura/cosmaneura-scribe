@@ -169,8 +169,8 @@ SCRIBE_FOUNDER_PRODUCTION_UNLOCK=1 \
 
 Offline helper `scripts/standalone-provider/write_production_inputs.py` writes the
 founder `--production-inputs` JSON (schema 1) from a Core `production_live_settings.tf`
-pin plus local helper build paths; it never prints binding values. Live inputs stay
-outside git.
+pin plus local helper build directories (assemble auth/audio layout); it never prints
+binding values. Live inputs stay outside git.
 
 `scripts/standalone-provider/prepare_production_profiles.py` projects that input
 into sealed `provider-profile.json` / Info.plist fragments. **Those live values

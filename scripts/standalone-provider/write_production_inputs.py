@@ -1,10 +1,11 @@
 """Write founder --production-inputs JSON from a Core pin and helper builds.
 
 Offline only: reads a Core infra/production_live_settings.tf pin, hashes local
-helper executables, validates with prepare_production_profiles.project, and
-writes schema-1 JSON exclusively. Never prints, hashes-for-print, or diffs the
-output file—stdout/stderr list key names (present/missing) and the output path
-only. No network, Azure, Clerk, 1Password, or environment-secret reads.
+helper executables from auth/audio build directories (same layout as
+assemble-standalone-provider.py), validates with prepare_production_profiles.project,
+and writes schema-1 JSON exclusively. Never prints, hashes-for-print, or diffs
+the output file—stdout/stderr list key names (present/missing) and the output
+path only. No network, Azure, Clerk, 1Password, or environment-secret reads.
 """
 
 from __future__ import annotations
@@ -24,15 +25,17 @@ from prepare_production_profiles import project
 _VALIDATOR_PATH = Path(__file__).resolve().with_name("prepare_production_profiles.py")
 _DISALLOWED_WORKSPACE_ID = "56f527ab-0caf-459b-bda9-cf7f0ca2f709"
 _DEFAULT_EXPECT_PROFILE = "core-production-personal-v1"
+_HELPER_EXECUTABLES = (
+    ("auth", "ScribeDesktopProvider"),
+    ("audio", "ScribeDesktopAudioHelper"),
+    ("presentation", "ScribeProviderPresentationHelper"),
+)
 _HELPER_PATHS = {
-    "auth": "native/ScribeDesktopProvider.app/Contents/MacOS/ScribeDesktopProvider",
-    "audio": "native/ScribeDesktopAudioHelper.app/Contents/MacOS/ScribeDesktopAudioHelper",
-    "presentation": (
-        "native/ScribeProviderPresentationHelper.app/Contents/MacOS/"
-        "ScribeProviderPresentationHelper"
-    ),
+    kind: "native/" + executable + ".app/Contents/MacOS/" + executable
+    for kind, executable in _HELPER_EXECUTABLES
 }
 _PUBLISHABLE_KEY_STOP = "STOP: publishable key does not match validator literal"
+_STRING_LITERAL = re.compile(r'"([^"]*)"')
 
 _STATUS_KEYS = (
     "schema",
@@ -67,15 +70,6 @@ class PublishableKeyMismatch(Exception):
     """Derived key does not match the validator's clerk-host literal / pk_live_ form."""
 
 
-class ProfileMismatch(Exception):
-    """Pin profile differs from --expect-profile; carries labels only."""
-
-    def __init__(self, expected: str, actual: str) -> None:
-        self.expected = expected
-        self.actual = actual
-        super().__init__(expected, actual)
-
-
 def _unique_assignment(source: str, key: str) -> str:
     matches = list(
         re.finditer(rf"(?m)^[ \t]*{re.escape(key)}[ \t]*=[ \t]*(.+?)[ \t]*$", source)
@@ -83,6 +77,15 @@ def _unique_assignment(source: str, key: str) -> str:
     if len(matches) != 1:
         raise Refuse(f"assignment:{key}:missing_or_ambiguous")
     return matches[0].group(1).strip()
+
+
+def _unique_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate configuration field")
+        result[key] = value
+    return result
 
 
 def _parse_receiver_configuration_json(source: str) -> dict[str, Any]:
@@ -95,7 +98,11 @@ def _parse_receiver_configuration_json(source: str) -> dict[str, Any]:
         text = json.loads(rhs)
         if not isinstance(text, str):
             raise Refuse("receiver_configuration_json:malformed")
-        value = json.loads(text)
+        if "${" in text or "%{" in text:
+            raise Refuse("receiver_configuration_json:interpolation")
+        value = json.loads(text, object_pairs_hook=_unique_object_pairs)
+    except Refuse:
+        raise
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
         raise Refuse("receiver_configuration_json:malformed") from exc
     if not isinstance(value, dict):
@@ -105,13 +112,17 @@ def _parse_receiver_configuration_json(source: str) -> dict[str, Any]:
 
 def _parse_capture_upload_origin(source: str) -> str:
     rhs = _unique_assignment(source, "capture_upload_origins")
-    match = re.fullmatch(r"toset\(\[(.*)\]\)", rhs)
+    match = re.fullmatch(r"toset\(\[(.*)\]\)", rhs, flags=re.DOTALL)
     if match is None:
         raise Refuse("capture_upload_origins:malformed")
-    origins = re.findall(r'"([^"]*)"', match.group(1))
-    if len(origins) != 1:
+    inner = match.group(1).strip()
+    # Exactly one HCL/JSON string literal — no empty list, no trailing refs.
+    if not re.fullmatch(r'"[^"]*"', inner):
         raise Refuse("capture_upload_origins:count")
-    origin = origins[0]
+    literal = _STRING_LITERAL.fullmatch(inner)
+    if literal is None:
+        raise Refuse("capture_upload_origins:count")
+    origin = literal.group(1)
     if not origin.startswith("https://"):
         raise Refuse("capture_upload_origins:not_https")
     return origin
@@ -189,6 +200,20 @@ def _digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def desktop_helpers_from_builds(auth_build: Path, audio_build: Path) -> dict[str, dict[str, str]]:
+    """Match assemble-standalone-provider.assemble helper binding exactly."""
+    helpers: dict[str, dict[str, str]] = {}
+    for kind, executable in _HELPER_EXECUTABLES:
+        source = (auth_build if kind == "auth" else audio_build) / executable
+        if source.is_symlink() or not source.is_file():
+            raise Refuse(f"helper:{executable}:missing")
+        helpers[kind] = {
+            "path": "native/" + executable + ".app/Contents/MacOS/" + executable,
+            "sha256": _digest(source),
+        }
+    return helpers
+
+
 def _lookup_parent(payload: dict[str, Any], dotted: str) -> tuple[Any, str]:
     parent_path, leaf = dotted.rsplit(".", 1)
     current: Any = payload
@@ -227,13 +252,14 @@ def build_payload(
     core_pin: Path,
     auth_build: Path,
     audio_build: Path,
-    presentation_build: Path,
     expect_profile: str = _DEFAULT_EXPECT_PROFILE,
 ) -> dict[str, Any]:
     if core_pin.is_symlink() or not core_pin.is_file():
         raise Refuse("core_pin:missing")
     try:
         source = core_pin.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise Refuse("core_pin:encoding") from exc
     except OSError as exc:
         raise Refuse("core_pin:unreadable") from exc
 
@@ -241,8 +267,12 @@ def build_payload(
     actual_profile = receiver.get("profile")
     if not isinstance(actual_profile, str):
         raise Refuse("receiver.profile:missing")
-    if actual_profile != expect_profile:
-        raise ProfileMismatch(expect_profile, actual_profile)
+    # Only personal is admitted, even if expect_profile were coerced to match the pin.
+    if (
+        expect_profile != _DEFAULT_EXPECT_PROFILE
+        or actual_profile != _DEFAULT_EXPECT_PROFILE
+    ):
+        raise Refuse("receiver.profile:mismatch")
 
     # Copy every field verbatim (including production.*_receipt_sha256); force enabled.
     receiver = dict(receiver)
@@ -258,14 +288,7 @@ def build_payload(
     publishable_key = derive_and_verify_publishable_key()
     verify_against_validator_literal(publishable_key)
 
-    helpers = {
-        "auth": {"path": _HELPER_PATHS["auth"], "sha256": _digest(auth_build)},
-        "audio": {"path": _HELPER_PATHS["audio"], "sha256": _digest(audio_build)},
-        "presentation": {
-            "path": _HELPER_PATHS["presentation"],
-            "sha256": _digest(presentation_build),
-        },
-    }
+    helpers = desktop_helpers_from_builds(auth_build, audio_build)
     payload = {
         "schema": 1,
         "receiver": receiver,
@@ -291,30 +314,54 @@ def build_payload(
 def write_payload(payload: dict[str, Any], out: Path) -> None:
     data = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    fd: int | None = None
+    created = False
     try:
         fd = os.open(out, flags, 0o600)
+        created = True
+        with os.fdopen(fd, "wb") as handle:
+            fd = None
+            handle.write(data)
     except FileExistsError as exc:
         raise Refuse("output:exists") from exc
     except OSError as exc:
-        raise Refuse("output:unwritable") from exc
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-    except OSError as exc:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if created:
+            try:
+                out.unlink(missing_ok=True)
+            except OSError:
+                pass
         raise Refuse("output:unwritable") from exc
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--core-pin", type=Path, required=True)
-    parser.add_argument("--auth-build", type=Path, required=True)
-    parser.add_argument("--audio-build", type=Path, required=True)
-    parser.add_argument("--presentation-build", type=Path, required=True)
+    parser.add_argument(
+        "--auth-build",
+        type=Path,
+        required=True,
+        help="Directory containing ScribeDesktopProvider (assemble layout)",
+    )
+    parser.add_argument(
+        "--audio-build",
+        type=Path,
+        required=True,
+        help=(
+            "Directory containing ScribeDesktopAudioHelper and "
+            "ScribeProviderPresentationHelper (assemble layout)"
+        ),
+    )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
         "--expect-profile",
         default=_DEFAULT_EXPECT_PROFILE,
-        help="Read-only expected receiver.profile (default: core-production-personal-v1)",
+        choices=(_DEFAULT_EXPECT_PROFILE,),
+        help="Read-only expected receiver.profile (personal only)",
     )
     args = parser.parse_args(argv)
     payload: dict[str, Any] | None = None
@@ -323,18 +370,11 @@ def main(argv: list[str] | None = None) -> int:
             core_pin=args.core_pin,
             auth_build=args.auth_build,
             audio_build=args.audio_build,
-            presentation_build=args.presentation_build,
             expect_profile=args.expect_profile,
         )
         write_payload(payload, args.out)
     except PublishableKeyMismatch:
         sys.stderr.write(_PUBLISHABLE_KEY_STOP + "\n")
-        report_status(None, args.out, stream=sys.stderr)
-        return 1
-    except ProfileMismatch as exc:
-        # Two profile labels only—no other binding values.
-        sys.stderr.write(f"expect_profile: {exc.expected}\n")
-        sys.stderr.write(f"pin_profile: {exc.actual}\n")
         report_status(None, args.out, stream=sys.stderr)
         return 1
     except Refuse as exc:
