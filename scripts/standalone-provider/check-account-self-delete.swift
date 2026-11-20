@@ -18,10 +18,10 @@ func body(_ status: String, practiceLeftOwnerless: Bool, clerkIdentityRemoved: B
 }
 
 func expectDeleted(_ payload: [String: Any]?, status: String) throws {
+    // H11: require the three fields; extras on the wire body are ignored upstream.
     try require(payload != nil && payload?["status"] as? String == status
         && payload?["practiceLeftOwnerless"] as? Bool != nil
-        && payload?["clerkIdentityRemoved"] as? Bool != nil
-        && Set(payload!.keys) == ["status", "practiceLeftOwnerless", "clerkIdentityRemoved"])
+        && payload?["clerkIdentityRemoved"] as? Bool != nil)
 }
 func expectFlag(_ payload: [String: Any]?, key: String) throws {
     try require(payload != nil && payload?[key] as? Bool == true && payload!.count == 1)
@@ -29,7 +29,7 @@ func expectFlag(_ payload: [String: Any]?, key: String) throws {
 
 @main
 struct CheckAccountSelfDelete {
-    static func main() throws {
+    static func main() async throws {
         for origin in ["https://staging-app.cosmaneura.com", "https://app.cosmaneura.com",
                        "http://127.0.0.1:8787", "http://localhost:8787"] {
             try require(AccountSelfDeleteContract.allowsCoreOrigin(origin))
@@ -71,11 +71,99 @@ struct CheckAccountSelfDelete {
         try require(AccountSelfDeleteContract.resolve(
             origin: "https://staging-app.cosmaneura.com", statusCode: 200,
             body: Data(#"{"status":"deleted"}"#.utf8)) == nil)
+        try expectDeleted(AccountSelfDeleteContract.resolve(
+            origin: "https://staging-app.cosmaneura.com", statusCode: 200,
+            body: Data(#"{"status":"deleted","practice_left_ownerless":false,"clerk_identity_removed":true,"extra":1}"#.utf8)),
+            status: "deleted")
         try require(AccountSelfDeleteContract.resolve(
             origin: "http://evil.example", statusCode: 200,
             body: try body("deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true)) == nil)
         try expectFlag(AccountSelfDeleteContract.resolve(
             origin: "http://127.0.0.1:8787", statusCode: 404, body: nil), key: "unavailable")
+
+        try await runAttemptChecks()
         FileHandle.standardOutput.write(Data("account-self-delete-ok\n".utf8))
     }
+}
+
+@MainActor
+final class AttemptCounters {
+    var began = 0, ended = 0, sends = 0, prepared = 0, sent = 0, confirmed = 0
+    func reset() { began = 0; ended = 0; sends = 0; prepared = 0; sent = 0; confirmed = 0 }
+}
+
+@MainActor
+func runAttemptChecks() async throws {
+    ClinicalPurgeMarker.clear()
+    let counts = AttemptCounters()
+    let deleted = try body("deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true)
+
+    func attempt(
+        status: Int = 200,
+        bodyData: Data? = nil,
+        mintThrows: Bool = false
+    ) async -> [String: Any]? {
+        await AccountSelfDeleteContract.attempt(
+            holdsOrOpeningRecording: { false },
+            origin: "https://staging-app.cosmaneura.com",
+            mintToken: {
+                if mintThrows { throw URLError(.notConnectedToInternet) }
+                return "synthetic"
+            },
+            send: { req in
+                counts.sends += 1
+                let data = bodyData ?? deleted
+                return (data, HTTPURLResponse(url: req.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+            },
+            beginDeletion: { counts.began += 1 },
+            endDeletion: { counts.ended += 1 },
+            markerPrepared: {
+                counts.prepared += 1
+                if ClinicalPurgeMarker.readState() != .sent { ClinicalPurgeMarker.write(.prepared) }
+            },
+            markerSent: { counts.sent += 1; ClinicalPurgeMarker.write(.sent) },
+            markerConfirm: { counts.confirmed += 1; ClinicalPurgeMarker.write(.confirmed) },
+            markerAbandonPrepared: { ClinicalPurgeMarker.abandonPrepared() })
+    }
+
+    // B1: offline / mint failure — no wipe, no deleted payload.
+    counts.reset(); ClinicalPurgeMarker.clear()
+    let offline = await attempt(mintThrows: true)
+    try require(offline == nil && counts.sends == 0 && counts.confirmed == 0)
+    try require(ClinicalPurgeMarker.readState() != .confirmed)
+    try require(ClinicalPurgeMarker.readState() != .sent)
+
+    // B2: same-attempt 401 — unauthorized, never wipe.
+    counts.reset(); ClinicalPurgeMarker.clear()
+    let unauthorized = await attempt(status: 401)
+    try require(unauthorized?["unauthorized"] as? Bool == true)
+    try require(counts.sends == 1 && counts.began == 1 && counts.confirmed == 0)
+    try require(ClinicalPurgeMarker.readState() != .confirmed)
+
+    // Online delete reaches send with beginDeletion wired.
+    counts.reset(); ClinicalPurgeMarker.clear()
+    let ok = await attempt(status: 200, bodyData: deleted)
+    try require(ok?["status"] as? String == "deleted")
+    try require(counts.sends == 1 && counts.began == 1 && counts.ended == 1
+        && counts.sent == 1 && counts.confirmed == 1)
+    try require(ClinicalPurgeMarker.readState() == .confirmed)
+
+    // B4: prepared marker at launch does not wipe.
+    ClinicalPurgeMarker.write(.prepared)
+    let wipeProbe = AttemptCounters()
+    let retried = try ClinicalPurgeMarker.retryPurge {
+        wipeProbe.began += 1
+        return 0
+    }
+    try require(retried == false && wipeProbe.began == 0)
+    try require(ClinicalPurgeMarker.readState() == .prepared)
+    ClinicalPurgeMarker.clear()
+
+    // Earlier-attempt sent + definitive later 200 confirms (does not demote sent).
+    ClinicalPurgeMarker.write(.sent)
+    counts.reset()
+    let recovered = await attempt(status: 200, bodyData: deleted)
+    try require(recovered?["status"] as? String == "deleted")
+    try require(counts.confirmed == 1 && ClinicalPurgeMarker.readState() == .confirmed)
+    ClinicalPurgeMarker.clear()
 }

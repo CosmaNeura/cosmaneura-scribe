@@ -17,8 +17,10 @@ MODULES = [
         "CosmasNativeAuth",
         [
             AUTH / "Sources/CosmasNativeAuth" / f"{name}.swift"
+            # ClinicalPurgeMarker is required: AccountSelfDeleteContract references it.
             for name in [
                 "AccountSelfDeleteContract",
+                "ClinicalPurgeMarker",
                 "DesktopAuthProtocol",
                 "KeychainAccessBlock",
                 "NativeAuthAwait",
@@ -251,17 +253,12 @@ def main() -> None:
                 token_idx = handler.find("auth.token(")
                 if token_idx < 0:
                     raise SystemExit(f"missing auth.token in deleteAccount of {relative}")
-                if relative.endswith("CosmasWorkspaceAuthPlugin.swift"):
-                    if "AccountSelfDeleteContract.attempt(" not in handler:
-                        raise SystemExit(f"iOS deleteAccount must call attempt in {relative}")
-                    held = handler.find("recordingBridge.holdsOrOpeningRecording")
-                    if not (0 <= held < token_idx):
-                        raise SystemExit(f"iOS must refuse recording before token in {relative}")
-                    continue
-                o = handler.find("AccountSelfDeleteContract.accountDeleteURL(")
-                r = handler.find("AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(")
-                if o < 0 or r < 0 or not (o < token_idx < r):
-                    raise SystemExit(f"deleteAccount order broken in {relative}")
+                if "AccountSelfDeleteContract.attempt(" not in handler:
+                    raise SystemExit(f"deleteAccount must call attempt in {relative}")
+                held = handler.find("holdsOrOpeningRecording")
+                if not (0 <= held < token_idx):
+                    raise SystemExit(f"must refuse recording before token in {relative}")
+                continue
             binding_executable = str(target / "binding-checks")
             run(
                 "mac-binding-build",

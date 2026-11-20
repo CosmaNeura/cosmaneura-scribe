@@ -99,15 +99,15 @@ export class DurableDesktopRecordStore {
     this.closed = true; this.key = undefined; this.database.close();
     DurableDesktopRecordStore.openStores.get(this.directory)?.delete(this);
   }
-  /** Close open stores under directory, then recursively remove account SQLite files. */
-  static wipeDirectory(directory: string): void {
+  /** Close every open store under directory, then remove matching files. */
+  static wipeDirectory(directory: string, match: (name: string) => boolean = () => true): void {
     requireMain();
     if (typeof directory !== "string" || !isAbsolute(directory)) throw failure();
     for (const store of [...(DurableDesktopRecordStore.openStores.get(directory) ?? [])]) store.close();
     DurableDesktopRecordStore.openStores.delete(directory);
-    wipeTree(directory, name => name.includes(".sqlite"));
+    wipeTree(directory, match);
   }
-  /** Account-scoped wipe: only sha256(recoveryScope:workspaceId).sqlite* for that account. */
+  /** Account-scoped wipe: sqlite* plus custody `.key` for sha256(recoveryScope:workspaceId). */
   static wipeAccount(directory: string, recoveryScope: string, workspaceId: string): void {
     requireMain();
     if (typeof directory !== "string" || !isAbsolute(directory)) throw failure();
@@ -115,7 +115,7 @@ export class DurableDesktopRecordStore {
     for (const store of [...(DurableDesktopRecordStore.openStores.get(directory) ?? [])]) {
       if (store.scope === scope) store.close();
     }
-    wipeTree(directory, name => name === `${scope}.sqlite` || name.startsWith(`${scope}.sqlite`));
+    wipeTree(directory, name => name === `${scope}.key` || name === `${scope}.sqlite` || name.startsWith(`${scope}.sqlite`));
   }
   wrapping(namespace: string, sessionId: string): LocalSessionKeyWrapping {
     return { key: this.current(), additionalData: this.aad(namespace, `session-key:${uuid(sessionId)}`, 0) };

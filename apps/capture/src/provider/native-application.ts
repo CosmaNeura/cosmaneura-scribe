@@ -29,7 +29,11 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
       await purgeLocalClinicalData(clinicalStoresFromKeys({
         list: async () => (await SecureQueue.list()).keys,
         delete: async key => { await SecureQueue.delete({ key }); },
-        clearAll: async () => { await SecureQueue.clearAll(); },
+        // H8: verify remaining keys after clearAll (plugin may return cleared or remaining).
+        clearAll: async () => {
+          await SecureQueue.clearAll();
+          return (await SecureQueue.list()).keys.length;
+        },
       }));
     },
     activateScribe: (signal, revision) => activateNativeScribe(native, signal, revision),

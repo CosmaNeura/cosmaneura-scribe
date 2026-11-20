@@ -53,8 +53,12 @@ describe("account self-delete interpret + flow", () => {
       expect(() => interpretAccountSelfDeleteResponse(status, {})).toThrow(new RegExp(`account_self_delete_http_${status}`));
     }
     expect(() => interpretAccountSelfDeleteResponse(200, { status: "deleted" })).toThrow(/account_self_delete_body/);
+    // H11: extras ignored when the three fields are present.
+    expect(interpretAccountSelfDeleteResponse(200, {
+      status: "deleted", practice_left_ownerless: false, clerk_identity_removed: true, extra: 1,
+    })).toMatchObject({ outcome: "deleted" });
     expect(interpretAccountSelfDeleteBridge({
-      status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true,
+      status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true, clinicalPurgeFailed: true,
     })).toMatchObject({ outcome: "deleted" });
     for (const [payload, outcome] of [
       [{ unauthorized: true }, "unauthorized"], [{ gone: true }, "gone"],
@@ -79,16 +83,31 @@ describe("account self-delete interpret + flow", () => {
     expect(ok.purgeLocalClinicalData.mock.invocationCallOrder[0]!)
       .toBeLessThan(ok.clearLocalCredentials.mock.invocationCallOrder[0]!);
     expect(ok.flow.read()).toMatchObject({ phase: "complete", completion: "deleted" });
-    for (const result of [{ outcome: "unauthorized" }, { outcome: "gone" }] as const) {
-      const f = fixture({ client: { deleteAccount: vi.fn(async () => result as AccountSelfDeleteResult) } });
-      f.flow.confirm("DELETE"); await f.flow.submit();
-      expect(f.purgeLocalClinicalData).not.toHaveBeenCalled();
-      expect(f.clearLocalCredentials).toHaveBeenCalledOnce();
-    }
+    // 401: keepSession + re-auth, no wipe, never "deleted" copy.
+    const unauthorized = fixture({
+      client: { deleteAccount: vi.fn(async (): Promise<AccountSelfDeleteResult> => ({ outcome: "unauthorized" })) },
+    });
+    unauthorized.flow.confirm("DELETE"); await unauthorized.flow.submit();
+    expect(unauthorized.purgeLocalClinicalData).not.toHaveBeenCalled();
+    expect(unauthorized.clearLocalCredentials).toHaveBeenCalledOnce();
+    expect(unauthorized.flow.read()).toMatchObject({
+      phase: "failed", error: ACCOUNT_SELF_DELETE_MESSAGES.keepSession,
+    });
+    expect(unauthorized.flow.read().error).not.toMatch(/has been deleted/);
+    const gone = fixture({
+      client: { deleteAccount: vi.fn(async (): Promise<AccountSelfDeleteResult> => ({ outcome: "gone" })) },
+    });
+    gone.flow.confirm("DELETE"); await gone.flow.submit();
+    expect(gone.purgeLocalClinicalData).not.toHaveBeenCalled();
+    expect(gone.clearLocalCredentials).toHaveBeenCalledOnce();
     for (const result of [
-      { outcome: "unavailable" }, { outcome: "retryable" }, { outcome: "recording_active" },
-    ] as const) {
-      const f = fixture({ client: { deleteAccount: vi.fn(async () => result as AccountSelfDeleteResult) } });
+      { outcome: "unavailable" as const },
+      { outcome: "retryable" as const },
+      { outcome: "recording_active" as const },
+    ]) {
+      const f = fixture({
+        client: { deleteAccount: vi.fn(async (): Promise<AccountSelfDeleteResult> => result) },
+      });
       f.flow.confirm("DELETE"); await f.flow.submit();
       expect(f.purgeLocalClinicalData).not.toHaveBeenCalled();
       expect(f.clearLocalCredentials).not.toHaveBeenCalled();
@@ -100,6 +119,25 @@ describe("account self-delete interpret + flow", () => {
     thrown.flow.confirm("DELETE"); await thrown.flow.submit();
     expect(thrown.purgeLocalClinicalData).not.toHaveBeenCalled();
     expect(thrown.flow.read().error).toMatch(/still signed in/);
+    expect(thrown.flow.read().error).not.toMatch(/has been deleted/);
+    // Offline / token-mint failure: keepSession copy only — never "deleted" text.
+    const offline = fixture({
+      client: { deleteAccount: vi.fn(async () => { throw new Error("account_self_delete_offline"); }) },
+    });
+    offline.flow.confirm("DELETE"); await offline.flow.submit();
+    expect(offline.purgeLocalClinicalData).not.toHaveBeenCalled();
+    expect(offline.clearLocalCredentials).not.toHaveBeenCalled();
+    expect(offline.flow.read()).toMatchObject({
+      phase: "failed", error: ACCOUNT_SELF_DELETE_MESSAGES.keepSession,
+    });
+    expect(offline.flow.read().error).not.toMatch(/has been deleted/);
+    const mintFail = fixture({
+      client: { deleteAccount: vi.fn(async () => { throw new Error("account_self_delete_token_mint"); }) },
+    });
+    mintFail.flow.confirm("DELETE"); await mintFail.flow.submit();
+    expect(mintFail.purgeLocalClinicalData).not.toHaveBeenCalled();
+    expect(mintFail.flow.read().error).toBe(ACCOUNT_SELF_DELETE_MESSAGES.keepSession);
+    expect(mintFail.flow.read().error).not.toMatch(/has been deleted/);
     const cancel = fixture();
     cancel.flow.confirm("DELETE");
     expect(cancel.flow.cancel()).toBe(true);
@@ -136,9 +174,19 @@ describe("account self-delete interpret + flow", () => {
     changed.flow.confirm("DELETE"); await changed.flow.submit();
     expect(changed.deleteAccount).not.toHaveBeenCalled();
 
+    // H9: unconfirmed stop surfaces as local_clear_failed after server delete.
     const closeFail = fixture({ closeWorkspace: vi.fn(async () => { throw new Error("close_failed"); }) });
     closeFail.flow.confirm("DELETE"); await closeFail.flow.submit();
-    expect(closeFail.flow.read().phase).toBe("complete");
+    expect(closeFail.flow.read().phase).toBe("local_clear_failed");
+    // H10 deferred: clerkIdentityRemoved:false still completes as deleted (hunk reverted).
+    const partial = fixture({
+      client: { deleteAccount: vi.fn(async (): Promise<AccountSelfDeleteResult> => ({
+        outcome: "deleted", status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: false,
+      })) },
+    });
+    partial.flow.confirm("DELETE"); await partial.flow.submit();
+    expect(partial.flow.read()).toMatchObject({ phase: "complete", completion: "deleted" });
+    expect(partial.purgeLocalClinicalData).toHaveBeenCalledOnce();
     const signOutFail = fixture({
       clearLocalCredentials: vi.fn(async () => { throw new Error("sign_out_failed"); }),
     });

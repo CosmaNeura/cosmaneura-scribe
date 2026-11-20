@@ -1,6 +1,5 @@
 import Foundation
 
-/// Shared Cosmas T-REL-8a / PR #940 self-delete contract (iPhone + Mac).
 public enum AccountSelfDeleteContract {
     public enum Outcome: Equatable, Sendable {
         case deleted(status: String, practiceLeftOwnerless: Bool, clerkIdentityRemoved: Bool)
@@ -43,12 +42,12 @@ public enum AccountSelfDeleteContract {
         case 200:
             guard let body,
                   let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-                  Set(object.keys) == ["status", "practice_left_ownerless", "clerk_identity_removed"],
                   let status = object["status"] as? String,
                   status == "deleted" || status == "already_deleted",
                   let practiceLeftOwnerless = object["practice_left_ownerless"] as? Bool,
                   let clerkIdentityRemoved = object["clerk_identity_removed"] as? Bool
             else { return .rejected }
+            // H11: require the three fields; ignore extras.
             return .deleted(status: status, practiceLeftOwnerless: practiceLeftOwnerless,
                             clerkIdentityRemoved: clerkIdentityRemoved)
         default: return .rejected
@@ -73,22 +72,46 @@ public enum AccountSelfDeleteContract {
         allowsCoreOrigin(origin) ? bridgePayload(for: interpret(statusCode: statusCode, body: body)) : nil
     }
 
+    /// Wipe only on definitive 200 deleted/already_deleted. Never on throw or same-attempt 401.
+    /// `sent` markers from an earlier attempt may confirm when a later answer is definitive 200.
     @MainActor
     public static func attempt(
-        holdsOrOpeningRecording: Bool, origin: String?,
+        holdsOrOpeningRecording: () -> Bool, origin: String?,
         mintToken: () async throws -> String,
-        send: (URLRequest) async throws -> (Data, URLResponse)
+        send: (URLRequest) async throws -> (Data, URLResponse),
+        beginDeletion: (() -> Void)? = nil,
+        endDeletion: (() -> Void)? = nil,
+        markerPrepared: (() -> Void)? = nil,
+        markerSent: (() -> Void)? = nil,
+        markerConfirm: (() -> Void)? = nil,
+        markerAbandonPrepared: (() -> Void)? = nil
     ) async -> [String: Any]? {
-        if holdsOrOpeningRecording { return bridgePayload(for: .recordingActive) }
+        if holdsOrOpeningRecording() { return bridgePayload(for: .recordingActive) }
         guard let origin, accountDeleteURL(origin: origin) != nil else { return nil }
+        var reachedSend = false
+        markerPrepared?()
+        beginDeletion?()
+        defer { endDeletion?(); if !reachedSend { markerAbandonPrepared?() } }
         do {
             let token = try await mintToken()
+            // H9: recheck recording after mint await (deletion flag is not part of holds).
+            if holdsOrOpeningRecording() { return bridgePayload(for: .recordingActive) }
             guard let request = makeAuthorizedAccountDeleteRequest(
                 origin: origin, bearerToken: token) else { return nil }
+            markerSent?()
+            reachedSend = true
             let (data, response) = try await send(request)
             guard let http = response as? HTTPURLResponse else { return nil }
-            return resolve(origin: origin, statusCode: http.statusCode, body: data)
-        } catch { return nil }
+            // 401 is never a delete — keepSession / re-auth upstream; leave sent marker if any.
+            if http.statusCode == 401 { return bridgePayload(for: .unauthorized) }
+            let payload = resolve(origin: origin, statusCode: http.statusCode, body: data)
+            if payload?["status"] != nil { markerConfirm?() }
+            else if http.statusCode != 401 { markerAbandonPrepared?() }
+            return payload
+        } catch {
+            // Offline / mint / transport throw: never invent already_deleted.
+            return nil
+        }
     }
 
     private static func isExactLocalhostHTTP(_ origin: String) -> Bool {

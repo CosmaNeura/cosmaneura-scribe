@@ -37,6 +37,13 @@ async function fixture() {
   vi.stubGlobal("Element", Surface);
   vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "visible", body: new Surface() }));
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  vi.stubGlobal("indexedDB", {
+    databases: async () => [],
+    deleteDatabase: () => ({
+      set onsuccess(h: () => void) { queueMicrotask(h); },
+      set onerror(_h: () => void) {}, set onblocked(_h: () => void) {}, error: null,
+    }),
+  });
   let state: ProviderSessionState = { phase: "ready", revision: crypto.randomUUID() };
   let observe!: (value: ProviderSessionState) => void;
   const deleteAccount = vi.fn(async () => ({

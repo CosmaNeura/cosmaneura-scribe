@@ -5,6 +5,7 @@ import Foundation
 import CoreFoundation
 #if os(iOS)
 import AVFAudio
+import CosmaneuraSecureQueue
 #endif
 
 @objc(CosmasWorkspaceAuthPlugin)
@@ -97,7 +98,21 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         }
     }
 
+    /// H2/H6: retry confirmed native purge only; refuse while a confirmed marker remains.
+    @MainActor private func ensureClinicalPurgeCleared() -> Bool {
+#if os(iOS)
+        guard ClinicalPurgeMarker.readState() == .confirmed else { return true }
+        do {
+            _ = try ClinicalPurgeMarker.retryPurge { try ClinicalSecureQueuePurge.clearAllRemaining() }
+            return ClinicalPurgeMarker.readState() != .confirmed
+        } catch { return false }
+#else
+        return true
+#endif
+    }
+
     @MainActor private func initializeAuth() {
+        _ = ensureClinicalPurgeCleared()
         guard auth == nil else { return }
         let settings = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any] ?? [:]
         if settings["enabled"] as? Bool != true {
@@ -164,6 +179,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         Task { @MainActor in
             guard call.options.isEmpty else { return Self.reject(call) }
             self.initializeAuth()
+            guard self.ensureClinicalPurgeCleared() else { return Self.reject(call) }
             do {
                 guard let auth = self.auth else { throw NativeAuthError.unavailable }
                 call.resolve(Self.payload(try await auth.signIn()))
@@ -570,14 +586,23 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             let revision = auth.state().revision
             let origin = Self.providerApplicationConfiguration()?["coreOrigin"] as? String
             guard let payload = await AccountSelfDeleteContract.attempt(
-                holdsOrOpeningRecording: Self.recordingBridge.holdsOrOpeningRecording, origin: origin,
+                holdsOrOpeningRecording: { Self.recordingBridge.holdsOrOpeningRecording }, origin: origin,
                 mintToken: {
                     let token = try await auth.token(expectedRevision: revision)
                     guard auth.state().phase == .ready, auth.state().revision == revision
                     else { throw URLError(.userAuthenticationRequired) }
                     return token
                 },
-                send: { try await URLSession.shared.data(for: $0) })
+                send: { try await URLSession.shared.data(for: $0) },
+                beginDeletion: { Self.recordingBridge.beginAccountDeletion() },
+                endDeletion: { Self.recordingBridge.endAccountDeletion() },
+                markerPrepared: {
+                    // Never demote an earlier-attempt sent marker (B1 recovery).
+                    if ClinicalPurgeMarker.readState() != .sent { ClinicalPurgeMarker.write(.prepared) }
+                },
+                markerSent: { ClinicalPurgeMarker.write(.sent) },
+                markerConfirm: { ClinicalPurgeMarker.write(.confirmed) },
+                markerAbandonPrepared: { ClinicalPurgeMarker.abandonPrepared() })
             else { call.reject("Account deletion unavailable", "account_self_delete_failed"); return }
             call.resolve(payload)
         }

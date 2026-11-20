@@ -13,7 +13,7 @@ import {
   type AccountSelfDeleteClient,
 } from "./account-self-delete";
 import { mountAccountSelfDeleteDialog } from "./account-self-delete-dialog";
-import { deleteProviderFlowDatabases } from "./purge-local-clinical";
+import { purgeLocalClinicalWithFlowDatabases } from "./purge-local-clinical";
 
 export type { ProviderSessionState } from "./native-plugin";
 export interface ProviderApplicationHost {
@@ -435,9 +435,9 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         sameAccountSession: () =>
           accountDeleteInFlight || (state?.phase === "ready" && state.revision === revision),
         closeWorkspace: close,
-        purgeLocalClinicalData: async () => {
-          await host.purgeLocalClinicalData?.(); await deleteProviderFlowDatabases();
-        },
+        purgeLocalClinicalData: () => purgeLocalClinicalWithFlowDatabases(
+          async () => { await host.purgeLocalClinicalData?.(); },
+        ),
         clearLocalCredentials: async () => {
           clearCachedProviderPreferences();
           logoutPending = true; accessClosed = true; invalidate();

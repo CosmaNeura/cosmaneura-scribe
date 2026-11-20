@@ -145,19 +145,18 @@ import ScribeStorePipe
             else { throw ProviderNativeError.invalidRequest }
             guard auth.state().phase == .ready else { throw ProviderNativeError.unavailable }
             let revision = auth.state().revision
-            guard let origin = Self.coreOriginForSelfDelete(),
-                  AccountSelfDeleteContract.accountDeleteURL(origin: origin) != nil
+            let origin = Self.coreOriginForSelfDelete()
+            // Mac recording refuse lives in Electron; H9 recheck via attempt closure.
+            guard let payload = await AccountSelfDeleteContract.attempt(
+                holdsOrOpeningRecording: { false }, origin: origin,
+                mintToken: {
+                    let token = try await auth.token(expectedRevision: revision)
+                    guard auth.state().phase == .ready, auth.state().revision == revision
+                    else { throw URLError(.userAuthenticationRequired) }
+                    return token
+                },
+                send: { try await URLSession.shared.data(for: $0) })
             else { throw ProviderNativeError.unavailable }
-            let token = try await auth.token(expectedRevision: revision)
-            guard auth.state().phase == .ready, auth.state().revision == revision,
-                  let request = AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(
-                    origin: origin, bearerToken: token)
-            else { throw ProviderNativeError.unavailable }
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse,
-                  let payload = AccountSelfDeleteContract.resolve(
-                    origin: origin, statusCode: http.statusCode, body: data)
-            else { throw ProviderNativeError.response }
             return payload
         case "prepareProviderSignIn":
             guard Set(payload.keys) == ["preparationId", "revision", "workspaceId", "bindingRef"],
