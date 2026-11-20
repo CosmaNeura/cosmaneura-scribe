@@ -139,8 +139,10 @@ binary would still need a later production resubmit before public customers.
 
 | Item | Who | What to create (placeholders only) |
 | --- | --- | --- |
-| Production Clerk user | John (Clerk dashboard for production issuer) | Email `<REVIEWER_SYNTHETIC_EMAIL>`; password or other factor Apple can complete in the hosted sign-in window. Prefer a **dedicated** synthetic reviewer identity — not a personal founder login. Mark account synthetic / non-PHI. |
-| Production Cosmas practice membership | John (Core / Cosmas admin path) | Active practice membership for that Clerk subject; workforce/provider role sufficient for Scribe catalog + walk-in creation. Practice and patients must be invented names only. |
+| Production Clerk user (main demo) | John (Clerk dashboard for production issuer) | Email `<REVIEWER_SYNTHETIC_EMAIL>`; password or other factor Apple can complete in the hosted Sign-in Required fields. Prefer a **dedicated** synthetic reviewer identity — not a personal founder login. Mark account synthetic / non-PHI. This is the primary Review walkthrough account — **do not** use it for Delete account. |
+| Production Clerk user (deletion test only) | John (Clerk dashboard for production issuer) | Second synthetic account email `<REVIEWER_DELETION_TEST_EMAIL>`; password or other factor stored only in founder secret store / given to Review via Contact if needed — **never** paste real passwords into Notes or git. Use **only** for the Delete account test so the main demo account survives. Same synthetic / non-PHI rules; practice/activation/capture grant required like the main demo. |
+| Production Cosmas practice membership | John (Core / Cosmas admin path) | Active practice membership for **each** Clerk subject above; workforce/provider role sufficient for Scribe catalog + walk-in creation. Practice and patients must be invented names only. |
+| Re-create after each Review | John | After each App Review cycle (or whenever either account was deleted), John re-creates **both** synthetic accounts himself (main demo + deletion-test), re-grants practice/activation/capture, and updates App Store Connect Sign-in Required / Contact as needed. Placeholders only in git. |
 | Scribe capability / activation | John | Account must **not** return `scribe_account_setup_required` for `practice` or `activation` on the Mac client. Complete practice onboarding and Scribe activation **before** Review (browser/Core tools or iOS setup UI). Activation alone is not recording authority; still need capture grant. |
 | Capture / cohort grant | John | Founder-selected synthetic practice cohort with Scribe capture enabled for desktop, `non_phi_test_only` / synthetic classification only. |
 | Production package profile | John (founder unlock) | MAS/TestFlight candidate sealed via existing `assemble-production-provider.py` + `--production-inputs` + `--enable-production-clients`. About badge must show Production (**P**). Do not submit a disabled assemble receipt. |
@@ -204,7 +206,7 @@ APP STORE DISTRIBUTION (Guideline 3.2)
 Cosmas Scribe is a Mac App Store app for any licensed clinician with a CosmaNeura practice account. It is not a private enterprise build limited to one organization.
 
 WHAT THE APP DOES
-Scribe helps a clinician record a visit after patient consent, then prepare a visit note in the CosmaNeura web dashboard. This Review build is sealed to production hosts and uses synthetic (invented) data only. Please do not enter real patient information.
+Scribe helps a clinician record a visit after patient consent, then prepare a visit note in the CosmaNeura web dashboard. This is the production app. The demo account contains invented data only. Please do not enter real patient information.
 
 AI SERVICES
 Server-side processing uses Azure AI Speech for speech-to-text and diarization. When Spanish-to-English translation is admitted for a visit, translation uses Azure GPT-4.1. The Mac app captures and uploads encrypted audio; clinicians review notes in the web dashboard.
@@ -229,13 +231,13 @@ HOW TO RECORD A SYNTHETIC SAMPLE
 7. Choose “Finish visit.” Wait for save/upload. Optional: on Today’s patients, open More → Open the dashboard (may require a second browser sign-in to CosmaNeura notes).
 
 NETWORK
-The app needs HTTPS to: production Clerk (hosted sign-in), https://app.cosmaneura.com (catalog, consent, session, upload authority), and one Azure Blob Storage origin for encrypted audio upload. Offline use is not supported for this demo.
+The app needs HTTPS to: production Clerk (hosted sign-in), https://app.cosmaneura.com (catalog, consent, session, upload authority), and one Azure Blob Storage origin for encrypted audio upload. Offline use is not supported.
 
 ACCOUNT DELETION (Guideline 5.1.1(v)) — DONE
-In-app Delete account is available in this Mac build (132). Signed-in users: open Account → Delete account, type DELETE, and confirm. The app calls CosmaNeura’s account self-delete API (DELETE /v1/me/account). After the server confirms deletion, this device wipes local clinical data and signs out. If the request fails offline or returns 401, local clinical data is kept and the account is not deleted. Cancel Scribe access only cancels capture access; it is not account deletion.
+In-app Delete account is available in this Mac build (132). Test it with the dedicated deletion-test account only (<REVIEWER_DELETION_TEST_EMAIL>; ask Contact for the factor if needed)—not the main demo account in Sign-in Required—so the main demo login survives. Sign in with that account → Account → Delete account → type DELETE → confirm. Calls DELETE /v1/me/account. After server confirm, this device wipes local clinical data and signs out. Offline or 401: local clinical data kept; account not deleted. Cancel Scribe access is not account deletion.
 
 DEMO ACCOUNT
-Use only the Sign-in Required credentials in App Review Information. All names and speech must remain synthetic.
+Use Sign-in Required credentials for the walkthrough; use the deletion-test account only for Delete account. All names and speech must remain synthetic.
 ```
 
 **Maintainer notes (not for Connect paste):**
@@ -278,9 +280,8 @@ Use only the Sign-in Required credentials in App Review Information. All names a
   `desktop-audio-preflight.test.ts`, `consent-preparation.test.ts`.
 
 **Character count (template above, including labels):** keep the filled Notes
-(with short email/password reminders if needed) under ~4,000 characters. Prefer
-credentials only in the Sign-in Required fields, not duplicated at length in
-Notes.
+under ~4,000 characters. Credentials go only in the App Review Information
+sign-in fields, never in Notes.
 
 ---
 
@@ -294,8 +295,8 @@ are instructions or placeholders — never commit real secrets.
 | **Name / Subtitle / Keyword / Description / Screenshots** | See § Metadata — name **Cosmas Scribe**; subtitle **Record and review visit notes**; still remove “Mac” from Description and check Screenshots (cautious practice). |
 | **Regions** | **United States** |
 | **Sign-in required** | **Yes** (checked). The Mac app is unusable for Review without Clerk sign-in. |
-| **User name** | `<REVIEWER_SYNTHETIC_EMAIL>` — the production Clerk primary email John provisions (synthetic only). |
-| **Password** | `<REVIEWER_SYNTHETIC_PASSWORD>` — store only in App Store Connect / founder secret store; **never commit real passwords to git**. Or document in Notes if the instance uses email one-time code only. Prefer a password factor for Review simplicity. |
+| **User name** | `<REVIEWER_SYNTHETIC_EMAIL>` — main demo production Clerk email John provisions (synthetic only). Deletion-test account is separate (`<REVIEWER_DELETION_TEST_EMAIL>`); do not put that password in Notes. |
+| **Password** | `<REVIEWER_SYNTHETIC_PASSWORD>` — main demo only; store only in App Store Connect / founder secret store; **never commit real passwords to git**. Prefer a password factor for Review simplicity. Deletion-test factor stays in founder secret store / Contact reply — never in Notes. |
 | **Contact information — First name** | `<CONTACT_FIRST_NAME>` (founder contact who can answer within Review hours). |
 | **Contact information — Last name** | `<CONTACT_LAST_NAME>` |
 | **Contact information — Phone number** | `<CONTACT_PHONE_E164>` — reachable during Review. |
@@ -306,11 +307,15 @@ are instructions or placeholders — never commit real secrets.
 | **Advertising Identifier** | N/A unless the binary uses IDFA (Scribe Mac does not advertise). |
 
 **Pre-submit smoke (founder; production-sealed signed build 132):** cold launch →
-Sign in with the exact App Review credentials → Today’s patients → walk-in →
-mic permission → consent → short synthetic recording → Finish visit → upload
-completes. Also complete the #552 Try again path and #558 install-over-old-app
-checks before upload. If launch fails, do not submit; that is the separate
-2.1(a) launch-fix track (**root cause still unconfirmed**).
+Sign in with the exact App Review main-demo credentials → Today’s patients →
+walk-in → mic permission → consent → short synthetic recording → Finish visit →
+upload completes. Then sign out, sign in with the dedicated deletion-test
+account, run **Account → Delete account** (type DELETE → confirm) once, and
+confirm local wipe / signed-out state. Also complete the #552 Try again path and
+#558 install-over-old-app checks before upload. If launch fails, do not submit;
+that is the separate 2.1(a) launch-fix track (**root cause still unconfirmed**).
+John re-creates both synthetic accounts after each Review (or after the
+deletion-test account is consumed).
 
 ---
 
