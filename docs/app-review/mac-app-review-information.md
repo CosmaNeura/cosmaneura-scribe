@@ -44,10 +44,14 @@ form inside the app.
 
 **Account deletion (Guideline 5.1.1(v)) — DONE:** In-app **Delete account** is
 available on Mac for signed-in users (**Account → Delete account**). That path
-permanently deletes the account via the Core self-delete endpoint
-(`DELETE /v1/me/account`). This ships in build **132** (same control as iPhone;
-Scribe #519). **Cancel Scribe access** only cancels capture access and must not
-be described as account deletion.
+calls the Core self-delete endpoint (`DELETE /v1/me/account`). After the server
+confirms deletion (`200` `deleted` / `already_deleted`), this device wipes local
+clinical data and signs out. Offline or unconfirmed failures, and `401`, keep
+local clinical data and do not delete the account (`401` uses keep-session
+failure copy and clears credentials for re-auth; no clinical wipe). This ships
+in build **132** (same control as iPhone; Scribe #519 + #563). **Cancel Scribe
+access** only cancels capture access and must not be described as account
+deletion.
 
 **Signed-build checks still owed before any upload:**
 
@@ -228,7 +232,7 @@ NETWORK
 The app needs HTTPS to: production Clerk (hosted sign-in), https://app.cosmaneura.com (catalog, consent, session, upload authority), and one Azure Blob Storage origin for encrypted audio upload. Offline use is not supported for this demo.
 
 ACCOUNT DELETION (Guideline 5.1.1(v)) — DONE
-In-app Delete account is available in this Mac build (132). Signed-in users: open Account → Delete account, type DELETE, and confirm. The app permanently deletes the account via CosmaNeura’s account self-delete API (DELETE /v1/me/account). Cancel Scribe access only cancels capture access; it is not account deletion.
+In-app Delete account is available in this Mac build (132). Signed-in users: open Account → Delete account, type DELETE, and confirm. The app calls CosmaNeura’s account self-delete API (DELETE /v1/me/account). After the server confirms deletion, this device wipes local clinical data and signs out. If the request fails offline or returns 401, local clinical data is kept and the account is not deleted. Cancel Scribe access only cancels capture access; it is not account deletion.
 
 DEMO ACCOUNT
 Use only the Sign-in Required credentials in App Review Information. All names and speech must remain synthetic.
@@ -246,7 +250,8 @@ Use only the Sign-in Required credentials in App Review Information. All names a
   `apps/capture/src/provider/application.ts:129` (“Sign in”),
   `:134-138` (“Check access” / “Open workspace”). Account menu
   (`application.ts`) includes Sign out, **Delete account** (DONE; ships in
-  build 132 / Scribe #519), Cancel Scribe access, and Get help — not dashboard.
+  build 132 / Scribe #519 + #563), Cancel Scribe access, and Get help — not
+  dashboard.
 - Dashboard control on Today’s patients:
   `apps/capture/src/provider/workspace.ts:348` (`More` → `Open the dashboard`);
   opening it may require a second browser sign-in.
@@ -254,11 +259,14 @@ Use only the Sign-in Required credentials in App Review Information. All names a
   (`PUBLIC_STORE_MAC_NAME` / #558). `preparation-controls.ts:14` only compares
   `document.title` for in-app repair copy — it does **not** prove the System
   Settings TCC label on a signed install.
-- Mac account deletion is **DONE**: in-app **Delete account** for signed-in
-  users (Account → Delete account; Core `DELETE /v1/me/account`). Ships in
-  build **132** (same as iPhone; Scribe #519). **Cancel Scribe access** cancels
-  Scribe capture access only and must **not** be described to Apple as account
-  deletion.
+- Mac account deletion is **DONE** and ships in build **132**: in-app **Delete
+  account** for signed-in users (Account → Delete account; Core
+  `DELETE /v1/me/account`). After server-confirmed delete, local clinical data
+  is wiped and the session ends. Offline/unconfirmed failures and `401` keep
+  local clinical data and do not delete the account (`401`: keep-session copy +
+  credential clear for re-auth; no clinical wipe) — Scribe #519 + #563.
+  **Cancel Scribe access** cancels Scribe capture access only and must **not**
+  be described to Apple as account deletion.
 - Usage-description strings (packaging drafts, not a checked-in app
   `Info.plist` on this branch):
   `scripts/prepare-desktop-mas-variant.py:74-75` and
@@ -394,8 +402,10 @@ signed-build checks pass, and App Review fields are ready for John to paste
 
 ACCOUNT DELETION — DONE
 In-app Delete account is available on Mac and ships in build 132 (Account →
-Delete account; Core `DELETE /v1/me/account`; same as iPhone via Scribe #519).
-Do not merge `main` into this branch until after #519 and #563 land.
+Delete account; Core `DELETE /v1/me/account`; same as iPhone via Scribe #519 +
+#563). Server-confirmed delete wipes local clinical data and signs out;
+offline/unconfirmed and `401` keep local clinical data and do not delete the
+account.
 ```
 
 ---
@@ -409,7 +419,7 @@ Do not merge `main` into this branch until after #519 and #563 land.
 | Founder production assemble | `scripts/assemble-production-provider.py`; projection `scripts/standalone-provider/prepare_production_profiles.py` |
 | Standalone host (no practice setup wire) | `apps/desktop-companion/src/standalone-provider.ts` (`workspaceId` use L55, L73-76) |
 | Desktop UI host | `apps/capture/src/provider/desktop-application.ts` |
-| Session / Sign in UI | `apps/capture/src/provider/application.ts` (Account menu; Sign in; Check access / Open workspace); Delete account DONE in build 132 via Scribe #519 (`account-self-delete.ts` + native owners) |
+| Session / Sign in UI | `apps/capture/src/provider/application.ts` (Account menu; Sign in; Check access / Open workspace); Delete account DONE in build 132 via Scribe #519 + #563 (`account-self-delete.ts`, `purge-local-clinical.ts`, native owners) |
 | Today’s patients → More → dashboard | `apps/capture/src/provider/workspace.ts:348` |
 | In-app repair-copy app name (not the System Settings label) | `apps/capture/src/provider/preparation-controls.ts:14,75,80` |
 | Store public display name | `apps/desktop-companion/src/public-app-release.ts` (`PUBLIC_STORE_MAC_NAME` = Cosmas Scribe) |
