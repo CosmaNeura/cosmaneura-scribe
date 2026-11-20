@@ -95,6 +95,13 @@ private func recordingUUID(_ value: Any?) throws -> UUID {
     openingRevision == nil && (entry.map { [.sealed, .closed].contains($0.host.phase) && !$0.host.busy } ?? true)
   }
 
+  /// True while open() is in flight or a live capture is retained (not sealed/closed).
+  var holdsOrOpeningRecording: Bool {
+    if openingRevision != nil { return true }
+    guard let entry else { return false }
+    return ![.sealed, .closed].contains(entry.host.phase)
+  }
+
   func recordReadyTiming(revision: String, milliseconds: Double) {
     guard milliseconds.isFinite, milliseconds >= 0, milliseconds <= 3_600_000,
       let selected = entry, selected.selection.revision == revision,

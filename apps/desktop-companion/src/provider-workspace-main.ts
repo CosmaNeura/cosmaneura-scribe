@@ -23,6 +23,11 @@ export interface DesktopProviderMainHost {
   readonly cancellation?: ScribeCancellation;
   /** Trusted fixed account dashboard, independent of a visit connection. */
   readonly openDashboard?: (signal: AbortSignal) => Promise<void>;
+  /** Capture wipe scopes before DELETE; closure never calls Core. */
+  readonly prepareClinicalPurge?: () => Promise<() => Promise<void>>;
+  readonly abandonClinicalPurge?: () => void;
+  /** Test fallback wipe when prepareClinicalPurge is absent. */
+  readonly purgeLocalClinicalData?: () => Promise<void>;
   /** Main-only complete provider workspace; never forward this object to preload. */
   connect(signal: AbortSignal): Promise<{ readonly workspace: ProviderWorkspaceHost<DesktopProviderRecorder>; dispose(): Promise<void> }>;
 }
@@ -44,6 +49,7 @@ interface Encounter {
   readonly value: AuthorizedProviderEncounter<DesktopProviderRecorder>;
   patientMatchJournal?: Promise<PatientMatchJournal>;
   recorder?: { dispose(): Promise<void> };
+  liveRecorder?: DesktopProviderRecorder;
   recordReadyDiagnostic?: (durationMs: number) => void;
   recorderOpening?: boolean;
   preparationAttempt?: { readonly key: string; readonly began: number };
@@ -106,7 +112,9 @@ export class DesktopProviderWorkspaceMain {
       : request.method === "encounter_setup" && request.payload.action === "hidden" ? "provider_visit_preferences" : undefined;
     try {
       const result = await this.dispatch(request, abort.signal);
-      if (this.closed || abort.signal.aborted) throw unavailable();
+      if (this.closed) throw unavailable();
+      // delete_account: once Cosmas DELETE is sent, return the bridge result even if aborted.
+      if (abort.signal.aborted && request.method !== "delete_account") throw unavailable();
       return { requestId: request.requestId, ok: true, result: jsonCopy(result) };
     } catch { return { requestId: request.requestId, ok: false, result: null }; }
     finally {
@@ -131,6 +139,58 @@ export class DesktopProviderWorkspaceMain {
       const preview = parseCancellation(payload.preview); if (preview.action !== "preview") throw unavailable();
       await this.closeConnection(); // A renderer cannot bypass stop-before-request.
       return this.host.cancellation.submit(preview, signal);
+    }
+    if (request.method === "delete_account") {
+      if (request.connectionId !== null || request.encounterId !== null
+        || typeof this.host.session.deleteAccount !== "function") throw unavailable();
+      exact(payload, ["confirm"]); if (payload.confirm !== "DELETE") throw unavailable();
+      const state = await this.readSession(); if (state?.phase !== "ready" || signal.aborted) throw unavailable();
+      // Non-terminal recorder refuses; uploading/processing/complete/idle do not.
+      const encounter = this.connection?.encounter;
+      if (encounter?.recorderOpening) throw unavailable();
+      const recorderState = encounter?.liveRecorder?.snapshot.state;
+      if (recorderState && !["uploading", "processing", "complete", "idle"].includes(recorderState)) {
+        throw unavailable();
+      }
+      if (signal.aborted) throw unavailable();
+      let wipe: (() => Promise<void>) | undefined;
+      if (this.host.prepareClinicalPurge) {
+        try { wipe = await this.host.prepareClinicalPurge(); }
+        catch { throw unavailable(); }
+      }
+      if (signal.aborted) throw unavailable();
+      // Once DELETE is sent, always return the bridge result (even mid-flight abort).
+      const value = await this.host.session.deleteAccount({ confirm: "DELETE" });
+      if (value?.unauthorized === true) {
+        this.host.abandonClinicalPurge?.(); await this.closeConnection(); return { unauthorized: true };
+      }
+      if (value?.gone === true) {
+        this.host.abandonClinicalPurge?.(); await this.closeConnection(); return { gone: true };
+      }
+      if (value?.unavailable === true) {
+        this.host.abandonClinicalPurge?.(); return { unavailable: true };
+      }
+      if (value?.retryable === true) {
+        this.host.abandonClinicalPurge?.(); return { retryable: true };
+      }
+      if ((value?.status === "deleted" || value?.status === "already_deleted")
+        && typeof value.practiceLeftOwnerless === "boolean"
+        && typeof value.clerkIdentityRemoved === "boolean") {
+        await this.closeConnection();
+        let clinicalPurgeFailed = false;
+        try {
+          if (wipe) await wipe();
+          else await this.host.purgeLocalClinicalData?.();
+        } catch { clinicalPurgeFailed = true; }
+        return {
+          status: value.status,
+          practiceLeftOwnerless: value.practiceLeftOwnerless,
+          clerkIdentityRemoved: value.clerkIdentityRemoved,
+          ...(clinicalPurgeFailed ? { clinicalPurgeFailed: true } : {}),
+        };
+      }
+      this.host.abandonClinicalPurge?.();
+      throw unavailable();
     }
     if (["session_read", "sign_in", "sign_out", "connect"].includes(request.method)) {
       if (request.connectionId !== null || request.encounterId !== null) throw unavailable();
@@ -358,6 +418,7 @@ export class DesktopProviderWorkspaceMain {
             const recorder = await encounter.value.recorder(uuid(payload.sessionId), AbortSignal.any([signal, encounter.abort.signal, connection.abort.signal]));
             // Retain cleanup ownership even if IPC attachment fails or native
             // stop remains unconfirmed. Close waits for this handoff to settle.
+            encounter.liveRecorder = recorder;
             encounter.recorder = { dispose: () => recorder.deactivate() };
             encounter.recorder = this.attachRecorder(recorder);
             let timingReported = false;

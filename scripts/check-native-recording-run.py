@@ -18,6 +18,7 @@ MODULES = [
         [
             AUTH / "Sources/CosmasNativeAuth" / f"{name}.swift"
             for name in [
+                "AccountSelfDeleteContract",
                 "DesktopAuthProtocol",
                 "KeychainAccessBlock",
                 "NativeAuthAwait",
@@ -219,6 +220,48 @@ def main() -> None:
                 ],
             )
             run("mac-run-checks", [executable])
+            account_self_delete = str(target / "account-self-delete-checks")
+            run("mac-account-self-delete-build", common + [
+                "-O", "-parse-as-library", "-L", str(target), *libraries,
+                "-Xlinker", "-rpath", "-Xlinker", str(target), "-o", account_self_delete,
+                str(REPO / "scripts/standalone-provider/check-account-self-delete.swift"),
+            ])
+            run("mac-account-self-delete-checks", [account_self_delete])
+            # Fence: recording refuse / origin before token before request.
+            contract = (REPO / "apps/capture/native-plugins/cosmas-native-auth/Sources"
+                        / "CosmasNativeAuth/AccountSelfDeleteContract.swift").read_text()
+            attempt = contract[contract.find("public static func attempt("):]
+            for earlier, later in (
+                ("accountDeleteURL(origin:", "mintToken()"),
+                ("mintToken()", "makeAuthorizedAccountDeleteRequest("),
+                ("makeAuthorizedAccountDeleteRequest(", "resolve(origin:"),
+            ):
+                a, b = attempt.find(earlier), attempt.find(later)
+                if a < 0 or b < 0 or not (a < b):
+                    raise SystemExit("AccountSelfDeleteContract.attempt order broken")
+            if "holdsOrOpeningRecording" not in attempt.split("mintToken()", 1)[0]:
+                raise SystemExit("attempt must refuse recording before mintToken")
+            for relative in ("apps/capture/native-plugins/cosmas-native-auth/Bridge/"
+                             "CosmasWorkspaceAuthPlugin.swift",
+                             "scripts/standalone-provider/DesktopProviderMain.swift"):
+                text = (REPO / relative).read_text()
+                marker = ("func deleteAccount" if "func deleteAccount" in text
+                          else 'case "deleteAccount"')
+                handler = text[text.find(marker):]
+                token_idx = handler.find("auth.token(")
+                if token_idx < 0:
+                    raise SystemExit(f"missing auth.token in deleteAccount of {relative}")
+                if relative.endswith("CosmasWorkspaceAuthPlugin.swift"):
+                    if "AccountSelfDeleteContract.attempt(" not in handler:
+                        raise SystemExit(f"iOS deleteAccount must call attempt in {relative}")
+                    held = handler.find("recordingBridge.holdsOrOpeningRecording")
+                    if not (0 <= held < token_idx):
+                        raise SystemExit(f"iOS must refuse recording before token in {relative}")
+                    continue
+                o = handler.find("AccountSelfDeleteContract.accountDeleteURL(")
+                r = handler.find("AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(")
+                if o < 0 or r < 0 or not (o < token_idx < r):
+                    raise SystemExit(f"deleteAccount order broken in {relative}")
             binding_executable = str(target / "binding-checks")
             run(
                 "mac-binding-build",

@@ -50,5 +50,8 @@ export interface SecureQueuePlugin {
     options: SecureQueueCompareAndSwapOptions,
   ): Promise<SecureQueueRevisionResult>;
   delete(options: SecureQueueKeyOptions): Promise<SecureQueueDeleteResult>;
+  /** Renderer-only clear; refuses when native recording keys exist. */
   clear(): Promise<SecureQueueClearResult>;
+  /** Full clinical wipe (journal/drafts/review/queue/native recordings) after account delete. */
+  clearAll(): Promise<SecureQueueClearResult>;
 }

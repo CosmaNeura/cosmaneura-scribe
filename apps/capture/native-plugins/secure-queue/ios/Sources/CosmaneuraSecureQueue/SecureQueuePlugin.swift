@@ -14,6 +14,7 @@ public final class SecureQueuePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "compareAndSwap", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "delete", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clear", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "clearAll", returnType: CAPPluginReturnPromise),
     ]
 
     private let operationQueue = DispatchQueue(
@@ -124,6 +125,12 @@ public final class SecureQueuePlugin: CAPPlugin, CAPBridgedPlugin {
     @objc public func clear(_ call: CAPPluginCall) {
         perform(call) { store in
             ["cleared": try store.clear()]
+        }
+    }
+
+    @objc public func clearAll(_ call: CAPPluginCall) {
+        perform(call) { store in
+            ["cleared": try store.clearAll()]
         }
     }
 

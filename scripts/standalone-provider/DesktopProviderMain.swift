@@ -139,6 +139,26 @@ import ScribeStorePipe
             }
             if method == "signOut" { return self.state(try await auth.signOut()) }
             return self.state(auth.state())
+        case "deleteAccount":
+            // Cosmas T-REL-8a: DELETE /v1/me/account; token stays native; origin fence first.
+            guard Set(payload.keys) == ["confirm"], payload["confirm"] as? String == "DELETE"
+            else { throw ProviderNativeError.invalidRequest }
+            guard auth.state().phase == .ready else { throw ProviderNativeError.unavailable }
+            let revision = auth.state().revision
+            guard let origin = Self.coreOriginForSelfDelete(),
+                  AccountSelfDeleteContract.accountDeleteURL(origin: origin) != nil
+            else { throw ProviderNativeError.unavailable }
+            let token = try await auth.token(expectedRevision: revision)
+            guard auth.state().phase == .ready, auth.state().revision == revision,
+                  let request = AccountSelfDeleteContract.makeAuthorizedAccountDeleteRequest(
+                    origin: origin, bearerToken: token)
+            else { throw ProviderNativeError.unavailable }
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  let payload = AccountSelfDeleteContract.resolve(
+                    origin: origin, statusCode: http.statusCode, body: data)
+            else { throw ProviderNativeError.response }
+            return payload
         case "prepareProviderSignIn":
             guard Set(payload.keys) == ["preparationId", "revision", "workspaceId", "bindingRef"],
                   let preparation = payload["preparationId"] as? String, let revision = payload["revision"] as? String,
@@ -274,6 +294,13 @@ import ScribeStorePipe
         guard let string = value as? String, let id = UUID(uuidString: string),
               id.uuidString.lowercased() == string else { throw ProviderNativeError.invalidRequest }
         return id
+    }
+
+    /// Fixed Clerk → Cosmas origin map from Info.plist; never invent hosts.
+    private static func coreOriginForSelfDelete() -> String? {
+        guard let auth = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any],
+              let frontend = auth["frontendOrigin"] as? String else { return nil }
+        return AccountSelfDeleteContract.coreOrigin(forFrontendOrigin: frontend)
     }
     private func state(_ value: NativeAuthState) -> [String: Any] {
         var payload: [String: Any] = ["phase": value.phase.rawValue, "revision": value.revision]

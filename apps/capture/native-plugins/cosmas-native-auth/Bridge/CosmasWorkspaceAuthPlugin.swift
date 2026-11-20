@@ -37,8 +37,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         CAPPluginMethod(name: "stopProviderPassage", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getProviderConfiguration", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openProviderCore", returnType: CAPPluginReturnPromise),
-
-
+        CAPPluginMethod(name: "deleteAccount", returnType: CAPPluginReturnPromise),
     ]
 
     private var auth: NativeWorkspaceAuth?
@@ -558,6 +557,29 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             #else
             Self.rejectProvider(call)
             #endif
+        }
+    }
+
+    /// Cosmas self-delete (T-REL-8a): DELETE /v1/me/account; token stays native.
+    @objc nonisolated public func deleteAccount(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            guard Set(call.options.keys) == ["confirm"], call.getString("confirm") == "DELETE"
+            else { return Self.reject(call) }
+            self.initializeAuth()
+            guard let auth = self.auth, auth.state().phase == .ready else { return Self.reject(call) }
+            let revision = auth.state().revision
+            let origin = Self.providerApplicationConfiguration()?["coreOrigin"] as? String
+            guard let payload = await AccountSelfDeleteContract.attempt(
+                holdsOrOpeningRecording: Self.recordingBridge.holdsOrOpeningRecording, origin: origin,
+                mintToken: {
+                    let token = try await auth.token(expectedRevision: revision)
+                    guard auth.state().phase == .ready, auth.state().revision == revision
+                    else { throw URLError(.userAuthenticationRequired) }
+                    return token
+                },
+                send: { try await URLSession.shared.data(for: $0) })
+            else { call.reject("Account deletion unavailable", "account_self_delete_failed"); return }
+            call.resolve(payload)
         }
     }
 

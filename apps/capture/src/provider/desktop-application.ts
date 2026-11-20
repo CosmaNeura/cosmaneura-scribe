@@ -16,6 +16,7 @@ import { reference, type CoreCaptureScope } from "./core-client";
 import { parseCancellation } from "./cancellation";
 import { parseOpeningRecovery, parseOpeningReview } from "./opening-review";
 import type { ConsentPreparationRelease } from "./consent-preparation";
+import { desktopAccountSelfDeleteAdapter } from "./account-self-delete-host";
 import { parseDesktopProviderEvent, sessionState, exact, object, uuid, jsonCopy, unavailable,
   type DesktopProviderMethod, type DesktopProviderPort, type DesktopProviderRequest } from "./desktop-host-protocol";
 
@@ -39,6 +40,7 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
   const connections = new Map<string, { abort: AbortController; dispose(): Promise<void> }>();
   const encounters = new Map<string, AbortController>(), closedIds = new Set<string>();
   let state: ProviderSessionState | null = null, observations = 0, closed = false;
+  let clinicalPurgeFailed = false;
   const emitState = (value: unknown): ProviderSessionState => {
     state = sessionState(value); observations++;
     for (const listener of sessionListeners) listener({ ...state }); return state;
@@ -110,6 +112,18 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
         const result = parseCancellation(await request("cancellation", { action: "submit", preview }, null, null, signal));
         if (result.action === "preview") throw unavailable(); return result;
       },
+    },
+    accountSelfDelete: {
+      deleteAccount: (body, signal) => desktopAccountSelfDeleteAdapter(
+        req => port.request(req), body, {
+          closed: () => closed, ...(signal ? { signal } : {}),
+          onClinicalPurgeFailed: () => { clinicalPurgeFailed = true; },
+        }),
+    },
+    purgeLocalClinicalData: () => {
+      if (!clinicalPurgeFailed) return Promise.resolve();
+      clinicalPurgeFailed = false;
+      return Promise.reject(new Error("clinical_purge_failed"));
     },
     supportsRecorderStopReauthentication: true,
     supportsWorkspaceCloseReauthentication: true,
