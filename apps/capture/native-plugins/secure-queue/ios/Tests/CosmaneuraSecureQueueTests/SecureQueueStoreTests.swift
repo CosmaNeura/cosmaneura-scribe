@@ -95,6 +95,9 @@ final class SecureQueueStoreTests: XCTestCase {
         }
         XCTAssertTrue(SecureQueueRecordCodec.isRendererKey("scribe-provider-queue:v1:synthetic"))
         XCTAssertTrue(SecureQueueRecordCodec.isRendererKey("creator-review-v1:synthetic"))
+        let renderer = RendererSecureQueueStore(store: store)
+        XCTAssertEqual(try renderer.clearAll(), 0) // H8: remaining count after wipe
+        XCTAssertEqual(try store.list(), [])
     }
 
     func testRendererAdapterDeniesEveryPrivateJournalOperation() throws {

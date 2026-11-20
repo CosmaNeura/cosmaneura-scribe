@@ -1,4 +1,5 @@
 import { Capacitor } from "@capacitor/core";
+import { SecureQueue } from "@cosmaneura-scribe/capacitor-secure-queue";
 import { mountProviderApplication } from "./application";
 import { createProviderIOSHost } from "./ios-host";
 import { connectNativeProviderIOSBackend, type NativeProviderOptions } from "./native-backend";
@@ -7,6 +8,8 @@ import { subscribeIOSRecordingOpen } from "./recording-open";
 import type { ConsentPreparationRelease } from "./consent-preparation";
 import { nativeScribeCancellation } from "./native-cancellation";
 import { activateNativeScribe } from "./native-activation";
+import { clinicalStoresFromKeys, purgeLocalClinicalData } from "./purge-local-clinical";
+import { nativeAccountSelfDeleteAdapter } from "./account-self-delete-host";
 
 /** Standalone iOS startup after the host's upload/Core configuration is supplied.
  * Reuses the registered native sign-in/out UI and existing complete provider
@@ -22,6 +25,17 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
   return mountProviderApplication(root, {
     session: native,
     cancellation: nativeScribeCancellation(native),
+    purgeLocalClinicalData: async () => {
+      await purgeLocalClinicalData(clinicalStoresFromKeys({
+        list: async () => (await SecureQueue.list()).keys,
+        delete: async key => { await SecureQueue.delete({ key }); },
+        // H8: verify remaining keys after clearAll (plugin may return cleared or remaining).
+        clearAll: async () => {
+          await SecureQueue.clearAll();
+          return (await SecureQueue.list()).keys.length;
+        },
+      }));
+    },
     activateScribe: (signal, revision) => activateNativeScribe(native, signal, revision),
     openPracticeSetup: async signal => {
       const before = await native.getState();
@@ -39,6 +53,11 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
     },
     supportsRecorderStopReauthentication: true,
     recordingOpen: listener => subscribeIOSRecordingOpen(native, listener),
+    ...(typeof native.deleteAccount === "function" ? {
+      accountSelfDelete: {
+        deleteAccount: (request, signal) => nativeAccountSelfDeleteAdapter(req => native.deleteAccount!(req), request, signal),
+      },
+    } : {}),
     connect: async signal => {
       const backend = await connectNativeProviderIOSBackend({ ...options, signal }, native);
       try {

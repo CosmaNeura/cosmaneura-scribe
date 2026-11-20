@@ -1,5 +1,5 @@
 import { createHash, webcrypto } from "node:crypto";
-import { constants, closeSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
+import { constants, closeSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync, unlinkSync } from "node:fs";
 import { statfs } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -28,6 +28,7 @@ export interface DesktopStoredRecord {
 /** Main-process encrypted persistence. SQLite is Node's built-in module; there
  * is no database service, downloaded dependency or browser-storage fallback. */
 export class DurableDesktopRecordStore {
+  private static readonly openStores = new Map<string, Set<DurableDesktopRecordStore>>();
   private closed = false;
   private key: CryptoKey | undefined;
   private constructor(private readonly database: DatabaseSync, private readonly scope: string,
@@ -73,7 +74,11 @@ export class DurableDesktopRecordStore {
       try { if (!opened.every((byte, i) => byte === SENTINEL[i]) || opened.length !== SENTINEL.length) throw failure(); }
       finally { opened.fill(0); }
       database.exec("PRAGMA journal_mode=WAL");
-      return new DurableDesktopRecordStore(database, scope, crypto, options.key, options.directory);
+      const store = new DurableDesktopRecordStore(database, scope, crypto, options.key, options.directory);
+      let set = DurableDesktopRecordStore.openStores.get(options.directory);
+      if (!set) { set = new Set(); DurableDesktopRecordStore.openStores.set(options.directory, set); }
+      set.add(store);
+      return store;
     } catch { database?.close(); throw failure(); }
   }
 
@@ -92,6 +97,25 @@ export class DurableDesktopRecordStore {
   close(): void {
     if (this.closed) return;
     this.closed = true; this.key = undefined; this.database.close();
+    DurableDesktopRecordStore.openStores.get(this.directory)?.delete(this);
+  }
+  /** Close every open store under directory, then remove matching files. */
+  static wipeDirectory(directory: string, match: (name: string) => boolean = () => true): void {
+    requireMain();
+    if (typeof directory !== "string" || !isAbsolute(directory)) throw failure();
+    for (const store of [...(DurableDesktopRecordStore.openStores.get(directory) ?? [])]) store.close();
+    DurableDesktopRecordStore.openStores.delete(directory);
+    wipeTree(directory, match);
+  }
+  /** Account-scoped wipe: sqlite* plus custody `.key` for sha256(recoveryScope:workspaceId). */
+  static wipeAccount(directory: string, recoveryScope: string, workspaceId: string): void {
+    requireMain();
+    if (typeof directory !== "string" || !isAbsolute(directory)) throw failure();
+    const scope = digest(`${uuid(recoveryScope)}:${uuid(workspaceId)}`);
+    for (const store of [...(DurableDesktopRecordStore.openStores.get(directory) ?? [])]) {
+      if (store.scope === scope) store.close();
+    }
+    wipeTree(directory, name => name === `${scope}.key` || name === `${scope}.sqlite` || name.startsWith(`${scope}.sqlite`));
   }
   wrapping(namespace: string, sessionId: string): LocalSessionKeyWrapping {
     return { key: this.current(), additionalData: this.aad(namespace, `session-key:${uuid(sessionId)}`, 0) };
@@ -239,5 +263,21 @@ function identifier(value: string, max: number): void { if (typeof value !== "st
 function digest(value: string): string { return createHash("sha256").update(value).digest("hex"); }
 function owned(value: Uint8Array): Uint8Array<ArrayBuffer> { return new Uint8Array(value); }
 function hasCode(error: unknown, code: string): boolean { return typeof error === "object" && error !== null && "code" in error && error.code === code; }
+function wipeTree(directory: string, match: (name: string) => boolean): void {
+  let names: string[];
+  try { names = readdirSync(directory); } catch (error) {
+    if (hasCode(error, "ENOENT")) return; throw failure();
+  }
+  for (const name of names) {
+    const path = join(directory, name);
+    let info;
+    try { info = lstatSync(path); } catch (error) {
+      if (hasCode(error, "ENOENT")) continue; throw failure();
+    }
+    if (info.isDirectory()) { wipeTree(path, match); continue; }
+    if (!match(name)) continue;
+    try { unlinkSync(path); } catch (error) { if (!hasCode(error, "ENOENT")) throw failure(); }
+  }
+}
 export function failure(): Error { return new Error("desktop_storage_unavailable"); }
 export function conflict(): Error { return new Error("desktop_storage_conflict"); }

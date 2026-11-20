@@ -5,8 +5,11 @@ import { mountProviderApplication } from "../../src/provider/application.ts";
 const options = new URLSearchParams(window.location.search);
 const name = options.has("long") ? "Alexandria ".repeat(18).trim() : "Dr. Casey Vale";
 let state = { phase: "ready", revision: crypto.randomUUID(), providerDisplayName: name };
-let listener, releaseSignOut;
-const stats = { signOutCalls: 0, signInCalls: 0, connections: 0, disposals: 0, aborts: 0, sourceCalls: 0 };
+let listener, releaseSignOut, releaseDelete;
+const stats = {
+  signOutCalls: 0, signInCalls: 0, connections: 0, disposals: 0, aborts: 0, sourceCalls: 0,
+  deleteAccountCalls: 0,
+};
 const forbidden = () => { stats.sourceCalls += 1; throw new Error("No recording or provider requests in account fixture"); };
 const session = {
   getState: async () => state,
@@ -26,8 +29,25 @@ const session = {
     return state;
   },
 };
+const accountSelfDelete = {
+  deleteAccount: async request => {
+    stats.deleteAccountCalls += 1;
+    if (request.confirm !== "DELETE") throw new Error("Synthetic confirm rejected");
+    if (options.has("delete-pending")) await new Promise(resolve => { releaseDelete = resolve; });
+    if (options.has("delete-fail")) throw new Error("Synthetic Cosmas delete unavailable");
+    for (const outcome of ["unauthorized", "gone", "unavailable", "retryable"]) {
+      if (options.has(`delete-${outcome}`)) return { outcome };
+    }
+    return { outcome: "deleted", status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true };
+  },
+};
 const dispose = mountProviderApplication(document.querySelector("#provider"), {
-  session,
+  session, accountSelfDelete,
+  cancellation: {
+    status: async () => null,
+    load: async () => { throw new Error("No cancellation load in account fixture"); },
+    submit: async () => { throw new Error("No cancellation submit in account fixture"); },
+  },
   connect: async signal => {
     stats.connections += 1;
     signal.addEventListener("abort", () => { stats.aborts += 1; }, { once: true });
@@ -37,4 +57,9 @@ const dispose = mountProviderApplication(document.querySelector("#provider"), {
     };
   },
 });
-window.accountLab = { stats, dispose, releaseSignOut: () => releaseSignOut?.(), poll: () => listener?.(state) };
+window.accountLab = {
+  stats, dispose,
+  releaseSignOut: () => releaseSignOut?.(),
+  releaseDelete: () => releaseDelete?.(),
+  poll: () => listener?.(state),
+};

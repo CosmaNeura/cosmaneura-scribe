@@ -153,7 +153,10 @@ test("Sign out closes the workspace immediately and returns to normal sign-in", 
   await expect(page.getByRole("heading", { name: "Today's patients", exact: true })).toBeVisible();
   await account(page).click();
   await expect(menu(page)).toContainText("Dr. Morgan Reed");
-  expect(await page.evaluate(() => window.accountLab.stats)).toEqual({ signOutCalls: 1, signInCalls: 1, connections: 2, disposals: 1, aborts: 1, sourceCalls: 0 });
+  expect(await page.evaluate(() => window.accountLab.stats)).toEqual({
+    signOutCalls: 1, signInCalls: 1, connections: 2, disposals: 1, aborts: 1, sourceCalls: 0,
+    deleteAccountCalls: 0,
+  });
 });
 
 test("unconfirmed SDK sign-out keeps the workspace closed and exposes normal retry", async ({ page }) => {
@@ -166,4 +169,39 @@ test("unconfirmed SDK sign-out keeps the workspace closed and exposes normal ret
   await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
   expect(await page.evaluate(() => window.accountLab.stats.signOutCalls)).toBe(2);
   expect(await page.evaluate(() => window.accountLab.stats.sourceCalls)).toBe(0);
+});
+
+test("Delete account confirms, maps failures, keeps cancel signed in", async ({ page }) => {
+  const openDelete = async (q = "") => {
+    await open(page, q); await account(page).click();
+    await page.getByRole("button", { name: "Delete account", exact: true }).click();
+    const d = page.locator("dialog.scribe-account-self-delete");
+    await expect(d).toBeVisible(); return d;
+  };
+  const confirm = async d => {
+    await d.getByLabel("Type DELETE to confirm").fill("DELETE");
+    await d.getByRole("button", { name: "Delete account", exact: true }).click();
+  };
+  let d = await openDelete();
+  await expect(d).toContainText("Clinical records stay with the practice under its retention policy");
+  await confirm(d);
+  await expect(d.getByRole("status")).toContainText("Your account has been deleted");
+  await d.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Account deleted", exact: true })).toBeVisible();
+  // 401 is never a delete: existing keepSession copy + re-auth (Cancel, not Done).
+  d = await openDelete("?delete-unauthorized"); await confirm(d);
+  await expect(d.getByRole("status")).toContainText("still signed in");
+  await d.getByRole("button", { name: "Cancel", exact: true }).click();
+  d = await openDelete("?delete-unavailable"); await confirm(d);
+  await expect(d.getByRole("status")).toContainText("isn't available yet");
+  await d.getByRole("button", { name: "Cancel", exact: true }).click();
+  d = await openDelete("?delete-retryable"); await confirm(d);
+  await expect(d.getByRole("button", { name: "Try again", exact: true })).toBeEnabled();
+  d = await openDelete("?fail-once"); await confirm(d);
+  await expect(d.getByRole("status")).toContainText("could not finish signing out");
+  await d.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByRole("button", { name: "Retry sign out", exact: true }).click();
+  d = await openDelete("?delete-fail"); await confirm(d);
+  await expect(d.getByRole("status")).toContainText("still signed in");
+  await d.getByRole("button", { name: "Cancel", exact: true }).click();
 });

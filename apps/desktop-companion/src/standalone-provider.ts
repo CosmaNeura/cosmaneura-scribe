@@ -17,6 +17,8 @@ import { DesktopAudioPreflight } from "./desktop-audio-preflight.js";
 import { microphonePreferenceScope, openMicrophonePreferences } from "./microphone-preferences.js";
 import { resolveStandaloneNativeHelpers } from "./standalone-native-helpers.js";
 import { desktopScribeCancellation } from "./native-cancellation.js";
+import { createDesktopClinicalPurgeHost, rememberDesktopClinicalWorkspace } from "./desktop-clinical-purge.js";
+import { exact, object } from "../../capture/src/provider/desktop-host-protocol";
 
 interface PackagedRuntime {
   readonly packageDirectory: string;
@@ -44,6 +46,30 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
   const connections = new Set<ReturnType<typeof createDesktopProviderConnection>>();
   const opening = new Set<Promise<unknown>>();
   let closing: Promise<void> | undefined;
+  let lastRecoveryScope: string | null = null;
+  const resetRecoveryScope = (): void => { lastRecoveryScope = null; };
+  /** Catalog only while authenticated — never after Cosmas DELETE. Optional (H15). */
+  const sessionCatalog = async (): Promise<Record<string, unknown>> => {
+    const state = await native.getState();
+    if (state.phase !== "ready" || abort.signal.aborted || !native.isReady()) {
+      throw new Error("desktop_clinical_scope_unavailable");
+    }
+    const reply = exact(await native.request("providerRequest", {
+      revision: state.revision, action: "catalog", key: crypto.randomUUID(), body: "{}",
+    }), ["status", "body"]);
+    if (reply.status !== 200 || typeof reply.body !== "string") {
+      throw new Error("desktop_clinical_scope_unavailable");
+    }
+    const catalog = object(JSON.parse(reply.body));
+    // Catalog revision is the catalog's own field, not auth revision.
+    if (typeof catalog.recoveryScope === "string") lastRecoveryScope = catalog.recoveryScope;
+    return catalog;
+  };
+  const clinicalPurge = createDesktopClinicalPurgeHost({
+    userDataDirectory: runtime.userDataDirectory, creationWorkspaceId: profile.workspaceId,
+    recoveryScope: () => lastRecoveryScope, loadCatalog: sessionCatalog,
+  });
+  clinicalPurge.retryPendingPurge();
   const dispose = (): Promise<void> => closing ??= (async () => {
     abort.abort(); await Promise.allSettled([...opening]);
     // Keep native identity/custody alive until every actual source confirms stop.
@@ -53,6 +79,15 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
   return { dispose, host: {
     session: native,
     cancellation: desktopScribeCancellation(native, runtime.userDataDirectory, runtime.protection, profile.workspaceId, abort.signal),
+    prepareClinicalPurge: clinicalPurge.prepareClinicalPurge,
+    abandonClinicalPurge: clinicalPurge.abandonClinicalPurge,
+    markClinicalPurgeSent: clinicalPurge.markClinicalPurgeSent,
+    confirmClinicalPurge: clinicalPurge.confirmClinicalPurge,
+    resetRecoveryScope,
+    resolvePreparedPurge: observation => clinicalPurge.resolvePreparedPurge(
+      observation.revoked ? observation : { ...observation, recoveryScope: observation.recoveryScope ?? lastRecoveryScope },
+    ),
+    hasPendingPurge: () => { clinicalPurge.retryPendingPurge(); return clinicalPurge.hasPendingPurge(); },
     openDashboard: async signal => {
       const before = await native.getState();
       if (profile.enabled !== true || abort.signal.aborted || signal.aborted || before.phase !== "ready") throw unavailable();
@@ -71,6 +106,8 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
             const directory = join(runtime.userDataDirectory, "provider-creation-v1");
             // A separate encrypted namespace, scoped to Core's reviewed account.
             const workspaceId = profile.workspaceId;
+            lastRecoveryScope = recoveryScope;
+            rememberDesktopClinicalWorkspace(runtime.userDataDirectory, recoveryScope, workspaceId);
             const custody = await openDeviceCustody(directory, runtime.protection, { recoveryScope, workspaceId }, signal);
             try {
               const store = await DurableDesktopRecordStore.open({ directory, recoveryScope, workspaceId, key: custody.key });
@@ -121,7 +158,11 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
           const connection = createDesktopProviderConnection(backend, { enabled: true,
             audioPreflight,
             directory: join(runtime.userDataDirectory, "provider-records-v1"),
-            openCustody: (scope, operation) => openDeviceCustody(join(runtime.userDataDirectory, "provider-records-v1"), runtime.protection, scope, operation),
+            openCustody: (scope, operation) => {
+              lastRecoveryScope = scope.recoveryScope;
+              rememberDesktopClinicalWorkspace(runtime.userDataDirectory, scope.recoveryScope, scope.workspaceId);
+              return openDeviceCustody(join(runtime.userDataDirectory, "provider-records-v1"), runtime.protection, scope, operation);
+            },
             indicator: presentation, presentation, selectWindow: presentation.selectWindow,
             prepareInBackground: true,
             listMeetingWindows: presentation.listMeetingWindows,

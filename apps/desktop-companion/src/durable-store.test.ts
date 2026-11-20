@@ -339,4 +339,5 @@ describe("durable desktop capture", () => {
       await rm(path, { recursive: true, force: true });
     }
   }, 20_000);
+
 });

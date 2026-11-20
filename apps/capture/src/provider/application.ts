@@ -7,6 +7,13 @@ import "./application.css";
 import { openCancellationDialog } from "./cancellation-dialog";
 import type { CancellationReceipt, ScribeCancellation } from "./cancellation";
 import { ProviderSetupRequired, type ProviderSetup } from "./account-setup";
+import {
+  ACCOUNT_SELF_DELETE_MESSAGES,
+  clearCachedProviderPreferences,
+  type AccountSelfDeleteClient,
+} from "./account-self-delete";
+import { mountAccountSelfDeleteDialog } from "./account-self-delete-dialog";
+import { purgeLocalClinicalWithFlowDatabases } from "./purge-local-clinical";
 
 export type { ProviderSessionState } from "./native-plugin";
 export interface ProviderApplicationHost {
@@ -23,6 +30,10 @@ export interface ProviderApplicationHost {
   readonly supportsWorkspaceCloseReauthentication?: true;
   /** PHI-free native link request; only existing recording navigation is allowed. */
   readonly recordingOpen?: (listener: () => void) => Promise<PluginListenerHandle>;
+  /** Cosmas DELETE /v1/me/account client; shows Delete account when present. */
+  readonly accountSelfDelete?: AccountSelfDeleteClient;
+  /** Optional SecureQueue.clearAll / desktop SQLite wipe after account delete. */
+  readonly purgeLocalClinicalData?: () => Promise<void>;
   /** Returns the current authorized provider workflow, never credentials. */
   connect(signal: AbortSignal): Promise<{ readonly workspace: ProviderWorkspaceHost; dispose(): Promise<void> }>;
 }
@@ -46,7 +57,10 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   let scope: Scope | undefined, listener: PluginListenerHandle | undefined;
   let recordingListener: PluginListenerHandle | undefined, recordingOpenPending = false;
   let disposed = false, busy = false, stopUnconfirmed = false, accessClosed = false, logoutPending = false;
+  let accountDeleteInFlight = false;
   let operations = 0, signingOut = false;
+  let closeDeletionDialog: (() => void) | undefined;
+  let accountNotice: "deleted" | "session_expired" | "gone" | null = null;
   let recorderStopUnconfirmed = false;
   let cancelDialog: (() => void) | undefined;
   let cancellationReceipt: CancellationReceipt | null = null, cancellationCheckedRevision: string | null = null;
@@ -94,8 +108,16 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     if (notice) {
       if (state === null) title.textContent = "Session unavailable";
       message.textContent = notice;
+    } else if (accountNotice && phase === "signedOut") {
+      title.textContent = accountNotice === "deleted" ? "Account deleted"
+        : accountNotice === "session_expired" ? "Session expired" : "Access ended";
+      message.textContent = accountNotice === "deleted"
+        ? "Your Cosmaneura account has been deleted. You are signed out."
+        : accountNotice === "session_expired"
+          ? "Your session has expired. You are signed out."
+          : "This account no longer has access. You are signed out.";
     }
-    actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><div class="provider-account-panel" role="group" aria-label="Account options">${button("sign-out", "Sign out")}<p data-provider-name></p>${host.cancellation ? button("cancel-scribe", cancellationReceipt ? "Cancellation status" : "Cancel Scribe access") : ""}<a href="mailto:dev@cosmaneura.com">Get help</a></div></details>`
+    actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><div class="provider-account-panel" role="group" aria-label="Account options">${button("sign-out", "Sign out")}${host.accountSelfDelete ? button("delete-account", "Delete account") : ""}<p data-provider-name></p>${host.cancellation ? button("cancel-scribe", cancellationReceipt ? "Cancellation status" : "Cancel Scribe access") : ""}<a href="mailto:dev@cosmaneura.com">Get help</a></div></details>`
       : phase === "signingIn" ? button("sign-out", "Sign out") : "";
     const providerName = actions.querySelector<HTMLElement>("[data-provider-name]"); if (providerName) providerName.textContent = state?.providerDisplayName ?? "Your account";
     recovery.innerHTML = "";
@@ -172,6 +194,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     const valid = value && ["disabled", "loading", "signedOut", "signingIn", "ready", "signOutPending", "unavailable"].includes(value.phase)
       && isUuid(value.revision);
     if (!valid) {
+      if (!logoutPending && !accountDeleteInFlight) { closeDeletionDialog?.(); closeDeletionDialog = undefined; }
       setupAbort?.abort(); setup = undefined; practiceHandoffRevision = null;
       state = null; accessClosed = true; notice = "Your secure session could not be verified.";
       invalidate(); closeInBackground(); render(); return;
@@ -180,6 +203,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     // Native polling still observes revocation, but an identical observation
     // must not replace focused controls or retry a previously failed close.
     if (!changed) return;
+    if (!logoutPending && !accountDeleteInFlight) { closeDeletionDialog?.(); closeDeletionDialog = undefined; }
     setupAbort?.abort(); setupAbort = undefined; setup = undefined;
     activationAttemptedRevision = null; practiceHandoffRevision = null; practiceReturned = false;
     cancelDialog?.(); cancelDialog = undefined;
@@ -187,8 +211,9 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     cancellationCheckedRevision = null; cancellationReceipt = null;
     state = { phase: value.phase, revision: value.revision,
       ...(typeof value.providerDisplayName === "string" && value.providerDisplayName.length <= 200 ? { providerDisplayName: value.providerDisplayName } : {}) };
-    if (value.phase === "signedOut") logoutPending = false;
+    if (value.phase === "signedOut" && !accountDeleteInFlight) logoutPending = false;
     if (value.phase === "signOutPending") logoutPending = true;
+    if (value.phase !== "signedOut") accountNotice = null;
     if (scope && (value.phase !== "ready" || value.revision !== scope.revision)) {
       accessClosed = true; invalidate(); closeInBackground();
     }
@@ -206,6 +231,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         if (!disposed && before === observations) accept(value);
       } catch {
         if (!disposed && before === observations) {
+          if (!accountDeleteInFlight) { closeDeletionDialog?.(); closeDeletionDialog = undefined; }
           setupAbort?.abort(); setup = undefined; practiceHandoffRevision = null;
           state = null;
           accessClosed = true; invalidate(); closeInBackground();
@@ -379,6 +405,57 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     const target = event.target;
     if (!(target instanceof Element)) return;
     const action = target.closest<HTMLButtonElement>("button[data-session-action]")?.dataset.sessionAction;
+    if (action === "delete-account") {
+      if (disposed || busy || stopUnconfirmed || logoutPending || state?.phase !== "ready" || !host.accountSelfDelete) return;
+      const live = workflow.dataset.providerRecordingActive === "true"
+        && workflow.dataset.providerUploadPending !== "true";
+      const menu = actions.querySelector<HTMLDetailsElement>(".provider-account-menu");
+      if (menu) menu.open = false;
+      if (live) { notice = ACCOUNT_SELF_DELETE_MESSAGES.recordingActive; render(); return; }
+      const revision = state.revision, client = host.accountSelfDelete;
+      notice = ""; closeDeletionDialog?.();
+      let pendingNotice: "deleted" | "session_expired" | "gone" = "deleted";
+      const recordingActive = (): boolean => workflow.dataset.providerRecordingActive === "true"
+        && workflow.dataset.providerUploadPending !== "true";
+      closeDeletionDialog = mountAccountSelfDeleteDialog(document.body, {
+        client: {
+          deleteAccount: async (request, signal) => {
+            if (recordingActive()) return { outcome: "recording_active" as const };
+            accountDeleteInFlight = true;
+            try {
+              const result = await client.deleteAccount(request, signal);
+              if (result.outcome === "deleted") pendingNotice = "deleted";
+              else if (result.outcome === "unauthorized") pendingNotice = "session_expired";
+              else if (result.outcome === "gone") pendingNotice = "gone";
+              else accountDeleteInFlight = false;
+              return result;
+            } catch (error) { accountDeleteInFlight = false; throw error; }
+          },
+        },
+        sameAccountSession: () =>
+          accountDeleteInFlight || (state?.phase === "ready" && state.revision === revision),
+        closeWorkspace: close,
+        purgeLocalClinicalData: () => purgeLocalClinicalWithFlowDatabases(
+          async () => { await host.purgeLocalClinicalData?.(); },
+        ),
+        clearLocalCredentials: async () => {
+          clearCachedProviderPreferences();
+          logoutPending = true; accessClosed = true; invalidate();
+          await close().catch(() => undefined);
+          const before = observations;
+          try {
+            const signedOut = await host.session.signOut();
+            if (before === observations) accept(signedOut);
+          } catch {
+            accountDeleteInFlight = false; render();
+            throw new Error("account_self_delete_local_clear_failed");
+          }
+          accountNotice = pendingNotice; accountDeleteInFlight = false; logoutPending = false;
+          await read(); render();
+        },
+      });
+      return;
+    }
     if (action) void perform(action);
   };
   const dismissAccount = (event: Event): void => {
@@ -444,7 +521,9 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   })();
   return (): Promise<void> => {
     if (disposal) return disposal;
-    disposed = true; setupAbort?.abort(); cancellationCheck?.abort(); cancelDialog?.(); invalidate(); clearInterval(timer); headerObserver.disconnect();
+    disposed = true; setupAbort?.abort(); cancellationCheck?.abort(); cancelDialog?.();
+    closeDeletionDialog?.(); closeDeletionDialog = undefined;
+    invalidate(); clearInterval(timer); headerObserver.disconnect();
     root.removeEventListener("click", clicked);
     root.removeEventListener("toggle", accountToggled, true);
     document.removeEventListener("scroll", accountScrolled, true);
