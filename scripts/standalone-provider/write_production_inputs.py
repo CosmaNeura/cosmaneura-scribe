@@ -1,11 +1,24 @@
-"""Write founder --production-inputs JSON from a Core pin and helper builds.
+"""Write founder --production-inputs JSON from a Core pin and helper bindings.
 
-Offline only: reads a Core infra/production_live_settings.tf pin, hashes local
-helper executables from auth/audio build directories (same layout as
-assemble-standalone-provider.py), validates with prepare_production_profiles.project,
-and writes schema-1 JSON exclusively. Never prints, hashes-for-print, or diffs
-the output file—stdout/stderr list key names (present/missing) and the output
-path only. No network, Azure, Clerk, 1Password, or environment-secret reads.
+Offline only: reads a Core infra/production_live_settings.tf pin, then either
+hashes local helper executables from auth/audio build directories (Direct Beta /
+assemble-standalone-provider.py layout) or admits a Store bridge declaration from
+hash-mac-store-bridge.mjs (MAS XPC / build 132), validates with
+prepare_production_profiles.project, and writes schema-1 JSON exclusively.
+
+Modes:
+- Build-dir mode (--auth-build + --audio-build): Direct Beta route. Output is for
+  scripts/assemble-production-provider.py / assemble-standalone-provider.py.
+- Store mode (--store-bridge-declaration): MAS XPC route. Output is for the
+  founder prepare CLI scripts/standalone-provider/prepare_production_profiles.py
+  only. The Direct Beta assembler refuses macho-store-v1 declarations. There is
+  no in-repo step that installs prepare's desktop-profile.json into a MAS .app as
+  Contents/Resources/app/provider-profile.json; for build 132 that install is an
+  operator step in the release runbook.
+
+Never prints, hashes-for-print, or diffs the output file—stdout/stderr list key
+names (present/missing) and the output path only. No network, Azure, Clerk,
+1Password, or environment-secret reads.
 """
 
 from __future__ import annotations
@@ -34,8 +47,13 @@ _HELPER_PATHS = {
     kind: "native/" + executable + ".app/Contents/MacOS/" + executable
     for kind, executable in _HELPER_EXECUTABLES
 }
+_STORE_BRIDGE_PATH = "Contents/MacOS/ScribeStorePipeBridge"
+_STORE_HASH_ALGORITHM = "macho-store-v1"
+_STORE_DECLARATION_KEYS = ("path", "sha256", "hashAlgorithm")
+_STORE_DECLARATION_MAX_BYTES = 1024
 _PUBLISHABLE_KEY_STOP = "STOP: publishable key does not match validator literal"
 _STRING_LITERAL = re.compile(r'"([^"]*)"')
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
 _STATUS_KEYS = (
     "schema",
@@ -214,6 +232,84 @@ def desktop_helpers_from_builds(auth_build: Path, audio_build: Path) -> dict[str
     return helpers
 
 
+def desktop_helpers_from_store_declaration(
+    declaration_path: Path,
+) -> dict[str, dict[str, str]]:
+    """Admit hash-mac-store-bridge.mjs JSON into all three desktop_helpers roles."""
+    if declaration_path.is_symlink() or not declaration_path.is_file():
+        raise Refuse("store_bridge_declaration:missing")
+    try:
+        size = declaration_path.stat().st_size
+    except OSError as exc:
+        raise Refuse("store_bridge_declaration:unreadable") from exc
+    if size > _STORE_DECLARATION_MAX_BYTES:
+        raise Refuse("store_bridge_declaration:too_large")
+    try:
+        raw = declaration_path.read_bytes()
+    except OSError as exc:
+        raise Refuse("store_bridge_declaration:unreadable") from exc
+    if len(raw) > _STORE_DECLARATION_MAX_BYTES:
+        raise Refuse("store_bridge_declaration:too_large")
+    try:
+        value = json.loads(raw, object_pairs_hook=_unique_object_pairs)
+    except RecursionError as exc:
+        raise Refuse("store_bridge_declaration:malformed") from exc
+    except ValueError as exc:
+        # json.JSONDecodeError is a ValueError; keep one malformed arm.
+        if str(exc) == "duplicate configuration field":
+            raise Refuse("store_bridge_declaration:duplicate_keys") from exc
+        raise Refuse("store_bridge_declaration:malformed") from exc
+    except TypeError as exc:
+        raise Refuse("store_bridge_declaration:malformed") from exc
+    if not isinstance(value, dict):
+        raise Refuse("store_bridge_declaration:malformed")
+    declaration_in: dict[str, Any] = value
+    if set(declaration_in) != set(_STORE_DECLARATION_KEYS):
+        raise Refuse("store_bridge_declaration:keys")
+    path = declaration_in["path"]
+    sha256 = declaration_in["sha256"]
+    algorithm = declaration_in["hashAlgorithm"]
+    if not isinstance(path, str) or path != _STORE_BRIDGE_PATH:
+        raise Refuse("store_bridge_declaration:path")
+    if not isinstance(algorithm, str) or algorithm != _STORE_HASH_ALGORITHM:
+        raise Refuse("store_bridge_declaration:hashAlgorithm")
+    if not isinstance(sha256, str) or _SHA256_HEX.fullmatch(sha256) is None:
+        raise Refuse("store_bridge_declaration:sha256")
+    declaration = {
+        "path": path,
+        "sha256": sha256,
+        "hashAlgorithm": algorithm,
+    }
+    return {
+        "auth": dict(declaration),
+        "audio": dict(declaration),
+        "presentation": dict(declaration),
+    }
+
+
+def resolve_desktop_helpers(
+    *,
+    auth_build: Path | None,
+    audio_build: Path | None,
+    store_bridge_declaration: Path | None,
+) -> dict[str, dict[str, str]]:
+    """Require exactly one helper mode: build dirs or Store bridge declaration."""
+    has_store = store_bridge_declaration is not None
+    has_auth = auth_build is not None
+    has_audio = audio_build is not None
+    if has_store and (has_auth or has_audio):
+        raise Refuse("mode:exclusive")
+    if has_store:
+        assert store_bridge_declaration is not None
+        return desktop_helpers_from_store_declaration(store_bridge_declaration)
+    if has_auth and has_audio:
+        assert auth_build is not None and audio_build is not None
+        return desktop_helpers_from_builds(auth_build, audio_build)
+    if has_auth or has_audio:
+        raise Refuse("mode:incomplete")
+    raise Refuse("mode:required")
+
+
 def _lookup_parent(payload: dict[str, Any], dotted: str) -> tuple[Any, str]:
     parent_path, leaf = dotted.rsplit(".", 1)
     current: Any = payload
@@ -250,8 +346,9 @@ def report_status(
 def build_payload(
     *,
     core_pin: Path,
-    auth_build: Path,
-    audio_build: Path,
+    auth_build: Path | None = None,
+    audio_build: Path | None = None,
+    store_bridge_declaration: Path | None = None,
     expect_profile: str = _DEFAULT_EXPECT_PROFILE,
 ) -> dict[str, Any]:
     if core_pin.is_symlink() or not core_pin.is_file():
@@ -288,7 +385,11 @@ def build_payload(
     publishable_key = derive_and_verify_publishable_key()
     verify_against_validator_literal(publishable_key)
 
-    helpers = desktop_helpers_from_builds(auth_build, audio_build)
+    helpers = resolve_desktop_helpers(
+        auth_build=auth_build,
+        audio_build=audio_build,
+        store_bridge_declaration=store_bridge_declaration,
+    )
     payload = {
         "schema": 1,
         "receiver": receiver,
@@ -344,16 +445,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--auth-build",
         type=Path,
-        required=True,
-        help="Directory containing ScribeDesktopProvider (assemble layout)",
+        default=None,
+        help=(
+            "Direct Beta: directory containing ScribeDesktopProvider "
+            "(assemble layout; with --audio-build → assemble-production-provider)"
+        ),
     )
     parser.add_argument(
         "--audio-build",
         type=Path,
-        required=True,
+        default=None,
         help=(
-            "Directory containing ScribeDesktopAudioHelper and "
+            "Direct Beta: directory containing ScribeDesktopAudioHelper and "
             "ScribeProviderPresentationHelper (assemble layout)"
+        ),
+    )
+    parser.add_argument(
+        "--store-bridge-declaration",
+        type=Path,
+        default=None,
+        help=(
+            "MAS XPC / build 132: file holding hash-mac-store-bridge.mjs JSON. "
+            "Mutually exclusive with --auth-build/--audio-build. Output is for "
+            "prepare_production_profiles.py only (not the Direct Beta assembler). "
+            "Installing desktop-profile.json as provider-profile.json in the MAS "
+            ".app is an operator release-runbook step; no in-repo packager does it."
         ),
     )
     parser.add_argument("--out", type=Path, required=True)
@@ -370,6 +486,7 @@ def main(argv: list[str] | None = None) -> int:
             core_pin=args.core_pin,
             auth_build=args.auth_build,
             audio_build=args.audio_build,
+            store_bridge_declaration=args.store_bridge_declaration,
             expect_profile=args.expect_profile,
         )
         write_payload(payload, args.out)

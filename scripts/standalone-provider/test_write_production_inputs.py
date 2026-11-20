@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import stat
@@ -11,19 +13,26 @@ import sys
 from pathlib import Path
 
 import prepare_production_profiles
+import pytest
 from prepare_production_profiles import project
 from write_production_inputs import (
     _HELPER_EXECUTABLES,
     _HELPER_PATHS,
     _PUBLISHABLE_KEY_STOP,
+    _STORE_BRIDGE_PATH,
+    _STORE_DECLARATION_MAX_BYTES,
+    _STORE_HASH_ALGORITHM,
     _VALIDATOR_PATH,
     Refuse,
     build_payload,
     desktop_helpers_from_builds,
+    desktop_helpers_from_store_declaration,
     encode_publishable_key,
     main,
     validator_clerk_host_literal,
 )
+
+ASSEMBLER = Path(__file__).resolve().parents[1] / "assemble-standalone-provider.py"
 
 SCRIPT = Path(__file__).resolve().with_name("write_production_inputs.py")
 
@@ -39,6 +48,7 @@ SYNTH_RECEIPT_A = "a" * 64
 SYNTH_RECEIPT_B = "b" * 64
 SYNTH_RECEIPT_C = "c" * 64
 SYNTH_RECEIPT_D = "d" * 64
+SYNTH_STORE_SHA256 = "e" * 64
 DISALLOWED_WORKSPACE = "56f527ab-0caf-459b-bda9-cf7f0ca2f709"
 
 FIXTURE_SECRETS = (
@@ -53,6 +63,7 @@ FIXTURE_SECRETS = (
     SYNTH_RECEIPT_B,
     SYNTH_RECEIPT_C,
     SYNTH_RECEIPT_D,
+    SYNTH_STORE_SHA256,
     DISALLOWED_WORKSPACE,
 )
 
@@ -801,3 +812,512 @@ def test_output_file_not_world_readable(tmp_path):
     mode = out.stat().st_mode
     assert mode & (stat.S_IRGRP | stat.S_IROTH | stat.S_IWGRP | stat.S_IWOTH) == 0
     assert os.access(out, os.R_OK)
+
+
+# --- Store bridge declaration mode (MAS XPC) ---
+
+
+def store_declaration(
+    path: Path,
+    *,
+    body: dict | None = None,
+    text: str | None = None,
+) -> Path:
+    if text is not None:
+        path.write_text(text)
+    else:
+        declaration = body or {
+            "path": _STORE_BRIDGE_PATH,
+            "sha256": SYNTH_STORE_SHA256,
+            "hashAlgorithm": _STORE_HASH_ALGORITHM,
+        }
+        path.write_text(json.dumps(declaration) + "\n")
+    return path
+
+
+def run_store_writer(
+    tmp_path: Path,
+    *,
+    pin: Path,
+    out: Path,
+    declaration: Path | None = None,
+    extra: list[str] | None = None,
+):
+    declaration = declaration or store_declaration(tmp_path / "bridge-declaration.json")
+    argv = [
+        "--core-pin",
+        str(pin),
+        "--store-bridge-declaration",
+        str(declaration),
+        "--out",
+        str(out),
+        *(extra or []),
+    ]
+    code = main(argv)
+    return code, declaration
+
+
+def test_store_mode_happy_path_all_three_keys_equal_and_mode_0600(tmp_path, capsys):
+    pin_receiver = _receiver(enabled=True)
+    pin = write_pin(tmp_path / "synthetic_pin.tf", receiver=pin_receiver)
+    out = tmp_path / "production-inputs.json"
+    declaration = store_declaration(tmp_path / "bridge-declaration.json")
+    expected = {
+        "path": _STORE_BRIDGE_PATH,
+        "sha256": SYNTH_STORE_SHA256,
+        "hashAlgorithm": _STORE_HASH_ALGORITHM,
+    }
+    code, _decl = run_store_writer(tmp_path, pin=pin, out=out, declaration=declaration)
+    assert code == 0
+    payload = json.loads(out.read_text())
+    projected = project(payload)
+    assert payload["desktop_helpers"] == {
+        "auth": expected,
+        "audio": expected,
+        "presentation": expected,
+    }
+    assert payload["desktop_helpers"] == desktop_helpers_from_store_declaration(declaration)
+    for role in ("auth", "audio", "presentation"):
+        assert projected["desktop"][role] == expected
+        assert projected["desktop"][role]["path"] == _STORE_BRIDGE_PATH
+        assert projected["desktop"][role]["hashAlgorithm"] == _STORE_HASH_ALGORITHM
+    assert projected["desktop"]["auth"] == projected["desktop"]["audio"]
+    assert projected["desktop"]["audio"] == projected["desktop"]["presentation"]
+    mode = stat.S_IMODE(out.stat().st_mode)
+    assert mode == 0o600
+    captured = capsys.readouterr()
+    assert_no_fixture_values(captured.out + captured.err, {})
+    again = main(
+        [
+            "--core-pin",
+            str(pin),
+            "--store-bridge-declaration",
+            str(declaration),
+            "--out",
+            str(out),
+        ]
+    )
+    assert again == 1
+    second = capsys.readouterr()
+    assert "refuse:output:exists" in second.err
+    assert_no_fixture_values(second.out + second.err, {})
+
+
+def test_store_mode_prepare_projects_store_bridge_into_desktop_profile(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SCRIBE_FOUNDER_PRODUCTION_UNLOCK", "1")
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "production-inputs.json"
+    declaration = store_declaration(tmp_path / "bridge-declaration.json")
+    code, _decl = run_store_writer(tmp_path, pin=pin, out=out, declaration=declaration)
+    assert code == 0
+    profiles_out = tmp_path / "profiles"
+    prepare_production_profiles.prepare(
+        out, profiles_out, i_am_john_unlocking_production=True
+    )
+    desktop = json.loads((profiles_out / "desktop-profile.json").read_text())
+    expected = {
+        "path": _STORE_BRIDGE_PATH,
+        "sha256": SYNTH_STORE_SHA256,
+        "hashAlgorithm": _STORE_HASH_ALGORITHM,
+    }
+    for role in ("auth", "audio", "presentation"):
+        assert desktop[role] == expected
+
+
+def test_refuse_both_modes(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    paths = helpers(tmp_path)
+    declaration = store_declaration(tmp_path / "bridge-declaration.json")
+    code = main(
+        [
+            "--core-pin",
+            str(pin),
+            "--auth-build",
+            str(paths["auth"]),
+            "--audio-build",
+            str(paths["audio"]),
+            "--store-bridge-declaration",
+            str(declaration),
+            "--out",
+            str(out),
+        ]
+    )
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "refuse:mode:exclusive" in captured.err
+    assert not out.exists()
+    assert_no_fixture_values(captured.out + captured.err, paths)
+
+
+def test_refuse_neither_mode(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    code = main(["--core-pin", str(pin), "--out", str(out)])
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "refuse:mode:required" in captured.err
+    assert not out.exists()
+    assert_no_fixture_values(captured.out + captured.err, {})
+
+
+def test_refuse_incomplete_build_mode(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    paths = helpers(tmp_path)
+    code = main(
+        [
+            "--core-pin",
+            str(pin),
+            "--auth-build",
+            str(paths["auth"]),
+            "--out",
+            str(out),
+        ]
+    )
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "refuse:mode:incomplete" in captured.err
+    assert not out.exists()
+    assert_no_fixture_values(captured.out + captured.err, paths)
+
+
+def test_refuse_store_declaration_symlink(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    real = store_declaration(tmp_path / "real-declaration.json")
+    linked = tmp_path / "linked-declaration.json"
+    linked.symlink_to(real)
+    code, _decl = run_store_writer(tmp_path, pin=pin, out=out, declaration=linked)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "refuse:store_bridge_declaration:missing" in captured.err
+    assert not out.exists()
+    assert_no_fixture_values(captured.out + captured.err, {})
+
+
+def test_refuse_store_declaration_missing(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    declaration = tmp_path / "absent-declaration.json"
+    code, _decl = run_store_writer(tmp_path, pin=pin, out=out, declaration=declaration)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "refuse:store_bridge_declaration:missing" in captured.err
+    assert not out.exists()
+    assert_no_fixture_values(captured.out + captured.err, {})
+
+
+def test_refuse_store_declaration_malformed_json(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    declaration = store_declaration(
+        tmp_path / "bad.json", text="{not-json"
+    )
+    code, _decl = run_store_writer(tmp_path, pin=pin, out=out, declaration=declaration)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "refuse:store_bridge_declaration:malformed" in captured.err
+    assert not out.exists()
+    assert_no_fixture_values(captured.out + captured.err, {})
+
+
+def test_refuse_store_declaration_duplicate_keys(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    text = (
+        '{"path":"Contents/MacOS/ScribeStorePipeBridge",'
+        f'"sha256":"{SYNTH_STORE_SHA256}",'
+        '"hashAlgorithm":"macho-store-v1",'
+        '"path":"Contents/MacOS/ScribeStorePipeBridge"}'
+    )
+    declaration = store_declaration(tmp_path / "dup.json", text=text)
+    code, _decl = run_store_writer(tmp_path, pin=pin, out=out, declaration=declaration)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "refuse:store_bridge_declaration:duplicate_keys" in captured.err
+    assert not out.exists()
+    assert_no_fixture_values(captured.out + captured.err, {})
+
+
+def test_refuse_store_declaration_extra_keys(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    declaration = store_declaration(
+        tmp_path / "extra.json",
+        body={
+            "path": _STORE_BRIDGE_PATH,
+            "sha256": SYNTH_STORE_SHA256,
+            "hashAlgorithm": _STORE_HASH_ALGORITHM,
+            "extra": "nope",
+        },
+    )
+    code, _decl = run_store_writer(tmp_path, pin=pin, out=out, declaration=declaration)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "refuse:store_bridge_declaration:keys" in captured.err
+    assert not out.exists()
+    assert_no_fixture_values(captured.out + captured.err, {})
+
+
+def test_refuse_store_declaration_missing_key(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    declaration = store_declaration(
+        tmp_path / "missing.json",
+        body={"path": _STORE_BRIDGE_PATH, "sha256": SYNTH_STORE_SHA256},
+    )
+    code, _decl = run_store_writer(tmp_path, pin=pin, out=out, declaration=declaration)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "refuse:store_bridge_declaration:keys" in captured.err
+    assert not out.exists()
+    assert_no_fixture_values(captured.out + captured.err, {})
+
+
+def test_refuse_store_declaration_wrong_path(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    declaration = store_declaration(
+        tmp_path / "wrong-path.json",
+        body={
+            "path": "native/ScribeDesktopProvider.app/Contents/MacOS/ScribeDesktopProvider",
+            "sha256": SYNTH_STORE_SHA256,
+            "hashAlgorithm": _STORE_HASH_ALGORITHM,
+        },
+    )
+    code, _decl = run_store_writer(tmp_path, pin=pin, out=out, declaration=declaration)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "refuse:store_bridge_declaration:path" in captured.err
+    assert not out.exists()
+    assert_no_fixture_values(captured.out + captured.err, {})
+
+
+def test_refuse_store_declaration_wrong_algorithm(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    declaration = store_declaration(
+        tmp_path / "wrong-algo.json",
+        body={
+            "path": _STORE_BRIDGE_PATH,
+            "sha256": SYNTH_STORE_SHA256,
+            "hashAlgorithm": "sha256",
+        },
+    )
+    code, _decl = run_store_writer(tmp_path, pin=pin, out=out, declaration=declaration)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "refuse:store_bridge_declaration:hashAlgorithm" in captured.err
+    assert not out.exists()
+    assert_no_fixture_values(captured.out + captured.err, {})
+
+
+def test_refuse_store_declaration_bad_sha256(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    for bad in ("E" * 64, "e" * 63, "e" * 65, "g" * 64, "not-hex"):
+        declaration = store_declaration(
+            tmp_path / "bad-sha.json",
+            body={
+                "path": _STORE_BRIDGE_PATH,
+                "sha256": bad,
+                "hashAlgorithm": _STORE_HASH_ALGORITHM,
+            },
+        )
+        if out.exists():
+            out.unlink()
+        code, _decl = run_store_writer(
+            tmp_path, pin=pin, out=out, declaration=declaration
+        )
+        assert code == 1
+        captured = capsys.readouterr()
+        assert "refuse:store_bridge_declaration:sha256" in captured.err
+        assert not out.exists()
+        assert_no_fixture_values(captured.out + captured.err, {})
+
+
+def test_refuse_store_declaration_non_object(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    declaration = store_declaration(
+        tmp_path / "array.json", text=json.dumps([_STORE_BRIDGE_PATH]) + "\n"
+    )
+    code, _decl = run_store_writer(tmp_path, pin=pin, out=out, declaration=declaration)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "refuse:store_bridge_declaration:malformed" in captured.err
+    assert not out.exists()
+    assert_no_fixture_values(captured.out + captured.err, {})
+
+
+def test_store_mode_output_refused_by_assembler_production_profiles(tmp_path):
+    """Store-mode JSON must not pass Direct Beta production_profiles equality."""
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "store-production-inputs.json"
+    declaration = store_declaration(tmp_path / "bridge-declaration.json")
+    code, _decl = run_store_writer(tmp_path, pin=pin, out=out, declaration=declaration)
+    assert code == 0
+
+    spec = importlib.util.spec_from_file_location("assemble_standalone_provider", ASSEMBLER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    auth = tmp_path / "auth"
+    audio = tmp_path / "audio"
+    auth.mkdir()
+    audio.mkdir()
+    for kind, executable in _HELPER_EXECUTABLES:
+        directory = auth if kind == "auth" else audio
+        (directory / executable).write_bytes(f"synthetic-inert-{kind}-fixture".encode())
+    helpers = {
+        kind: {
+            "path": "native/" + executable + ".app/Contents/MacOS/" + executable,
+            "sha256": module.digest(
+                (auth if kind == "auth" else audio) / executable
+            ),
+        }
+        for kind, executable in _HELPER_EXECUTABLES
+    }
+    repo = ASSEMBLER.parents[1]
+    native_paths = [
+        "scripts/standalone-provider/DesktopProviderMain.swift",
+        "scripts/standalone-provider/ProviderNativeTransport.swift",
+        *[
+            "apps/capture/native-plugins/cosmas-native-auth/Sources/CosmasNativeAuth/" + name
+            for name in ("NativeClerkConfiguration.swift", "NativeTokenPolicy.swift")
+        ],
+    ]
+    receipt = tmp_path / "build-inputs.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "production_organization_compiled": True,
+                "command": [
+                    "xcrun",
+                    "swift",
+                    "build",
+                    "-Xswiftc",
+                    "-DSCRIBE_PRODUCTION_ORGANIZATION",
+                ],
+                "source_sha256": {
+                    path: module.digest(repo / path) for path in native_paths
+                },
+            }
+        )
+    )
+    args = argparse.Namespace(
+        production_inputs=out,
+        production_native_build_receipt=receipt,
+        enable_production_clients=False,
+        ios_profile=None,
+    )
+    with pytest.raises(ValueError, match=r"^store_declaration_not_accepted_by_assembler$"):
+        module.production_profiles(args, helpers)
+
+
+def test_refuse_store_mode_with_only_auth_build(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    paths = helpers(tmp_path)
+    declaration = store_declaration(tmp_path / "bridge-declaration.json")
+    code = main(
+        [
+            "--core-pin",
+            str(pin),
+            "--auth-build",
+            str(paths["auth"]),
+            "--store-bridge-declaration",
+            str(declaration),
+            "--out",
+            str(out),
+        ]
+    )
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "refuse:mode:exclusive" in captured.err
+    assert not out.exists()
+    assert_no_fixture_values(captured.out + captured.err, paths)
+
+
+def test_refuse_store_mode_with_only_audio_build(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    paths = helpers(tmp_path)
+    declaration = store_declaration(tmp_path / "bridge-declaration.json")
+    code = main(
+        [
+            "--core-pin",
+            str(pin),
+            "--audio-build",
+            str(paths["audio"]),
+            "--store-bridge-declaration",
+            str(declaration),
+            "--out",
+            str(out),
+        ]
+    )
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "refuse:mode:exclusive" in captured.err
+    assert not out.exists()
+    assert_no_fixture_values(captured.out + captured.err, paths)
+
+
+def test_refuse_store_declaration_sha256_trailing_newline(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    declaration = store_declaration(
+        tmp_path / "newline-sha.json",
+        body={
+            "path": _STORE_BRIDGE_PATH,
+            "sha256": SYNTH_STORE_SHA256 + "\n",
+            "hashAlgorithm": _STORE_HASH_ALGORITHM,
+        },
+    )
+    code, _decl = run_store_writer(tmp_path, pin=pin, out=out, declaration=declaration)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "refuse:store_bridge_declaration:sha256" in captured.err
+    assert not out.exists()
+    assert_no_fixture_values(captured.out + captured.err, {})
+
+
+def test_refuse_store_declaration_non_string_sha256(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    text = (
+        '{"path":"Contents/MacOS/ScribeStorePipeBridge",'
+        '"sha256":1,'
+        '"hashAlgorithm":"macho-store-v1"}'
+    )
+    declaration = store_declaration(tmp_path / "num-sha.json", text=text)
+    code, _decl = run_store_writer(tmp_path, pin=pin, out=out, declaration=declaration)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "refuse:store_bridge_declaration:sha256" in captured.err
+    assert not out.exists()
+    assert_no_fixture_values(captured.out + captured.err, {})
+
+
+def test_refuse_store_declaration_too_large(tmp_path, capsys):
+    pin = write_pin(tmp_path / "pin.tf")
+    out = tmp_path / "out.json"
+    padding = "x" * (_STORE_DECLARATION_MAX_BYTES + 1)
+    text = (
+        '{"path":"Contents/MacOS/ScribeStorePipeBridge",'
+        f'"sha256":"{SYNTH_STORE_SHA256}",'
+        '"hashAlgorithm":"macho-store-v1",'
+        f'"pad":"{padding}"' + "}"
+    )
+    assert len(text.encode()) > _STORE_DECLARATION_MAX_BYTES
+    declaration = store_declaration(tmp_path / "large.json", text=text)
+    code, _decl = run_store_writer(tmp_path, pin=pin, out=out, declaration=declaration)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "refuse:store_bridge_declaration:too_large" in captured.err
+    assert not out.exists()
+    assert_no_fixture_values(captured.out + captured.err, {})
