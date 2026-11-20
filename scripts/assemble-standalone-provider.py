@@ -87,6 +87,15 @@ def production_profiles(args: argparse.Namespace, helpers: dict) -> dict | None:
         if len(found) != 1 or pins[found[0]] != digest(repo / path):
             raise ValueError("production_profile_unavailable")
     value = json.loads(source.read_bytes(), object_pairs_hook=unique)
+    # Store MAS XPC declarations are for prepare_production_profiles only.
+    # This assembler is the Direct Beta native-helper route and keeps raw-sha equality.
+    if isinstance(value, dict):
+        declared = value.get("desktop_helpers")
+        if isinstance(declared, dict) and any(
+            isinstance(entry, dict) and entry.get("hashAlgorithm") == "macho-store-v1"
+            for entry in declared.values()
+        ):
+            raise ValueError("store_declaration_not_accepted_by_assembler")
     if not isinstance(value, dict) or value.get("desktop_helpers") != helpers:
         raise ValueError("production_profile_unavailable")
     directory = Path(__file__).resolve().parent / "standalone-provider"

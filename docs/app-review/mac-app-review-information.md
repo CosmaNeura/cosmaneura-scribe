@@ -146,7 +146,7 @@ binary would still need a later production resubmit before public customers.
 | Before each Review (runbook) | John or the Beta Tester (with John’s approval) | Create a **fresh** Apple Delete throwaway for Review; keep the main demo account. Do not delete Apple’s throwaway yourselves — Apple deletes it during Review. Re-grant practice/activation/capture as needed. Placeholders only in git. |
 | Scribe capability / activation | John | Account must **not** return `scribe_account_setup_required` for `practice` or `activation` on the Mac client. Complete practice onboarding and Scribe activation **before** Review (browser/Core tools or iOS setup UI). Activation alone is not recording authority; still need capture grant. |
 | Capture / cohort grant | John | Founder-selected synthetic practice cohort with Scribe capture enabled for desktop, `non_phi_test_only` / synthetic classification only. |
-| Production package profile | John (founder unlock) | MAS/TestFlight candidate sealed via existing `assemble-production-provider.py` + `--production-inputs` + `--enable-production-clients`. About badge must show Production (**P**). Do not submit a disabled assemble receipt. |
+| Production package profile | John (founder unlock) | Build **132** is MAS XPC: seal via `write_production_inputs.py --store-bridge-declaration` → `prepare_production_profiles.py` (founder prepare CLI), then operator install of `desktop-profile.json` as `Contents/Resources/app/provider-profile.json` per the release runbook. `assemble-production-provider.py` is the Direct Beta route and refuses Store `macho-store-v1` inputs. About badge must show Production (**P**). |
 | Azure blob upload | Part of production topology | Confirm the package’s single `https://<account>.blob.core.windows.net` origin accepts ciphertext from the production workload path. No SAS strings in this doc. |
 | Network reachability | John / ops | Reviewer Mac must reach production Clerk, `app.cosmaneura.com`, and the blob origin over HTTPS (not office-IP allowlisted only). |
 
@@ -156,26 +156,48 @@ for this submission.
 
 ### Production sealing — missing inputs (stop; no placeholders)
 
-The repo’s existing production packaging mechanism is:
+**Build 132 (Mac App Store / MAS XPC)** uses the Store writer + founder prepare
+CLI, not the Direct Beta assembler:
 
 ```sh
+# After signing ScribeStorePipeBridge, hash it, then write Store-mode inputs:
+node scripts/hash-mac-store-bridge.mjs /abs/path/to/ScribeStorePipeBridge
+# → declaration JSON (path/sha256/hashAlgorithm)
+
 SCRIBE_FOUNDER_PRODUCTION_UNLOCK=1 \
-  python3 scripts/assemble-production-provider.py \
-  --i-am-john-unlocking-production \
-  --production-inputs /path/to/production-inputs.json \
-  --enable-production-clients \
-  # …plus existing host/native/receipt paths from the production flight plans
+  python3 scripts/standalone-provider/write_production_inputs.py \
+  --core-pin /path/to/production_live_settings.tf \
+  --store-bridge-declaration /path/to/bridge-declaration.json \
+  --out /path/to/store-production-inputs.json
+
+SCRIBE_FOUNDER_PRODUCTION_UNLOCK=1 \
+  python3 scripts/standalone-provider/prepare_production_profiles.py \
+  /path/to/store-production-inputs.json \
+  /path/to/store-production-profiles \
+  --enable-clients \
+  --i-am-john-unlocking-production
 ```
 
+`prepare_production_profiles.py` emits `desktop-profile.json` (and Info.plist
+fragments). **There is no in-repo step that copies that file into a MAS `.app`
+as `Contents/Resources/app/provider-profile.json`.** For build 132 that install
+is an operator step in the release runbook (out-of-git). Do not invent a
+packager here.
+
+`scripts/assemble-production-provider.py` / `assemble-standalone-provider.py` are
+the **Direct Beta** native-helper route (`--auth-build` / `--audio-build`). They
+refuse Store `macho-store-v1` `--production-inputs` with
+`store_declaration_not_accepted_by_assembler`. Do not use them for build 132.
+
 Offline helper `scripts/standalone-provider/write_production_inputs.py` writes the
-founder `--production-inputs` JSON (schema 1) from a Core `production_live_settings.tf`
-pin plus local helper build directories (assemble auth/audio layout); it never prints
-binding values. Live inputs stay outside git.
+founder production-inputs JSON (schema 1) from a Core `production_live_settings.tf`
+pin plus either Direct Beta helper build directories or a Store bridge declaration;
+it never prints binding values. Live inputs stay outside git.
 
 `scripts/standalone-provider/prepare_production_profiles.py` projects that input
-into sealed `provider-profile.json` / Info.plist fragments. **Those live values
-are not in git.** Do not invent them. Before a production-sealed Store assemble
-can finish, John must supply (outside the repository) at least:
+into sealed profile / Info.plist fragments. **Those live values are not in
+git.** Do not invent them. Before a production-sealed Store package can finish,
+John must supply (outside the repository) at least:
 
 | Missing input | Why it is required |
 | --- | --- |
