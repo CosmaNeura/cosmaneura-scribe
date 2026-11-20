@@ -139,10 +139,11 @@ binary would still need a later production resubmit before public customers.
 
 | Item | Who | What to create (placeholders only) |
 | --- | --- | --- |
-| Production Clerk user (main demo) | John (Clerk dashboard for production issuer) | Email `<REVIEWER_SYNTHETIC_EMAIL>`; password or other factor Apple can complete in the hosted Sign-in Required fields. Prefer a **dedicated** synthetic reviewer identity — not a personal founder login. Mark account synthetic / non-PHI. This is the primary Review walkthrough account — **do not** use it for Delete account. |
-| Production Clerk user (deletion test only) | John (Clerk dashboard for production issuer) | Second synthetic account email `<REVIEWER_DELETION_TEST_EMAIL>`; password or other factor stored only in founder secret store / given to Review via Contact if needed — **never** paste real passwords into Notes or git. Use **only** for the Delete account test so the main demo account survives. Same synthetic / non-PHI rules; practice/activation/capture grant required like the main demo. |
-| Production Cosmas practice membership | John (Core / Cosmas admin path) | Active practice membership for **each** Clerk subject above; workforce/provider role sufficient for Scribe catalog + walk-in creation. Practice and patients must be invented names only. |
-| Re-create after each Review | John | After each App Review cycle (or whenever either account was deleted), John re-creates **both** synthetic accounts himself (main demo + deletion-test), re-grants practice/activation/capture, and updates App Store Connect Sign-in Required / Contact as needed. Placeholders only in git. |
+| Production Clerk user (main demo) | John (Clerk dashboard for production issuer) | Email `<REVIEWER_SYNTHETIC_EMAIL>`; password or other factor Apple can complete in the hosted Sign-in Required fields. Prefer a **dedicated** synthetic reviewer identity — not a personal founder login. Mark account synthetic / non-PHI. This is the primary Review walkthrough account — **keep it**; **do not** use it for Delete account. |
+| Production Clerk user (Apple Delete throwaway) | Beta Tester | Fresh synthetic throwaway email `<REVIEWER_DELETION_TEST_EMAIL>` created **before each Review** for Apple’s Delete account test only. Password goes **only** into App Store Connect sign-in fields and a private password store — **never** into Notes, this doc, chat, or logs. Same synthetic / non-PHI rules; practice/activation/capture grant required like the main demo. **Apple** deletes this account during Review; our team **never** deletes it. |
+| Team Delete smoke throwaway (not Apple’s) | Beta Tester / founder | Separate synthetic account `<TEAM_DELETION_SMOKE_EMAIL>` used only for the pre-submit Delete smoke on signed build 132. Not the Apple Review throwaway. Password only in a private password store — never Notes, this doc, chat, or logs. |
+| Production Cosmas practice membership | John (Core / Cosmas admin path) | Active practice membership for the main demo and each throwaway Clerk subject; workforce/provider role sufficient for Scribe catalog + walk-in creation. Practice and patients must be invented names only. |
+| Before each Review (runbook) | Beta Tester | Create a **fresh** Apple Delete throwaway for Review; keep the main demo account. Do not delete Apple’s throwaway yourselves — Apple deletes it during Review. Re-grant practice/activation/capture as needed. Placeholders only in git. |
 | Scribe capability / activation | John | Account must **not** return `scribe_account_setup_required` for `practice` or `activation` on the Mac client. Complete practice onboarding and Scribe activation **before** Review (browser/Core tools or iOS setup UI). Activation alone is not recording authority; still need capture grant. |
 | Capture / cohort grant | John | Founder-selected synthetic practice cohort with Scribe capture enabled for desktop, `non_phi_test_only` / synthetic classification only. |
 | Production package profile | John (founder unlock) | MAS/TestFlight candidate sealed via existing `assemble-production-provider.py` + `--production-inputs` + `--enable-production-clients`. About badge must show Production (**P**). Do not submit a disabled assemble receipt. |
@@ -234,10 +235,10 @@ NETWORK
 The app needs HTTPS to: production Clerk (hosted sign-in), https://app.cosmaneura.com (catalog, consent, session, upload authority), and one Azure Blob Storage origin for encrypted audio upload. Offline use is not supported.
 
 ACCOUNT DELETION (Guideline 5.1.1(v)) — DONE
-In-app Delete account is available in this Mac build (132). Test it with the dedicated deletion-test account only (<REVIEWER_DELETION_TEST_EMAIL>; ask Contact for the factor if needed)—not the main demo account in Sign-in Required—so the main demo login survives. Sign in with that account → Account → Delete account → type DELETE → confirm. Calls DELETE /v1/me/account. After server confirm, this device wipes local clinical data and signs out. Offline or 401: local clinical data kept; account not deleted. Cancel Scribe access is not account deletion.
+In-app Delete account is available in this Mac build (132). Test Delete account with the dedicated throwaway reviewer account only (not the main demo account), so the main demo login survives. Sign-in for that throwaway is in App Store Connect — do not expect its password in these Notes. Sign in with that throwaway → Account → Delete account → type DELETE → confirm. Calls DELETE /v1/me/account. After server confirm, this device wipes local clinical data and signs out. Offline or 401: local clinical data kept; account not deleted. Cancel Scribe access is not account deletion.
 
 DEMO ACCOUNT
-Use Sign-in Required credentials for the walkthrough; use the deletion-test account only for Delete account. All names and speech must remain synthetic.
+Use Sign-in Required credentials for the walkthrough; use the dedicated Delete throwaway only for Delete account. All names and speech must remain synthetic.
 ```
 
 **Maintainer notes (not for Connect paste):**
@@ -295,8 +296,8 @@ are instructions or placeholders — never commit real secrets.
 | **Name / Subtitle / Keyword / Description / Screenshots** | See § Metadata — name **Cosmas Scribe**; subtitle **Record and review visit notes**; still remove “Mac” from Description and check Screenshots (cautious practice). |
 | **Regions** | **United States** |
 | **Sign-in required** | **Yes** (checked). The Mac app is unusable for Review without Clerk sign-in. |
-| **User name** | `<REVIEWER_SYNTHETIC_EMAIL>` — main demo production Clerk email John provisions (synthetic only). Deletion-test account is separate (`<REVIEWER_DELETION_TEST_EMAIL>`); do not put that password in Notes. |
-| **Password** | `<REVIEWER_SYNTHETIC_PASSWORD>` — main demo only; store only in App Store Connect / founder secret store; **never commit real passwords to git**. Prefer a password factor for Review simplicity. Deletion-test factor stays in founder secret store / Contact reply — never in Notes. |
+| **User name** | `<REVIEWER_SYNTHETIC_EMAIL>` — main demo (John; synthetic only) for the walkthrough. Apple Delete throwaway is separate (`<REVIEWER_DELETION_TEST_EMAIL>`, Beta Tester) — never put its password in Notes, this doc, chat, or logs. |
+| **Password** | `<REVIEWER_SYNTHETIC_PASSWORD>` — main demo in App Store Connect Sign-in Required / private store; **never commit real passwords to git**. Apple Delete throwaway password: App Store Connect sign-in fields + private password store only — never Notes, this doc, chat, or logs. |
 | **Contact information — First name** | `<CONTACT_FIRST_NAME>` (founder contact who can answer within Review hours). |
 | **Contact information — Last name** | `<CONTACT_LAST_NAME>` |
 | **Contact information — Phone number** | `<CONTACT_PHONE_E164>` — reachable during Review. |
@@ -309,13 +310,15 @@ are instructions or placeholders — never commit real secrets.
 **Pre-submit smoke (founder; production-sealed signed build 132):** cold launch →
 Sign in with the exact App Review main-demo credentials → Today’s patients →
 walk-in → mic permission → consent → short synthetic recording → Finish visit →
-upload completes. Then sign out, sign in with the dedicated deletion-test
-account, run **Account → Delete account** (type DELETE → confirm) once, and
-confirm local wipe / signed-out state. Also complete the #552 Try again path and
-#558 install-over-old-app checks before upload. If launch fails, do not submit;
-that is the separate 2.1(a) launch-fix track (**root cause still unconfirmed**).
-John re-creates both synthetic accounts after each Review (or after the
-deletion-test account is consumed).
+upload completes. Then sign out, sign in with a **separate team** Delete smoke
+throwaway (`<TEAM_DELETION_SMOKE_EMAIL>` — not Apple’s Review throwaway), run
+**Account → Delete account** (type DELETE → confirm) once, and confirm local
+wipe / signed-out state. Also complete the #552 Try again path and #558
+install-over-old-app checks before upload. If launch fails, do not submit; that
+is the separate 2.1(a) launch-fix track (**root cause still unconfirmed**).
+**Before each Review:** Beta Tester creates a fresh Apple Delete throwaway;
+keep the main demo. Apple deletes that throwaway during Review; our team never
+deletes it.
 
 ---
 
