@@ -212,6 +212,9 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             self.initializeAuth()
             do {
                 guard let auth = self.auth else { throw NativeAuthError.unavailable }
+                #if os(iOS)
+                try? ClinicalSecureQueuePurge.setActiveWriteAccount(nil)
+                #endif
                 call.resolve(Self.payload(try await auth.signOut()))
             } catch { Self.reject(call) }
         }
@@ -602,6 +605,11 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             else { return Self.reject(call) }
             self.initializeAuth()
             guard let auth = self.auth, auth.state().phase == .ready else { return Self.reject(call) }
+            // Capture clinical account id ONCE before the server delete; refuse if nil.
+            guard let clinicalAccountId = self.clinicalAccountIdForPurgeMarker() else {
+                call.reject("Clinical account unavailable", "clinical_account_unavailable")
+                return
+            }
             let revision = auth.state().revision
             let origin = Self.providerApplicationConfiguration()?["coreOrigin"] as? String
             guard let payload = await AccountSelfDeleteContract.attempt(
@@ -617,16 +625,15 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                 endDeletion: { Self.recordingBridge.endAccountDeletion() },
                 markerPrepared: {
                     // Never demote an earlier-attempt sent marker (B1 recovery).
-                    let accountId = self.clinicalAccountIdForPurgeMarker()
                     if ClinicalPurgeMarker.readState() != .sent {
-                        ClinicalPurgeMarker.write(.prepared, accountId: accountId)
+                        ClinicalPurgeMarker.write(.prepared, accountId: clinicalAccountId)
                     }
                 },
                 markerSent: {
-                    ClinicalPurgeMarker.write(.sent, accountId: self.clinicalAccountIdForPurgeMarker())
+                    ClinicalPurgeMarker.write(.sent, accountId: clinicalAccountId)
                 },
                 markerConfirm: {
-                    ClinicalPurgeMarker.write(.confirmed, accountId: self.clinicalAccountIdForPurgeMarker())
+                    ClinicalPurgeMarker.write(.confirmed, accountId: clinicalAccountId)
                 },
                 markerAbandonPrepared: { ClinicalPurgeMarker.abandonPrepared() })
             else { call.reject("Account deletion unavailable", "account_self_delete_failed"); return }

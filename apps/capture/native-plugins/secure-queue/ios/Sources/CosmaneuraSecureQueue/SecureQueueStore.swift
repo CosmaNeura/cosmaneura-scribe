@@ -68,14 +68,14 @@ final class SecureQueueStore {
             storageKey = try loadStorageKey(allowCreate: !hasRecords)
             revision = 1
         }
-        try writeRecord(
+        try commitRecordWithOwnershipLocked(
             key: key,
             data: data,
             revision: revision,
             digest: digest,
-            storageKey: storageKey
+            storageKey: storageKey,
+            target: target
         )
-        try recordWriteOwnershipLocked(key: key, digest: digest)
         return revision
     }
 
@@ -101,14 +101,14 @@ final class SecureQueueStore {
         }
         let hasRecords = try hasCommittedRecords()
         let storageKey = try loadStorageKey(allowCreate: !hasRecords)
-        try writeRecord(
+        try commitRecordWithOwnershipLocked(
             key: key,
             data: data,
             revision: 1,
             digest: digest,
-            storageKey: storageKey
+            storageKey: storageKey,
+            target: target
         )
-        try recordWriteOwnershipLocked(key: key, digest: digest)
         return 1
     }
 
@@ -136,14 +136,14 @@ final class SecureQueueStore {
             throw SecureQueueError.revisionConflict
         }
         let revision = try nextRevision(after: current.revision)
-        try writeRecord(
+        try commitRecordWithOwnershipLocked(
             key: key,
             data: data,
             revision: revision,
             digest: digest,
-            storageKey: storageKey
+            storageKey: storageKey,
+            target: target
         )
-        try recordWriteOwnershipLocked(key: key, digest: digest)
         return revision
     }
 
@@ -216,6 +216,7 @@ final class SecureQueueStore {
     }
 
     /// Remember recoveryScope keyed by exact accountIdentitySHA256. Null identity is refused.
+    /// Also sets the active write owner from this live signed-in session.
     func rememberAccount(accountId: String, accountIdentitySHA256: String?) throws {
         operationLock.lock()
         defer { operationLock.unlock() }
@@ -230,6 +231,21 @@ final class SecureQueueStore {
         try migrateAccountsIfNeededLocked()
         var index = try loadAccountIndex()
         index.remember(accountId: account, identity: identity)
+        try writeAccountIndex(index)
+    }
+
+    /// Set or clear the live write owner (sign-in / sign-out / dispose / connect start).
+    func setActiveWriteAccount(_ accountId: String?) throws {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        if let accountId {
+            guard SecureQueueAccountScope.normalizedAccountId(accountId) != nil else {
+                throw SecureQueueError.invalidArgument
+            }
+        }
+        try migrateAccountsIfNeededLocked()
+        var index = try loadAccountIndex()
+        index.setActiveWriteAccountId(accountId)
         try writeAccountIndex(index)
     }
 
@@ -255,13 +271,22 @@ final class SecureQueueStore {
         return try wipeAccountLocked(accountId)
     }
 
-    /// Launch/retry helper: pending per-account wipe only. Callers with a v1 no-id marker use clearAll.
+    /// Pending per-account wipe when a wipe left residue; otherwise full clear.
+    /// Not used for v1 marker retry — that path must ignore the pending-wipe file.
     func completePendingOrClearAll() throws -> Int {
         operationLock.lock()
         defer { operationLock.unlock() }
         if let pending = try readPendingWipeAccount() {
             return try wipeAccountLocked(pending)
         }
+        return try clearLocked(forRenderer: false)
+    }
+
+    /// v1 marker clearAll path: ignore any pending-wipe-account file.
+    func clearAllIgnoringPendingWipe() throws -> Int {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        try? clearPendingWipeAccount()
         return try clearLocked(forRenderer: false)
     }
 
@@ -403,21 +428,58 @@ final class SecureQueueStore {
         }
     }
 
-    private func recordWriteOwnershipLocked(key: String, digest: Data) throws {
-        var index: SecureQueueAccountIndex
+    /// Resolve ownership before the record write. Orphan index entries are harmless;
+    /// roll back a newly written record if ownership persistence fails.
+    private func commitRecordWithOwnershipLocked(
+        key: String,
+        data: Data,
+        revision: UInt64,
+        digest: Data,
+        storageKey: SymmetricKey,
+        target: URL
+    ) throws {
+        try prepareWriteOwnershipLocked(key: key, digest: digest)
+        let existedBefore = fileManager.fileExists(atPath: target.path)
         do {
-            index = try loadAccountIndex()
+            try writeRecord(
+                key: key,
+                data: data,
+                revision: revision,
+                digest: digest,
+                storageKey: storageKey
+            )
         } catch {
+            // Ownership index may already list this digest; orphan entry is harmless.
             throw error
         }
-        guard index.migrated else { return }
+        // Re-affirm ownership after a successful write (index already stamped).
+        do {
+            try prepareWriteOwnershipLocked(key: key, digest: digest)
+        } catch {
+            if !existedBefore {
+                try? fileManager.removeItem(at: target)
+            }
+            throw error
+        }
+    }
+
+    /// Stamp opaque ownership before the record hits disk. Always migrates first so
+    /// new opaque writes are never left unowned via a !migrated early return.
+    private func prepareWriteOwnershipLocked(key: String, digest: Data) throws {
+        try migrateAccountsIfNeededLocked()
+        var index = try loadAccountIndex()
         if SecureQueueAccountScope.accountId(forKey: key) != nil {
+            // Parseable keys own via key shape; still mark migrated if a prior migrate write failed.
+            if !index.migrated {
+                index.migrated = true
+                try writeAccountIndex(index)
+            }
             return
         }
-        // H1: every post-upgrade opaque write must have an account owner.
         guard let owner = index.activeWriteAccountId else {
             throw SecureQueueError.invalidArgument
         }
+        index.migrated = true
         index.assignOwner(
             digestHex: SecureQueueAccountScope.digestHex(fromDigest: digest),
             accountId: owner
@@ -429,40 +491,87 @@ final class SecureQueueStore {
         let listed = try listRecordsForWipeLocked()
         var owned: [String] = []
         for entry in listed.readable {
-            if SecureQueueAccountScope.belongs(key: entry.key, toAccount: account) {
+            if isOwnedByAccount(key: entry.key, digest: entry.digest, account: account, index: listed.index) {
                 owned.append(entry.key)
-                continue
-            }
-            if SecureQueueAccountScope.accountId(forKey: entry.key) == nil {
-                let hex = SecureQueueAccountScope.digestHex(fromDigest: entry.digest)
-                if listed.index.owner(forDigestHex: hex) == account {
-                    owned.append(entry.key)
-                }
             }
         }
         return owned
     }
 
-    /// Remaining after wipe: still-owned-by-account keys + unowned clinical-prefix keys (H1).
+    private func isOwnedByAccount(
+        key: String,
+        digest: Data,
+        account: String,
+        index: SecureQueueAccountIndex
+    ) -> Bool {
+        if SecureQueueAccountScope.belongs(key: key, toAccount: account) { return true }
+        if SecureQueueAccountScope.accountId(forKey: key) == nil {
+            let hex = SecureQueueAccountScope.digestHex(fromDigest: digest)
+            if index.owner(forDigestHex: hex) == account { return true }
+        }
+        return false
+    }
+
+    /// Remaining after wipe: account-owned keys, unowned clinical-prefix keys, and any
+    /// .sq file that could not be proven to belong to another account (failed removals).
     private func remainingAfterWipeLocked(account: String) throws -> Int {
-        let listed = try listRecordsForWipeLocked()
-        var count = 0
-        for entry in listed.readable {
-            if SecureQueueAccountScope.belongs(key: entry.key, toAccount: account) {
-                count += 1
+        try ensureDirectory()
+        let index = try loadAccountIndex()
+        let urls: [URL]
+        do {
+            urls = try fileManager.contentsOfDirectory(
+                at: directoryURL,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            throw SecureQueueError.io
+        }
+        let recordURLs = urls.filter { $0.pathExtension == "sq" }
+        guard !recordURLs.isEmpty else { return 0 }
+
+        var remaining = 0
+        var storageKey: SymmetricKey?
+        for url in recordURLs {
+            let digest: Data
+            do {
+                digest = try SecureQueueRecordCodec.digest(fromFilename: url.lastPathComponent)
+            } catch {
+                // Unparseable filename that still exists → counts as remaining.
+                remaining += 1
                 continue
             }
-            if SecureQueueAccountScope.accountId(forKey: entry.key) == nil {
-                let hex = SecureQueueAccountScope.digestHex(fromDigest: entry.digest)
-                if listed.index.owner(forDigestHex: hex) == account {
-                    count += 1
-                } else if listed.index.owner(forDigestHex: hex) == nil,
-                          SecureQueueAccountScope.isClinicalKey(entry.key) {
-                    count += 1
+            do {
+                if storageKey == nil {
+                    storageKey = try loadStorageKey(allowCreate: false)
                 }
+                let record = try readRecord(at: url, digest: digest, storageKey: storageKey!)
+                let actualDigest = try SecureQueueRecordCodec.digest(for: record.key)
+                guard actualDigest == digest else {
+                    remaining += 1
+                    continue
+                }
+                if isOwnedByAccount(key: record.key, digest: digest, account: account, index: index) {
+                    remaining += 1
+                    continue
+                }
+                if SecureQueueAccountScope.accountId(forKey: record.key) == nil {
+                    let hex = SecureQueueAccountScope.digestHex(fromDigest: digest)
+                    if index.owner(forDigestHex: hex) == nil,
+                       SecureQueueAccountScope.isClinicalKey(record.key) {
+                        remaining += 1
+                    }
+                    // Owned by another account via digest — not remaining for this wipe.
+                }
+                // Parseable other-account keys are not remaining.
+            } catch let error as SecureQueueError where error == .keyUnavailable || error == .io {
+                throw error
+            } catch {
+                // Unreadable but still on disk and not proven other-account → remaining.
+                remaining += 1
             }
         }
-        return count
+        return remaining
     }
 
     private struct WipeListing {

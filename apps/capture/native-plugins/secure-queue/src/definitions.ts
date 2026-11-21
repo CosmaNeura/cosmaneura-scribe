@@ -81,6 +81,10 @@ export interface SecureQueuePlugin {
   wipeAccount(options: SecureQueueAccountOptions): Promise<SecureQueueClearResult>;
   /** Remember recoveryScope keyed by exact accountIdentitySHA256. Identity required. */
   rememberAccount(options: SecureQueueAccountOptions): Promise<void>;
+  /** Set or clear the live write owner (sign-in / sign-out / dispose / connect start). */
+  setActiveWriteAccount(
+    options: { accountId: string | null },
+  ): Promise<void>;
   /** H4 no-op stub: legacy items are never claimed. */
   claimLegacyAccount(options: Pick<SecureQueueAccountOptions, "accountId">): Promise<void>;
   /** Lookup by exact identity; omitted/null identity never matches. */

@@ -17,6 +17,7 @@ public final class SecureQueuePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "clearAll", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "wipeAccount", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "rememberAccount", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setActiveWriteAccount", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "claimLegacyAccount", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "rememberedAccount", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "migrateAccounts", returnType: CAPPluginReturnPromise),
@@ -158,6 +159,29 @@ public final class SecureQueuePlugin: CAPPlugin, CAPBridgedPlugin {
         let identity = call.getString("accountIdentitySHA256")
         perform(call) { store in
             try store.rememberAccount(accountId: accountId, accountIdentitySHA256: identity)
+            return nil
+        }
+    }
+
+    @objc public func setActiveWriteAccount(_ call: CAPPluginCall) {
+        let accountId = call.getString("accountId")
+        if call.options.keys.contains("accountId"), accountId == nil {
+            // Explicit null clears the write owner.
+            perform(call) { store in
+                try store.setActiveWriteAccount(nil)
+                return nil
+            }
+            return
+        }
+        if let accountId {
+            perform(call) { store in
+                try store.setActiveWriteAccount(accountId)
+                return nil
+            }
+            return
+        }
+        perform(call) { store in
+            try store.setActiveWriteAccount(nil)
             return nil
         }
     }

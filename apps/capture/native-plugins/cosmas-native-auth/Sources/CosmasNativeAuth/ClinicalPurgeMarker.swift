@@ -1,56 +1,87 @@
 import Foundation
 
-/// Durable native purge marker (H2/H3). Wipe only after `confirmed`.
-/// v2 carries optional accountId for per-account launch retry; v1 no-id may clearAll.
+/// Durable native purge marker. Wipe only after `confirmed`.
+/// v2 always carries a validated accountId for per-account launch retry.
+/// clearAll is allowed ONLY for legacy v1 markers with no accountId key.
 public enum ClinicalPurgeMarker {
     public enum State: String { case prepared, sent, confirmed }
+
+    private static let uuidPattern =
+        #"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"#
 
     private static var fileURL: URL {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         let dir = root.appendingPathComponent("CosmaneuraClinicalPurge", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        var mutable = dir
+        excludeFromBackup(dir)
+        return dir.appendingPathComponent("clinical-purge-pending-v1.json")
+    }
+
+    private static func excludeFromBackup(_ url: URL) {
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
+        var mutable = url
         try? mutable.setResourceValues(values)
-        return dir.appendingPathComponent("clinical-purge-pending-v1.json")
+    }
+
+    private static func normalizedAccountId(_ raw: String) -> String? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard value.range(of: uuidPattern, options: .regularExpression) != nil else { return nil }
+        return value
     }
 
     public static var exists: Bool { FileManager.default.fileExists(atPath: fileURL.path) }
 
-    public static func readState() -> State? {
+    private static func readObject() -> [String: Any]? {
         guard let data = try? Data(contentsOf: fileURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let raw = object["state"] as? String else { return nil }
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return object
+    }
+
+    public static func readState() -> State? {
+        guard let raw = readObject()?["state"] as? String else { return nil }
         return State(rawValue: raw)
     }
 
-    public static func readAccountId() -> String? {
-        guard let data = try? Data(contentsOf: fileURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let raw = object["accountId"] as? String else { return nil }
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let pattern = #"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"#
-        guard value.range(of: pattern, options: .regularExpression) != nil else { return nil }
-        return value
+    public static func readVersion() -> Int? {
+        readObject()?["v"] as? Int
     }
 
-    public static func write(_ state: State, accountId: String? = nil) {
-        var payload: [String: Any] = ["state": state.rawValue]
-        if let accountId {
-            let value = accountId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            payload["v"] = 2
-            payload["accountId"] = value
-        } else {
-            payload["v"] = 1
-        }
+    /// Validated account id when present and well-formed; nil when absent or regex-failing.
+    public static func readAccountId() -> String? {
+        guard let raw = readObject()?["accountId"] as? String else { return nil }
+        return normalizedAccountId(raw)
+    }
+
+    /// True when the file has an accountId key (even if the value fails validation).
+    public static func hasAccountIdKey() -> Bool {
+        readObject()?["accountId"] != nil
+    }
+
+    /// Production write: always v2 with a non-optional validated accountId.
+    /// Never demotes an existing id-bearing marker to a no-id marker (caller always supplies id).
+    public static func write(_ state: State, accountId: String) {
+        guard let value = normalizedAccountId(accountId) else { return }
+        // Never overwrite a marker that has an id with one that doesn't — accountId is required.
+        var payload: [String: Any] = [
+            "state": state.rawValue,
+            "v": 2,
+            "accountId": value,
+        ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else { return }
         try? data.write(to: fileURL, options: [.atomic])
-        var mutable = fileURL
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        try? mutable.setResourceValues(values)
+        excludeFromBackup(fileURL)
+    }
+
+    /// Legacy/test-only v1 marker with no accountId key.
+    /// Refuses to overwrite an existing marker that already carries an accountId.
+    public static func writeV1(_ state: State) {
+        if hasAccountIdKey() { return }
+        let payload: [String: Any] = ["state": state.rawValue, "v": 1]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else { return }
+        try? data.write(to: fileURL, options: [.atomic])
+        excludeFromBackup(fileURL)
     }
 
     public static func abandonPrepared() {
@@ -61,11 +92,43 @@ public enum ClinicalPurgeMarker {
     public static func clear() { try? FileManager.default.removeItem(at: fileURL) }
 
     /// Launch/sign-in retry: wipe only when already confirmed — never promote prepared/sent.
-    /// `wipe(accountId)` receives the marker account id (nil for v1 → caller may clearAll).
+    /// - v2 with valid accountId → wipe(accountId)
+    /// - v2 with missing/bad id → fail closed (keep marker, wipe nothing)
+    /// - v1 with no accountId key → wipe(nil) so caller may clearAll
     @MainActor
     public static func retryPurge(wipe: (_ accountId: String?) throws -> Int) throws -> Bool {
         guard readState() == .confirmed else { return false }
-        if try wipe(readAccountId()) != 0 { throw NSError(domain: "clinical_purge", code: 1) }
+        let version = readVersion() ?? 1
+        let hasKey = hasAccountIdKey()
+        let accountId = readAccountId()
+
+        if version >= 2 || hasKey {
+            // v2 (or any marker carrying accountId): require a valid id; otherwise fail closed.
+            guard let accountId else {
+                throw NSError(
+                    domain: "clinical_purge",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "v2_marker_account_unavailable"]
+                )
+            }
+            if try wipe(accountId) != 0 {
+                throw NSError(domain: "clinical_purge", code: 1)
+            }
+            clear()
+            return true
+        }
+
+        // v1 with no accountId key only — clearAll path.
+        guard version == 1, !hasKey else {
+            throw NSError(
+                domain: "clinical_purge",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "marker_shape_unavailable"]
+            )
+        }
+        if try wipe(nil) != 0 {
+            throw NSError(domain: "clinical_purge", code: 1)
+        }
         clear()
         return true
     }

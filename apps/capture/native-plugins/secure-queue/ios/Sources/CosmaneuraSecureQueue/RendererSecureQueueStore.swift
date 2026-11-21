@@ -41,6 +41,9 @@ final class RendererSecureQueueStore {
   func rememberAccount(accountId: String, accountIdentitySHA256: String?) throws {
     try store.rememberAccount(accountId: accountId, accountIdentitySHA256: accountIdentitySHA256)
   }
+  func setActiveWriteAccount(_ accountId: String?) throws {
+    try store.setActiveWriteAccount(accountId)
+  }
   /// H4 no-op stub — legacy items are never claimed.
   func claimLegacyAccount(_ accountId: String) throws {
     try store.claimLegacyAccount(accountId)

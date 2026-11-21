@@ -150,6 +150,7 @@ class FakeSecureQueuePlugin implements SecureQueuePlugin {
   }
 
   async rememberAccount() {}
+  async setActiveWriteAccount() {}
   async claimLegacyAccount() {}
   async rememberedAccount() {
     return { accountId: null, accountIdentitySHA256: null };

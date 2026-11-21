@@ -243,6 +243,7 @@ test("keeps the bridge narrow and contains no native logging calls", async () =>
     "clearAll",
     "wipeAccount",
     "rememberAccount",
+    "setActiveWriteAccount",
     "claimLegacyAccount",
     "rememberedAccount",
     "migrateAccounts",
@@ -295,8 +296,10 @@ test("iOS SecureQueue wipe is per-account with idempotent migration", async () =
   );
   assert.match(iosScope, /accountId\(forKey/u);
   assert.match(iosPurge, /wipeAccountRemaining/u);
-  assert.match(iosPurge, /completePendingOrClearAll/u);
+  assert.match(iosPurge, /clearAllIgnoringPendingWipe/u);
+  assert.match(iosStore, /completePendingOrClearAll/u);
   assert.match(nativeApplication, /SecureQueue\.wipeAccount/u);
+  assert.match(nativeApplication, /SecureQueue\.setActiveWriteAccount/u);
   assert.doesNotMatch(
     nativeApplication,
     /SecureQueue\.claimLegacyAccount/u,

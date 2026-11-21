@@ -151,8 +151,9 @@ public final class SecureQueuePlugin extends Plugin {
     @PluginMethod
     public void wipeAccount(PluginCall call) {
         perform(call, queue -> {
+            queue.clear();
+            int remaining = queue.list().size();
             JSObject result = new JSObject();
-            int remaining = queue.clear();
             result.put("cleared", remaining);
             result.put("remaining", remaining);
             return result;
@@ -161,6 +162,11 @@ public final class SecureQueuePlugin extends Plugin {
 
     @PluginMethod
     public void rememberAccount(PluginCall call) {
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void setActiveWriteAccount(PluginCall call) {
         call.resolve();
     }
 

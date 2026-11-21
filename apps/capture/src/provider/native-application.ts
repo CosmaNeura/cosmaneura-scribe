@@ -25,8 +25,12 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
   }
   /** Core recoveryScope for the signed-in account; required for per-account SecureQueue wipe. */
   let clinicalAccountId: string | undefined;
-  const resetClinicalAccountId = (): void => {
+  const clearWriteOwner = async (): Promise<void> => {
+    try { await SecureQueue.setActiveWriteAccount({ accountId: null }); } catch { /* best-effort */ }
+  };
+  const resetClinicalAccountId = async (): Promise<void> => {
     clinicalAccountId = undefined;
+    await clearWriteOwner();
   };
   const rememberClinicalAccount = async (accountId: string): Promise<void> => {
     if (!isUuid(accountId)) return;
@@ -103,7 +107,7 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
       try {
         // H7: best-effort migrate/remember; H4: never claim legacy.
         try { await SecureQueue.migrateAccounts(); } catch { /* best-effort */ }
-        resetClinicalAccountId();
+        await resetClinicalAccountId();
         const state = await native.getState().catch(() => null);
         const identity = typeof state?.accountIdentitySHA256 === "string" ? state.accountIdentitySHA256 : undefined;
         if (identity) {
@@ -112,6 +116,9 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
             if (typeof remembered.accountId === "string" && isUuid(remembered.accountId)
               && remembered.accountIdentitySHA256 === identity) {
               clinicalAccountId = remembered.accountId.toLowerCase();
+              try {
+                await SecureQueue.setActiveWriteAccount({ accountId: clinicalAccountId });
+              } catch { /* best-effort */ }
             }
           } catch { /* best-effort */ }
         }
@@ -132,7 +139,7 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
         return {
           workspace: createProviderIOSHost(scopedBackend, consentPreparation, initialCatalog, entryStartedAt, draftConsent),
           dispose: async () => {
-            resetClinicalAccountId();
+            await resetClinicalAccountId();
             await backend.dispose();
           },
         };
