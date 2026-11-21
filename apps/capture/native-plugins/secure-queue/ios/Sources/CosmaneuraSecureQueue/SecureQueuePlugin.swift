@@ -174,13 +174,19 @@ public final class SecureQueuePlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc public func rememberedAccount(_ call: CAPPluginCall) {
         perform(call) { store in
-            guard let remembered = try store.rememberedAccount() else {
-                return ["accountId": NSNull(), "accountIdentitySHA256": NSNull()]
+            var result = JSObject()
+            if let remembered = try store.rememberedAccount() {
+                result["accountId"] = remembered.accountId
+                if let identity = remembered.accountIdentitySHA256 {
+                    result["accountIdentitySHA256"] = identity
+                } else {
+                    result["accountIdentitySHA256"] = NSNull()
+                }
+            } else {
+                result["accountId"] = NSNull()
+                result["accountIdentitySHA256"] = NSNull()
             }
-            return [
-                "accountId": remembered.accountId,
-                "accountIdentitySHA256": remembered.accountIdentitySHA256 as Any? ?? NSNull(),
-            ]
+            return result
         }
     }
 
