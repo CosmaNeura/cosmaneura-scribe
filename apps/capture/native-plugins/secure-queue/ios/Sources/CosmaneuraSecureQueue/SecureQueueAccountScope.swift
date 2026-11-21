@@ -48,8 +48,8 @@ enum SecureQueueAccountScope {
         }
     }
 
-    static func belongs(key: String, toAccount accountId: String) -> Bool {
-        guard let expected = normalizedAccountId(accountId) else { return false }
+    static func belongs(key: String, toAccount account: String) -> Bool {
+        guard let expected = normalizedAccountId(account) else { return false }
         if let parsed = accountId(forKey: key) { return parsed == expected }
         return false
     }
