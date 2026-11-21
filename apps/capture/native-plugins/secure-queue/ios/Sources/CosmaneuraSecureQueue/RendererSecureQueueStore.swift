@@ -41,11 +41,12 @@ final class RendererSecureQueueStore {
   func rememberAccount(accountId: String, accountIdentitySHA256: String?) throws {
     try store.rememberAccount(accountId: accountId, accountIdentitySHA256: accountIdentitySHA256)
   }
+  /// H4 no-op stub — legacy items are never claimed.
   func claimLegacyAccount(_ accountId: String) throws {
     try store.claimLegacyAccount(accountId)
   }
-  func rememberedAccount() throws -> (accountId: String, accountIdentitySHA256: String?)? {
-    try store.rememberedAccount()
+  func rememberedAccount(accountIdentitySHA256: String?) throws -> (accountId: String, accountIdentitySHA256: String?)? {
+    try store.rememberedAccount(accountIdentitySHA256: accountIdentitySHA256)
   }
   func migrateAccountsIfNeeded() throws { try store.migrateAccountsIfNeeded() }
   func availableBytes() throws -> Int { try store.availableBytes() }

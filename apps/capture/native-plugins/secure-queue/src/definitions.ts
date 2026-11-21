@@ -22,19 +22,27 @@ export interface SecureQueueDeleteResult {
 }
 
 export interface SecureQueueClearResult {
+  /** Remaining key count after wipe (0 = empty). Same value as `remaining`. */
   cleared: number;
+  /** Remaining account-owned + unowned clinical keys after wipe (0 = empty). */
+  remaining?: number;
 }
 
 export interface SecureQueueAccountOptions {
   /** Core recoveryScope UUID (lowercase). */
   accountId: string;
-  /** Optional ready-account correlation digest; never an authorization grant. */
+  /** Exact ready-account correlation digest; required for remember; never an authorization grant. */
   accountIdentitySHA256?: string;
 }
 
 export interface SecureQueueRememberedAccountResult {
   accountId: string | null;
   accountIdentitySHA256: string | null;
+}
+
+export interface SecureQueueRememberedAccountOptions {
+  /** Exact accountIdentitySHA256; null / omitted never matches a remembered scope. */
+  accountIdentitySHA256?: string;
 }
 
 export interface SecureQueueRevisionResult {
@@ -69,13 +77,16 @@ export interface SecureQueuePlugin {
    * other accounts' queued items survive.
    */
   clearAll(): Promise<SecureQueueClearResult>;
-  /** Per-account clinical wipe; returns remaining key count for that account (0 = empty). */
+  /** Per-account clinical wipe + unattributable residue delete; remaining 0 = empty. */
   wipeAccount(options: SecureQueueAccountOptions): Promise<SecureQueueClearResult>;
-  /** Remember the signed-in recoveryScope for a later purge; claims legacy items to it. */
+  /** Remember recoveryScope keyed by exact accountIdentitySHA256. Identity required. */
   rememberAccount(options: SecureQueueAccountOptions): Promise<void>;
-  /** Attribute unkeyed legacy digests to accountId without deleting anything. */
+  /** H4 no-op stub: legacy items are never claimed. */
   claimLegacyAccount(options: Pick<SecureQueueAccountOptions, "accountId">): Promise<void>;
-  rememberedAccount(): Promise<SecureQueueRememberedAccountResult>;
+  /** Lookup by exact identity; omitted/null identity never matches. */
+  rememberedAccount(
+    options?: SecureQueueRememberedAccountOptions,
+  ): Promise<SecureQueueRememberedAccountResult>;
   /** Idempotent migration of the pre-account queue; never drops records on failure. */
   migrateAccounts(): Promise<void>;
 }

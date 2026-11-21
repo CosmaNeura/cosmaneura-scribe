@@ -151,7 +151,7 @@ func runAttemptChecks() async throws {
     // B4: prepared marker at launch does not wipe.
     ClinicalPurgeMarker.write(.prepared)
     let wipeProbe = AttemptCounters()
-    let retried = try ClinicalPurgeMarker.retryPurge {
+    let retried = try ClinicalPurgeMarker.retryPurge { _ in
         wipeProbe.began += 1
         return 0
     }

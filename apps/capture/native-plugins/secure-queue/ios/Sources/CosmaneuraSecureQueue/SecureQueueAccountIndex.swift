@@ -1,47 +1,63 @@
 import Foundation
 
-/// Durable, metadata-only account ownership sidecar for SecureQueue migration.
+/// Durable, metadata-only account ownership sidecar for SecureQueue.
 /// Never stores PHI, transcript text, or object URLs — only account ids and key digests.
 struct SecureQueueAccountIndex: Equatable {
-    static let schemaVersion = 1
+    static let schemaVersion = 2
     static let fileName = "account-index-v1.json"
     static let pendingWipeFileName = "pending-wipe-account-v1.json"
 
     var migrated: Bool
-    /// Digests of keys that could not be attributed from the key shape.
-    var legacyDigests: Set<String>
-    /// Digests claimed to a specific account (legacy attribution).
-    var claimedLegacy: [String: Set<String>]
-    /// Last signed-in recoveryScope remembered for purge when catalog is unavailable.
-    var rememberedAccountId: String?
-    var rememberedAccountIdentitySHA256: String?
+    /// Opaque / unparseable digests written after migration → owning recoveryScope.
+    var ownedDigests: [String: String]
+    /// Exact accountIdentitySHA256 → recoveryScope. Null identity never matches.
+    var rememberedScopes: [String: String]
+    /// Last rememberAccount recoveryScope; used as write-time owner for opaque keys.
+    var activeWriteAccountId: String?
 
     static var empty: SecureQueueAccountIndex {
         SecureQueueAccountIndex(
             migrated: false,
-            legacyDigests: [],
-            claimedLegacy: [:],
-            rememberedAccountId: nil,
-            rememberedAccountIdentitySHA256: nil
+            ownedDigests: [:],
+            rememberedScopes: [:],
+            activeWriteAccountId: nil
         )
     }
 
-    func encode() throws -> Data {
-        var claimed: [String: [String]] = [:]
-        for (account, digests) in claimedLegacy {
-            claimed[account] = digests.sorted()
+    mutating func remember(accountId: String, identity: String) {
+        rememberedScopes[identity] = accountId
+        activeWriteAccountId = accountId
+    }
+
+    func rememberedAccountId(forIdentity identity: String) -> String? {
+        rememberedScopes[identity]
+    }
+
+    mutating func forgetAccount(_ accountId: String) {
+        rememberedScopes = rememberedScopes.filter { $0.value != accountId }
+        ownedDigests = ownedDigests.filter { $0.value != accountId }
+        if activeWriteAccountId == accountId {
+            activeWriteAccountId = nil
         }
+    }
+
+    mutating func assignOwner(digestHex: String, accountId: String) {
+        ownedDigests[digestHex.lowercased()] = accountId
+    }
+
+    func owner(forDigestHex digestHex: String) -> String? {
+        ownedDigests[digestHex.lowercased()]
+    }
+
+    func encode() throws -> Data {
         var payload: [String: Any] = [
             "v": Self.schemaVersion,
             "migrated": migrated,
-            "legacyDigests": legacyDigests.sorted(),
-            "claimedLegacy": claimed,
+            "ownedDigests": ownedDigests,
+            "rememberedScopes": rememberedScopes,
         ]
-        if let rememberedAccountId {
-            payload["rememberedAccountId"] = rememberedAccountId
-        }
-        if let rememberedAccountIdentitySHA256 {
-            payload["rememberedAccountIdentitySHA256"] = rememberedAccountIdentitySHA256
+        if let activeWriteAccountId {
+            payload["activeWriteAccountId"] = activeWriteAccountId
         }
         return try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
     }
@@ -50,37 +66,70 @@ struct SecureQueueAccountIndex: Equatable {
         guard
             let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
             let version = object["v"] as? Int,
-            version == schemaVersion,
+            (version == 1 || version == schemaVersion),
             let migrated = object["migrated"] as? Bool
         else {
             throw SecureQueueError.corrupt
         }
-        let legacyList = object["legacyDigests"] as? [String] ?? []
-        var claimed: [String: Set<String>] = [:]
-        if let rawClaimed = object["claimedLegacy"] as? [String: [String]] {
-            for (account, digests) in rawClaimed {
+
+        var owned: [String: String] = [:]
+        if let rawOwned = object["ownedDigests"] as? [String: String] {
+            for (digest, account) in rawOwned {
                 guard let normalized = SecureQueueAccountScope.normalizedAccountId(account) else {
                     throw SecureQueueError.corrupt
                 }
-                claimed[normalized] = Set(digests)
+                owned[digest.lowercased()] = normalized
             }
         }
-        let remembered = object["rememberedAccountId"] as? String
-        let rememberedIdentity = object["rememberedAccountIdentitySHA256"] as? String
-        if let remembered, SecureQueueAccountScope.normalizedAccountId(remembered) == nil {
+
+        var scopes: [String: String] = [:]
+        if let rawScopes = object["rememberedScopes"] as? [String: String] {
+            for (identity, account) in rawScopes {
+                guard let normalizedIdentity = SecureQueueAccountScope.normalizedIdentity(identity),
+                      let normalizedAccount = SecureQueueAccountScope.normalizedAccountId(account)
+                else {
+                    throw SecureQueueError.corrupt
+                }
+                scopes[normalizedIdentity] = normalizedAccount
+            }
+        }
+
+        // Absorb round-1 single remembered pair into identity-keyed map.
+        if let remembered = object["rememberedAccountId"] as? String,
+           let normalizedAccount = SecureQueueAccountScope.normalizedAccountId(remembered) {
+            if let rememberedIdentity = object["rememberedAccountIdentitySHA256"] as? String,
+               let normalizedIdentity = SecureQueueAccountScope.normalizedIdentity(rememberedIdentity),
+               scopes[normalizedIdentity] == nil {
+                scopes[normalizedIdentity] = normalizedAccount
+            }
+        } else if object["rememberedAccountId"] != nil {
             throw SecureQueueError.corrupt
         }
-        if let rememberedIdentity,
-           rememberedIdentity.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) == nil
-        {
+
+        if let rememberedIdentity = object["rememberedAccountIdentitySHA256"] as? String,
+           SecureQueueAccountScope.normalizedIdentity(rememberedIdentity) == nil {
             throw SecureQueueError.corrupt
         }
+
+        // H4: drop legacyDigests / claimedLegacy — never rebuild claims from a corrupt or old index.
+        _ = object["legacyDigests"]
+        _ = object["claimedLegacy"]
+
+        var active: String?
+        if let rawActive = object["activeWriteAccountId"] as? String {
+            guard let normalized = SecureQueueAccountScope.normalizedAccountId(rawActive) else {
+                throw SecureQueueError.corrupt
+            }
+            active = normalized
+        } else if scopes.count == 1, let only = scopes.values.first {
+            active = only
+        }
+
         return SecureQueueAccountIndex(
             migrated: migrated,
-            legacyDigests: Set(legacyList),
-            claimedLegacy: claimed,
-            rememberedAccountId: remembered.flatMap(SecureQueueAccountScope.normalizedAccountId),
-            rememberedAccountIdentitySHA256: rememberedIdentity
+            ownedDigests: owned,
+            rememberedScopes: scopes,
+            activeWriteAccountId: active
         )
     }
 }

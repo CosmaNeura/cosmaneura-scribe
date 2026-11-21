@@ -25,27 +25,39 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
   }
   /** Core recoveryScope for the signed-in account; required for per-account SecureQueue wipe. */
   let clinicalAccountId: string | undefined;
+  const resetClinicalAccountId = (): void => {
+    clinicalAccountId = undefined;
+  };
   const rememberClinicalAccount = async (accountId: string): Promise<void> => {
     if (!isUuid(accountId)) return;
     clinicalAccountId = accountId.toLowerCase();
     const state = await native.getState().catch(() => null);
     const identity = state?.accountIdentitySHA256;
-    await SecureQueue.rememberAccount({
-      accountId: clinicalAccountId,
-      ...(typeof identity === "string" ? { accountIdentitySHA256: identity } : {}),
-    });
+    // H7: best-effort; missing identity refuses remember (null never matches).
+    if (typeof identity !== "string") return;
+    try {
+      await SecureQueue.rememberAccount({
+        accountId: clinicalAccountId,
+        accountIdentitySHA256: identity,
+      });
+    } catch {
+      // Best-effort on connect/openEncounter — do not block the encounter mount.
+    }
   };
+  /** H2: resolve recoveryScope at delete from session/Core or exact-identity remember — not a stale closure alone. */
   const resolveClinicalAccountId = async (): Promise<string> => {
     if (clinicalAccountId && isUuid(clinicalAccountId)) return clinicalAccountId.toLowerCase();
-    const remembered = await SecureQueue.rememberedAccount();
-    if (typeof remembered.accountId === "string" && isUuid(remembered.accountId)) {
-      const state = await native.getState().catch(() => null);
-      const identity = state?.accountIdentitySHA256;
-      if (!remembered.accountIdentitySHA256 || remembered.accountIdentitySHA256 === identity) {
-        clinicalAccountId = remembered.accountId.toLowerCase();
-        return clinicalAccountId;
-      }
+    const state = await native.getState().catch(() => null);
+    const identity = typeof state?.accountIdentitySHA256 === "string" ? state.accountIdentitySHA256 : undefined;
+    const remembered = await SecureQueue.rememberedAccount(
+      identity ? { accountIdentitySHA256: identity } : undefined,
+    );
+    if (typeof remembered.accountId === "string" && isUuid(remembered.accountId)
+      && identity && remembered.accountIdentitySHA256 === identity) {
+      clinicalAccountId = remembered.accountId.toLowerCase();
+      return clinicalAccountId;
     }
+    // No resolvable scope must not leave clinical data — fail closed.
     throw new Error("clinical_account_unavailable");
   };
   return mountProviderApplication(root, {
@@ -60,7 +72,7 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
         // H8: verify remaining keys for this account after wipeAccount (0 = empty).
         clearAll: async () => {
           const result = await SecureQueue.wipeAccount({ accountId });
-          return result.cleared;
+          return result.remaining ?? result.cleared;
         },
       }));
     },
@@ -89,14 +101,19 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
     connect: async signal => {
       const backend = await connectNativeProviderIOSBackend({ ...options, signal }, native);
       try {
-        await SecureQueue.migrateAccounts();
-        const remembered = await SecureQueue.rememberedAccount();
+        // H7: best-effort migrate/remember; H4: never claim legacy.
+        try { await SecureQueue.migrateAccounts(); } catch { /* best-effort */ }
+        resetClinicalAccountId();
         const state = await native.getState().catch(() => null);
-        if (typeof remembered.accountId === "string" && isUuid(remembered.accountId)
-          && (!remembered.accountIdentitySHA256
-            || remembered.accountIdentitySHA256 === state?.accountIdentitySHA256)) {
-          clinicalAccountId = remembered.accountId.toLowerCase();
-          await SecureQueue.claimLegacyAccount({ accountId: clinicalAccountId });
+        const identity = typeof state?.accountIdentitySHA256 === "string" ? state.accountIdentitySHA256 : undefined;
+        if (identity) {
+          try {
+            const remembered = await SecureQueue.rememberedAccount({ accountIdentitySHA256: identity });
+            if (typeof remembered.accountId === "string" && isUuid(remembered.accountId)
+              && remembered.accountIdentitySHA256 === identity) {
+              clinicalAccountId = remembered.accountId.toLowerCase();
+            }
+          } catch { /* best-effort */ }
         }
         // Classify setup before mounting a workspace that could own a recorder.
         const initialCatalog = await backend.listEncounters(signal);
@@ -114,7 +131,10 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
         };
         return {
           workspace: createProviderIOSHost(scopedBackend, consentPreparation, initialCatalog, entryStartedAt, draftConsent),
-          dispose: () => backend.dispose(),
+          dispose: async () => {
+            resetClinicalAccountId();
+            await backend.dispose();
+          },
         };
       }
       catch (error) { await backend.dispose(); throw error; }

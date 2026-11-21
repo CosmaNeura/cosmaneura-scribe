@@ -7,26 +7,23 @@ final class SecureQueueAccountScopeTests: XCTestCase {
     private let accountB = "22222222-2222-4222-8222-222222222222"
     private let workspace = "33333333-3333-4333-8333-333333333333"
     private let session = "44444444-4444-4444-8444-444444444444"
+    private let identityA = String(repeating: "aa", count: 32)
+    private let identityB = String(repeating: "bb", count: 32)
 
-    func testParsesRecoveryScopeFromClinicalKeyShapes() {
-        XCTAssertEqual(
-            SecureQueueAccountScope.accountId(forKey: "provider-workspace-v1:\(accountA):\(workspace)"),
-            accountA
-        )
-        XCTAssertEqual(
-            SecureQueueAccountScope.accountId(
-                forKey: "scribe-provider-queue:v1:\(accountA):\(workspace):\(session):chunk"
-            ),
-            accountA
-        )
-        XCTAssertEqual(
-            SecureQueueAccountScope.accountId(
-                forKey: "scribe-native-flow:v1:abcdef:\(accountA)"
-            ),
-            accountA
-        )
-        XCTAssertNil(SecureQueueAccountScope.accountId(forKey: "scribe-native-binding:v1:opaque-digest"))
-        XCTAssertNil(SecureQueueAccountScope.accountId(forKey: "legacy-upload-record"))
+    func testParsesRecoveryScopeFromClinicalKeyShapes() throws {
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // CosmaneuraSecureQueueTests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // ios
+            .appendingPathComponent("fixtures/clinical-key-shapes.json")
+        let data = try Data(contentsOf: fixtureURL)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let shapes = try XCTUnwrap(json["shapes"] as? [[String: Any]])
+        for shape in shapes {
+            let key = try XCTUnwrap(shape["key"] as? String)
+            let owner = shape["owner"] as? String
+            XCTAssertEqual(SecureQueueAccountScope.accountId(forKey: key), owner?.lowercased(), key)
+        }
     }
 
     func testWipeAccountLeavesOtherAccountsUntouched() throws {
@@ -54,22 +51,68 @@ final class SecureQueueAccountScopeTests: XCTestCase {
         XCTAssertEqual(try harness.store.get(key: remaining[0]).data, Data([2]))
     }
 
-    func testMigrationAssignsParseableKeysAndKeepsLegacyRecoverable() throws {
+    func testDeleteARemovesOwnedAndLegacyResidueLeavesB() throws {
         let harness = try Harness()
         defer { harness.tearDown() }
 
         try harness.store.create(
-            key: "scribe-provider-queue:v1:\(accountA):\(workspace):\(session):queued",
-            data: Data([9])
+            key: "scribe-provider-queue:v1:\(accountA):\(workspace):\(session):a",
+            data: Data([1])
+        )
+        try harness.store.create(
+            key: "scribe-provider-queue:v1:\(accountB):\(workspace):\(session):b",
+            data: Data([2])
         )
         try harness.store.create(key: "legacy-unkeyed-record", data: Data([8]))
+        try harness.store.create(
+            key: "scribe-native-binding:v1:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            data: Data([9])
+        )
 
         try harness.store.migrateAccountsIfNeeded()
-        try harness.store.migrateAccountsIfNeeded() // idempotent
+        // H4: claim is a no-op; legacy stays unowned until residue wipe.
         try harness.store.claimLegacyAccount(accountA)
 
         XCTAssertEqual(try harness.store.wipeAccount(accountA), 0)
-        XCTAssertEqual(try harness.store.list(), [])
+        let remaining = try harness.store.list()
+        XCTAssertEqual(remaining, [
+            "scribe-provider-queue:v1:\(accountB):\(workspace):\(session):b",
+        ])
+    }
+
+    func testPostUpgradeOpaqueWriteRequiresOwnerAndWipesWithAccount() throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+
+        try harness.store.migrateAccountsIfNeeded()
+        try harness.store.rememberAccount(accountId: accountA, accountIdentitySHA256: identityA)
+
+        let opaque = "scribe-native-binding:v1:feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface"
+        try harness.store.create(key: opaque, data: Data([4]))
+        try harness.store.create(
+            key: "scribe-provider-queue:v1:\(accountB):\(workspace):\(session):b",
+            data: Data([5])
+        )
+
+        XCTAssertEqual(try harness.store.wipeAccount(accountA), 0)
+        XCTAssertEqual(try harness.store.list(), [
+            "scribe-provider-queue:v1:\(accountB):\(workspace):\(session):b",
+        ])
+    }
+
+    func testOpaqueWriteWithoutRememberFailsClosedAfterMigration() throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+
+        try harness.store.migrateAccountsIfNeeded()
+        XCTAssertThrowsError(
+            try harness.store.create(
+                key: "scribe-native-lease:v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                data: Data([1])
+            )
+        ) { error in
+            XCTAssertEqual(error as? SecureQueueError, .invalidArgument)
+        }
     }
 
     func testInterruptedMigrationNeverDropsRecords() throws {
@@ -82,8 +125,6 @@ final class SecureQueueAccountScopeTests: XCTestCase {
             data: Data([6])
         )
 
-        // Simulate a failed first migration write by removing write permission is hard in unit
-        // tests; instead verify migrate is safe to re-run and never deletes.
         try harness.store.migrateAccountsIfNeeded()
         XCTAssertEqual(try harness.store.list().count, 2)
         try harness.store.migrateAccountsIfNeeded()
@@ -91,15 +132,82 @@ final class SecureQueueAccountScopeTests: XCTestCase {
         XCTAssertEqual(try harness.store.get(key: "legacy-unkeyed-record").data, Data([7]))
     }
 
-    func testRememberedAccountSurvivesForPurgeWithoutRecatalog() throws {
+    func testRememberedAccountRequiresExactIdentity() throws {
         let harness = try Harness()
         defer { harness.tearDown() }
 
-        let identity = String(repeating: "ab", count: 32)
-        try harness.store.rememberAccount(accountId: accountA, accountIdentitySHA256: identity)
-        let remembered = try XCTUnwrap(try harness.store.rememberedAccount())
+        try harness.store.rememberAccount(accountId: accountA, accountIdentitySHA256: identityA)
+        let remembered = try XCTUnwrap(
+            try harness.store.rememberedAccount(accountIdentitySHA256: identityA)
+        )
         XCTAssertEqual(remembered.accountId, accountA)
-        XCTAssertEqual(remembered.accountIdentitySHA256, identity)
+        XCTAssertEqual(remembered.accountIdentitySHA256, identityA)
+
+        XCTAssertNil(try harness.store.rememberedAccount(accountIdentitySHA256: nil))
+        XCTAssertNil(try harness.store.rememberedAccount(accountIdentitySHA256: identityB))
+        XCTAssertThrowsError(
+            try harness.store.rememberAccount(accountId: accountA, accountIdentitySHA256: nil)
+        )
+    }
+
+    func testCorruptIndexFailsClosedAndNeverRebuildsClaims() throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+
+        try harness.store.create(
+            key: "provider-workspace-v1:\(accountA):\(workspace)",
+            data: Data([1])
+        )
+        let indexURL = harness.directory.appendingPathComponent(SecureQueueAccountIndex.fileName)
+        try Data("{not-json".utf8).write(to: indexURL)
+
+        XCTAssertThrowsError(try harness.store.migrateAccountsIfNeeded()) { error in
+            XCTAssertEqual(error as? SecureQueueError, .corrupt)
+        }
+        XCTAssertThrowsError(try harness.store.wipeAccount(accountA)) { error in
+            XCTAssertEqual(error as? SecureQueueError, .corrupt)
+        }
+        // Records must still be present — fail closed does not rebuild or delete via claims.
+        XCTAssertEqual(try harness.store.list().count, 1)
+    }
+
+    func testWipeDeletesUnreadableRecordAndContinues() throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+
+        try harness.store.create(
+            key: "scribe-provider-queue:v1:\(accountA):\(workspace):\(session):good",
+            data: Data([1])
+        )
+        try harness.store.create(
+            key: "scribe-provider-queue:v1:\(accountB):\(workspace):\(session):keep",
+            data: Data([2])
+        )
+
+        // Plant a corrupt .sq sibling; wipe must delete it and still finish.
+        let digest = try SecureQueueRecordCodec.digest(for: "corrupt-planted")
+        let badURL = harness.directory.appendingPathComponent(
+            try SecureQueueRecordCodec.filename(for: digest)
+        )
+        try Data([0x00, 0x01, 0x02]).write(to: badURL)
+
+        XCTAssertEqual(try harness.store.wipeAccount(accountA), 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: badURL.path))
+        XCTAssertEqual(try harness.store.list(), [
+            "scribe-provider-queue:v1:\(accountB):\(workspace):\(session):keep",
+        ])
+    }
+
+    func testBCannotInheritAsLegacyViaClaimNoOp() throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+
+        try harness.store.create(key: "legacy-unkeyed-record", data: Data([3]))
+        try harness.store.migrateAccountsIfNeeded()
+        try harness.store.claimLegacyAccount(accountB)
+        // Residue still unowned; wiping A (not B) removes it.
+        XCTAssertEqual(try harness.store.wipeAccount(accountA), 0)
+        XCTAssertEqual(try harness.store.list(), [])
     }
 
     private final class Harness {

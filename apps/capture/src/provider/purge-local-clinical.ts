@@ -21,6 +21,20 @@ export async function purgeLocalClinicalData(stores: LocalClinicalStores): Promi
 const ACCOUNT_UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
+const CLINICAL_PREFIX_LIST: readonly string[] = Object.values(CLINICAL_KEY_PREFIXES).flat();
+
+/** True when a key should count against wipe emptiness for `accountId` in TS listing
+ * helpers: parseable owner match, or unowned clinical-prefix residue (H1). Opaque
+ * digests owned via the native index are not visible here — wipeAccount remaining is. */
+export function clinicalKeyCountsAsRemaining(key: string, accountId: string): boolean {
+  const expected = accountId.toLowerCase();
+  if (!ACCOUNT_UUID.test(expected)) return false;
+  const parsed = clinicalAccountIdFromKey(key);
+  if (parsed === expected) return true;
+  if (parsed === null && CLINICAL_PREFIX_LIST.some(prefix => key.startsWith(prefix))) return true;
+  return false;
+}
+
 /** recoveryScope embedded in known clinical / native key shapes. */
 export function clinicalAccountIdFromKey(key: string): string | null {
   const parts = key.split(":");
@@ -60,10 +74,11 @@ export function clinicalStoresFromKeys(
   let cleared = false;
   const accountId = keys.accountId?.toLowerCase();
   if (accountId && !ACCOUNT_UUID.test(accountId)) throw new Error("clinical_account_unavailable");
+  /** Parseable account match only. Unowned clinical residue is counted by wipeAccount
+   * remaining (H1); opaque digests owned by another account are invisible here. */
   const matchesAccount = (key: string): boolean => {
     if (!accountId) return true;
-    const parsed = clinicalAccountIdFromKey(key);
-    return parsed === accountId;
+    return clinicalAccountIdFromKey(key) === accountId;
   };
   const wipe = async (): Promise<void> => {
     if (cleared) return;

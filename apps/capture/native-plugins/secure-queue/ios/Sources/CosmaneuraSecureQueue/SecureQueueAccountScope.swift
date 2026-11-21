@@ -3,9 +3,21 @@ import Foundation
 /// Per-account SecureQueue ownership. Account id is the Core recoveryScope UUID
 /// already embedded in clinical key prefixes (same custody unit desktop wipeAccount uses).
 enum SecureQueueAccountScope {
-    static let legacyAccountId = "legacy-unattributed"
     private static let uuidPattern =
         #"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"#
+    private static let identityPattern = #"^[0-9a-f]{64}$"#
+
+    /// Clinical key prefixes that must not remain after a successful account wipe.
+    static let clinicalPrefixes: [String] = [
+        "provider-workspace-v1:",
+        "creator-transcript-edit-v1:",
+        "creator-review-v1:",
+        "provider-encounter-creation-v1:",
+        "provider-hidden-visits-v1:",
+        "provider-patient-match-v1:",
+        "scribe-provider-queue:v1:",
+        "scribe-native-",
+    ]
 
     static func normalizedAccountId(_ raw: String) -> String? {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -13,8 +25,18 @@ enum SecureQueueAccountScope {
         return value
     }
 
+    static func normalizedIdentity(_ raw: String) -> String? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard value.range(of: identityPattern, options: .regularExpression) != nil else { return nil }
+        return value
+    }
+
+    static func isClinicalKey(_ key: String) -> Bool {
+        clinicalPrefixes.contains { key.hasPrefix($0) }
+    }
+
     /// Extract recoveryScope from known clinical / native key shapes. Returns nil when
-    /// the key has no recoverable account field (legacy / opaque native digests).
+    /// the key has no recoverable account field (opaque native digests / legacy).
     static func accountId(forKey key: String) -> String? {
         let parts = key.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
         guard parts.count >= 2 else { return nil }
@@ -52,5 +74,13 @@ enum SecureQueueAccountScope {
         guard let expected = normalizedAccountId(account) else { return false }
         if let parsed = accountId(forKey: key) { return parsed == expected }
         return false
+    }
+
+    static func digestHex(for key: String) throws -> String {
+        try SecureQueueRecordCodec.digest(for: key).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func digestHex(fromDigest digest: Data) -> String {
+        digest.map { String(format: "%02x", $0) }.joined()
     }
 }

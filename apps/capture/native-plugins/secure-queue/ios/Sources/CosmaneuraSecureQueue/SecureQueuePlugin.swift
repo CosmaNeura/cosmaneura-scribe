@@ -145,7 +145,8 @@ public final class SecureQueuePlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         perform(call) { store in
-            ["cleared": try store.wipeAccount(accountId)]
+            let remaining = try store.wipeAccount(accountId)
+            return ["cleared": remaining, "remaining": remaining]
         }
     }
 
@@ -167,18 +168,20 @@ public final class SecureQueuePlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         perform(call) { store in
+            // H4: no-op stub — pre-upgrade unowned items stay unowned.
             try store.claimLegacyAccount(accountId)
             return nil
         }
     }
 
     @objc public func rememberedAccount(_ call: CAPPluginCall) {
+        let identity = call.getString("accountIdentitySHA256")
         perform(call) { store in
             var result = JSObject()
-            if let remembered = try store.rememberedAccount() {
+            if let remembered = try store.rememberedAccount(accountIdentitySHA256: identity) {
                 result["accountId"] = remembered.accountId
-                if let identity = remembered.accountIdentitySHA256 {
-                    result["accountIdentitySHA256"] = identity
+                if let rememberedIdentity = remembered.accountIdentitySHA256 {
+                    result["accountIdentitySHA256"] = rememberedIdentity
                 } else {
                     result["accountIdentitySHA256"] = NSNull()
                 }

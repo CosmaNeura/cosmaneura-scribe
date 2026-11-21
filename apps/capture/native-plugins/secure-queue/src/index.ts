@@ -11,6 +11,7 @@ export type {
   SecureQueueListResult,
   SecureQueuePlugin,
   SecureQueueRecord,
+  SecureQueueRememberedAccountOptions,
   SecureQueueRememberedAccountResult,
   SecureQueueRevisionResult,
   VersionedSecureQueueRecord,

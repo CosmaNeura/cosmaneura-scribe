@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  CLINICAL_KEY_PREFIXES, CLINICAL_STORE_NAMES, clinicalAccountIdFromKey, clinicalStoresFromKeys,
-  deleteProviderFlowDatabases, purgeLocalClinicalData, type ClinicalStoreName,
+  CLINICAL_KEY_PREFIXES, CLINICAL_STORE_NAMES, clinicalAccountIdFromKey, clinicalKeyCountsAsRemaining,
+  clinicalStoresFromKeys, deleteProviderFlowDatabases, purgeLocalClinicalData, type ClinicalStoreName,
 } from "./purge-local-clinical";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const accountA = "11111111-1111-4111-8111-111111111111";
 const accountB = "22222222-2222-4222-8222-222222222222";
@@ -69,6 +72,28 @@ describe("purgeLocalClinicalData", () => {
     ]);
     expect(await stores.queuedAudio.isEmpty()).toBe(true);
     expect(await stores.journal.isEmpty()).toBe(true);
+  });
+
+  it("shared fixture: A + unowned clinical count as remaining; B parseable does not", () => {
+    const fixturePath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      "../../native-plugins/secure-queue/fixtures/clinical-key-shapes.json",
+    );
+    const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as {
+      accountA: string;
+      accountB: string;
+      shapes: Array<{ key: string; owner: string | null }>;
+    };
+    for (const shape of fixture.shapes) {
+      expect(clinicalAccountIdFromKey(shape.key)).toBe(shape.owner);
+    }
+    const aKey = fixture.shapes.find(shape => shape.owner === fixture.accountA)!.key;
+    // Fixture owners are accountA or null; synthesize a B-owned sibling for the negative case.
+    const bOwned = aKey.replace(fixture.accountA, fixture.accountB);
+    expect(clinicalKeyCountsAsRemaining(aKey, fixture.accountA)).toBe(true);
+    expect(clinicalKeyCountsAsRemaining(bOwned, fixture.accountA)).toBe(false);
+    const opaque = fixture.shapes.find(shape => shape.owner === null && shape.key.startsWith("scribe-native-"))!.key;
+    expect(clinicalKeyCountsAsRemaining(opaque, fixture.accountA)).toBe(true);
   });
 
   it("H8: IDB delete rejects blocked/unsupported; allSettled throws", async () => {

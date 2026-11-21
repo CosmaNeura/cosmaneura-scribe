@@ -75,6 +75,7 @@ final class SecureQueueStore {
             digest: digest,
             storageKey: storageKey
         )
+        try recordWriteOwnershipLocked(key: key, digest: digest)
         return revision
     }
 
@@ -107,6 +108,7 @@ final class SecureQueueStore {
             digest: digest,
             storageKey: storageKey
         )
+        try recordWriteOwnershipLocked(key: key, digest: digest)
         return 1
     }
 
@@ -141,6 +143,7 @@ final class SecureQueueStore {
             digest: digest,
             storageKey: storageKey
         )
+        try recordWriteOwnershipLocked(key: key, digest: digest)
         return revision
     }
 
@@ -176,10 +179,16 @@ final class SecureQueueStore {
         }
         do {
             try fileManager.removeItem(at: target)
-            return true
         } catch {
             throw SecureQueueError.io
         }
+        if var index = try? loadAccountIndex() {
+            let hex = SecureQueueAccountScope.digestHex(fromDigest: digest)
+            if index.ownedDigests.removeValue(forKey: hex) != nil {
+                try? writeAccountIndex(index)
+            }
+        }
+        return true
     }
 
     func clear(forRenderer: Bool = false) throws -> Int {
@@ -195,76 +204,63 @@ final class SecureQueueStore {
         try migrateAccountsIfNeededLocked()
     }
 
-    /// Attribute legacy (unparseable) digests to the signed-in account. Idempotent; never drops data.
+    /// H4: legacy claiming removed. No-op stub retained for the Capacitor interface.
     func claimLegacyAccount(_ accountId: String) throws {
         operationLock.lock()
         defer { operationLock.unlock() }
-        guard let account = SecureQueueAccountScope.normalizedAccountId(accountId) else {
+        guard SecureQueueAccountScope.normalizedAccountId(accountId) != nil else {
             throw SecureQueueError.invalidArgument
         }
+        // Intentionally no-op: pre-upgrade unowned items stay unowned and are wiped as residue.
         try migrateAccountsIfNeededLocked()
-        var index = try loadAccountIndex()
-        if !index.legacyDigests.isEmpty {
-            var claimed = index.claimedLegacy[account] ?? []
-            claimed.formUnion(index.legacyDigests)
-            index.claimedLegacy[account] = claimed
-            index.legacyDigests = []
-            try writeAccountIndex(index)
-        }
     }
 
-    /// Remember the active recoveryScope for a later account purge (and optional identity binding).
+    /// Remember recoveryScope keyed by exact accountIdentitySHA256. Null identity is refused.
     func rememberAccount(accountId: String, accountIdentitySHA256: String?) throws {
         operationLock.lock()
         defer { operationLock.unlock() }
         guard let account = SecureQueueAccountScope.normalizedAccountId(accountId) else {
             throw SecureQueueError.invalidArgument
         }
-        if let identity = accountIdentitySHA256 {
-            guard identity.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil else {
-                throw SecureQueueError.invalidArgument
-            }
+        guard let rawIdentity = accountIdentitySHA256,
+              let identity = SecureQueueAccountScope.normalizedIdentity(rawIdentity)
+        else {
+            throw SecureQueueError.invalidArgument
         }
         try migrateAccountsIfNeededLocked()
         var index = try loadAccountIndex()
-        index.rememberedAccountId = account
-        index.rememberedAccountIdentitySHA256 = accountIdentitySHA256
-        if !index.legacyDigests.isEmpty {
-            var claimed = index.claimedLegacy[account] ?? []
-            claimed.formUnion(index.legacyDigests)
-            index.claimedLegacy[account] = claimed
-            index.legacyDigests = []
-        }
+        index.remember(accountId: account, identity: identity)
         try writeAccountIndex(index)
     }
 
-    func rememberedAccount() throws -> (accountId: String, accountIdentitySHA256: String?)? {
+    /// Lookup by exact identity. Null / missing identity never matches a remembered scope.
+    func rememberedAccount(accountIdentitySHA256: String?) throws -> (accountId: String, accountIdentitySHA256: String?)? {
         operationLock.lock()
         defer { operationLock.unlock() }
-        let index = (try? loadAccountIndex()) ?? .empty
-        guard let accountId = index.rememberedAccountId else { return nil }
-        return (accountId, index.rememberedAccountIdentitySHA256)
+        guard let rawIdentity = accountIdentitySHA256,
+              let identity = SecureQueueAccountScope.normalizedIdentity(rawIdentity)
+        else {
+            return nil
+        }
+        let index = try loadAccountIndex()
+        guard let accountId = index.rememberedAccountId(forIdentity: identity) else { return nil }
+        return (accountId, identity)
     }
 
-    /// Delete every record owned by `accountId` (key-scoped or claimed legacy). Returns remaining
-    /// count for that account after the wipe (0 = empty). Other accounts are untouched.
+    /// Delete every record owned by `accountId`, then unconditionally delete unattributable
+    /// pre-upgrade residue. Returns remaining count (account-owned + unowned clinical); 0 = empty.
     func wipeAccount(_ accountId: String) throws -> Int {
         operationLock.lock()
         defer { operationLock.unlock() }
         return try wipeAccountLocked(accountId)
     }
 
-    /// Launch/retry helper: prefer pending/remembered per-account wipe; otherwise full clear
-    /// (legacy confirmed markers from before per-account SecureQueue).
+    /// Launch/retry helper: pending per-account wipe only. Callers with a v1 no-id marker use clearAll.
     func completePendingOrClearAll() throws -> Int {
         operationLock.lock()
         defer { operationLock.unlock() }
         if let pending = try readPendingWipeAccount() {
             return try wipeAccountLocked(pending)
-        }
-        let remembered = (try? loadAccountIndex())?.rememberedAccountId
-        if let remembered {
-            return try wipeAccountLocked(remembered)
         }
         return try clearLocked(forRenderer: false)
     }
@@ -325,75 +321,202 @@ final class SecureQueueStore {
         }
         try migrateAccountsIfNeededLocked()
         try writePendingWipeAccount(account)
-        let owned = try keysOwnedByAccountLocked(account)
-        for key in owned {
-            let digest = try SecureQueueRecordCodec.digest(for: key)
-            let target = try recordURL(for: digest)
-            if fileManager.fileExists(atPath: target.path) {
-                do { try fileManager.removeItem(at: target) } catch { throw SecureQueueError.io }
+
+        // H6: listing deletes unreadable records and continues; fail closed only on transient Keychain.
+        let listed = try listRecordsForWipeLocked()
+        for entry in listed.readable {
+            let ownedByAccount = SecureQueueAccountScope.belongs(key: entry.key, toAccount: account)
+                || (SecureQueueAccountScope.accountId(forKey: entry.key) == nil
+                    && listed.index.owner(forDigestHex: SecureQueueAccountScope.digestHex(fromDigest: entry.digest)) == account)
+            if ownedByAccount {
+                try removeRecordFileLocked(at: entry.url)
             }
         }
+
+        // CTO residue: unattributable pre-upgrade items deleted on ANY account delete.
+        _ = try deleteUnattributableClinicalResidueLocked(
+            readable: listed.readable,
+            index: listed.index
+        )
+
         var index = try loadAccountIndex()
-        index.claimedLegacy[account] = nil
-        if index.rememberedAccountId == account {
-            index.rememberedAccountId = nil
-            index.rememberedAccountIdentitySHA256 = nil
-        }
+        index.forgetAccount(account)
         try writeAccountIndex(index)
-        let remaining = try keysOwnedByAccountLocked(account).count
+
+        let remaining = try remainingAfterWipeLocked(account: account)
         if remaining == 0 {
             try clearPendingWipeAccount()
         }
         return remaining
     }
 
-    private func migrateAccountsIfNeededLocked() throws {
-        var index = (try? loadAccountIndex()) ?? .empty
-        if index.migrated { return }
-        // Failure must not delete records or mark migration complete.
-        let keys: [String]
+    /// CTO: default residue policy — delete unowned / unattributable items unconditionally.
+    @discardableResult
+    func deleteUnattributableClinicalResidue() throws -> Int {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        let listed = try listRecordsForWipeLocked()
+        return try deleteUnattributableClinicalResidueLocked(readable: listed.readable, index: listed.index)
+    }
+
+    private func deleteUnattributableClinicalResidueLocked(
+        readable: [(key: String, digest: Data, url: URL)],
+        index: SecureQueueAccountIndex
+    ) throws -> Int {
+        var removed = 0
+        for entry in readable {
+            guard SecureQueueAccountScope.accountId(forKey: entry.key) == nil else { continue }
+            let hex = SecureQueueAccountScope.digestHex(fromDigest: entry.digest)
+            if index.owner(forDigestHex: hex) != nil { continue }
+            try removeRecordFileLocked(at: entry.url)
+            removed += 1
+        }
+        return removed
+    }
+
+    private func removeRecordFileLocked(at url: URL) throws {
+        guard fileManager.fileExists(atPath: url.path) else { return }
         do {
-            keys = try listKeysLocked()
+            try fileManager.removeItem(at: url)
         } catch {
-            return
+            throw SecureQueueError.io
         }
-        var legacy = Set<String>()
-        for key in keys {
-            if SecureQueueAccountScope.accountId(forKey: key) != nil { continue }
-            do {
-                let digest = try SecureQueueRecordCodec.digest(for: key)
-                legacy.insert(digest.map { String(format: "%02x", $0) }.joined())
-            } catch {
-                return
-            }
-        }
-        index.legacyDigests = legacy
-        index.migrated = true
+    }
+
+    private func migrateAccountsIfNeededLocked() throws {
+        let index: SecureQueueAccountIndex
         do {
-            try writeAccountIndex(index)
+            index = try loadAccountIndex()
+        } catch {
+            // Missing → empty. Corrupt → fail closed (H5); never rebuild claims.
+            throw error
+        }
+        if index.migrated { return }
+        // Mark migrated without claiming legacy digests (H4). Failure must not delete records.
+        var next = index
+        next.migrated = true
+        do {
+            try writeAccountIndex(next)
         } catch {
             // Leave migrated=false so a later launch retries; records remain.
             return
         }
     }
 
+    private func recordWriteOwnershipLocked(key: String, digest: Data) throws {
+        var index: SecureQueueAccountIndex
+        do {
+            index = try loadAccountIndex()
+        } catch {
+            throw error
+        }
+        guard index.migrated else { return }
+        if SecureQueueAccountScope.accountId(forKey: key) != nil {
+            return
+        }
+        // H1: every post-upgrade opaque write must have an account owner.
+        guard let owner = index.activeWriteAccountId else {
+            throw SecureQueueError.invalidArgument
+        }
+        index.assignOwner(
+            digestHex: SecureQueueAccountScope.digestHex(fromDigest: digest),
+            accountId: owner
+        )
+        try writeAccountIndex(index)
+    }
+
     private func keysOwnedByAccountLocked(_ account: String) throws -> [String] {
-        let keys = try listKeysLocked()
-        let index = (try? loadAccountIndex()) ?? .empty
-        let claimedHex = index.claimedLegacy[account] ?? []
+        let listed = try listRecordsForWipeLocked()
         var owned: [String] = []
-        for key in keys {
-            if SecureQueueAccountScope.belongs(key: key, toAccount: account) {
-                owned.append(key)
+        for entry in listed.readable {
+            if SecureQueueAccountScope.belongs(key: entry.key, toAccount: account) {
+                owned.append(entry.key)
                 continue
             }
-            if SecureQueueAccountScope.accountId(forKey: key) == nil {
-                let digest = try SecureQueueRecordCodec.digest(for: key)
-                let hex = digest.map { String(format: "%02x", $0) }.joined()
-                if claimedHex.contains(hex) { owned.append(key) }
+            if SecureQueueAccountScope.accountId(forKey: entry.key) == nil {
+                let hex = SecureQueueAccountScope.digestHex(fromDigest: entry.digest)
+                if listed.index.owner(forDigestHex: hex) == account {
+                    owned.append(entry.key)
+                }
             }
         }
         return owned
+    }
+
+    /// Remaining after wipe: still-owned-by-account keys + unowned clinical-prefix keys (H1).
+    private func remainingAfterWipeLocked(account: String) throws -> Int {
+        let listed = try listRecordsForWipeLocked()
+        var count = 0
+        for entry in listed.readable {
+            if SecureQueueAccountScope.belongs(key: entry.key, toAccount: account) {
+                count += 1
+                continue
+            }
+            if SecureQueueAccountScope.accountId(forKey: entry.key) == nil {
+                let hex = SecureQueueAccountScope.digestHex(fromDigest: entry.digest)
+                if listed.index.owner(forDigestHex: hex) == account {
+                    count += 1
+                } else if listed.index.owner(forDigestHex: hex) == nil,
+                          SecureQueueAccountScope.isClinicalKey(entry.key) {
+                    count += 1
+                }
+            }
+        }
+        return count
+    }
+
+    private struct WipeListing {
+        var readable: [(key: String, digest: Data, url: URL)]
+        var index: SecureQueueAccountIndex
+    }
+
+    /// H6: corrupt / missing record files are deleted and skipped; Keychain failures fail closed.
+    private func listRecordsForWipeLocked() throws -> WipeListing {
+        try ensureDirectory()
+        let index = try loadAccountIndex()
+        let urls: [URL]
+        do {
+            urls = try fileManager.contentsOfDirectory(
+                at: directoryURL,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            throw SecureQueueError.io
+        }
+        let recordURLs = urls
+            .filter { $0.pathExtension == "sq" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        guard !recordURLs.isEmpty else {
+            return WipeListing(readable: [], index: index)
+        }
+        let storageKey = try loadStorageKey(allowCreate: false)
+        var readable: [(key: String, digest: Data, url: URL)] = []
+        readable.reserveCapacity(recordURLs.count)
+        for url in recordURLs {
+            let digest: Data
+            do {
+                digest = try SecureQueueRecordCodec.digest(fromFilename: url.lastPathComponent)
+            } catch {
+                try? fileManager.removeItem(at: url)
+                continue
+            }
+            do {
+                let record = try readRecord(at: url, digest: digest, storageKey: storageKey)
+                let actualDigest = try SecureQueueRecordCodec.digest(for: record.key)
+                guard actualDigest == digest else {
+                    try? fileManager.removeItem(at: url)
+                    continue
+                }
+                readable.append((record.key, digest, url))
+            } catch let error as SecureQueueError where error == .keyUnavailable || error == .io {
+                throw error
+            } catch {
+                // Corrupt / errSecItemNotFound-style read failures: delete and continue.
+                try? fileManager.removeItem(at: url)
+            }
+        }
+        return WipeListing(readable: readable, index: index)
     }
 
     private func listKeysLocked() throws -> [String] {
@@ -436,13 +559,19 @@ final class SecureQueueStore {
     private func loadAccountIndex() throws -> SecureQueueAccountIndex {
         let url = accountIndexURL()
         guard fileManager.fileExists(atPath: url.path) else { return .empty }
+        let data: Data
         do {
-            let data = try Data(contentsOf: url)
+            data = try Data(contentsOf: url)
+        } catch {
+            throw SecureQueueError.io
+        }
+        do {
             return try SecureQueueAccountIndex.decode(data)
         } catch let error as SecureQueueError {
             throw error
         } catch {
-            throw SecureQueueError.io
+            // H5: present but unparseable → fail closed as corrupt; never rebuild claims.
+            throw SecureQueueError.corrupt
         }
     }
 

@@ -287,11 +287,20 @@ test("iOS SecureQueue wipe is per-account with idempotent migration", async () =
 
   assert.match(iosStore, /func wipeAccount\(/u);
   assert.match(iosStore, /migrateAccountsIfNeededLocked/u);
+  assert.match(iosStore, /deleteUnattributableClinicalResidue/u);
   assert.match(iosStore, /claimLegacyAccount/u);
+  assert.match(
+    await source("../ios/Sources/CosmaneuraSecureQueue/SecureQueueAccountIndex.swift"),
+    /ownedDigests/u,
+  );
   assert.match(iosScope, /accountId\(forKey/u);
   assert.match(iosPurge, /wipeAccountRemaining/u);
   assert.match(iosPurge, /completePendingOrClearAll/u);
   assert.match(nativeApplication, /SecureQueue\.wipeAccount/u);
+  assert.doesNotMatch(
+    nativeApplication,
+    /SecureQueue\.claimLegacyAccount/u,
+  );
   assert.doesNotMatch(
     nativeApplication,
     /SecureQueue\.clearAll\s*\(/u,
