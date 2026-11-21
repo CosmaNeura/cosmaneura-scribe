@@ -23,4 +23,10 @@ public enum ClinicalSecureQueuePurge {
         let store = try SecureQueueStore.shared.get()
         try store.setActiveWriteAccount(accountId)
     }
+
+    @discardableResult
+    public static func clearActiveWriteAccount(ifMatches expectedAccountId: String) throws -> Bool {
+        let store = try SecureQueueStore.shared.get()
+        return try store.clearActiveWriteAccount(ifMatches: expectedAccountId)
+    }
 }

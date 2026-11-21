@@ -1,5 +1,11 @@
+import { isUuid } from "../../../review-ui/src/contracts";
 import { interpretAccountSelfDeleteBridge, type AccountSelfDeleteResult } from "./account-self-delete";
 import { exact, object, jsonCopy, unavailable, type DesktopProviderRequest } from "./desktop-host-protocol";
+
+function hasPluginCode(error: unknown, code: string): boolean {
+  return !!error && typeof error === "object" && "code" in error
+    && (error as { code?: unknown }).code === code;
+}
 
 export async function nativeAccountSelfDeleteAdapter(
   nativeDelete: (request: { confirm: "DELETE" }) => Promise<unknown>,
@@ -8,6 +14,33 @@ export async function nativeAccountSelfDeleteAdapter(
   if (request.confirm !== "DELETE") throw new Error("account_self_delete_unconfirmed");
   if (signal?.aborted) throw new Error("account_self_delete_aborted");
   return interpretAccountSelfDeleteBridge(await nativeDelete({ confirm: "DELETE" }));
+}
+
+/** On clinical_account_unavailable: remember with server scope, retry once, then a specific error. */
+export async function nativeAccountSelfDeleteWithRememberRetry(options: {
+  nativeDelete: (request: { confirm: "DELETE" }) => Promise<unknown>;
+  remember: (scope: string) => Promise<void>;
+  serverScope: () => string | undefined;
+  request: { confirm: "DELETE" };
+  signal?: AbortSignal;
+}): Promise<AccountSelfDeleteResult> {
+  const attempt = () => nativeAccountSelfDeleteAdapter(options.nativeDelete, options.request, options.signal);
+  try {
+    return await attempt();
+  } catch (error) {
+    if (!hasPluginCode(error, "clinical_account_unavailable")) throw error;
+    const scope = options.serverScope();
+    if (!scope || !isUuid(scope)) throw new Error("clinical_account_unavailable_after_remember");
+    await options.remember(scope);
+    try {
+      return await attempt();
+    } catch (retryError) {
+      if (hasPluginCode(retryError, "clinical_account_unavailable")) {
+        throw new Error("clinical_account_unavailable_after_remember");
+      }
+      throw retryError;
+    }
+  }
 }
 
 export async function desktopAccountSelfDeleteAdapter(

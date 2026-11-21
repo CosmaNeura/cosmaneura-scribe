@@ -74,16 +74,20 @@ describe("purgeLocalClinicalData", () => {
     expect(await stores.journal.isEmpty()).toBe(true);
   });
 
-  it("shared fixture: clinicalAccountIdFromKey matches owner field", () => {
+  it("shared fixture: clinicalAccountIdFromKey matches owner; clinical field asserted", () => {
     const fixturePath = join(
       dirname(fileURLToPath(import.meta.url)),
       "../../native-plugins/secure-queue/fixtures/clinical-key-shapes.json",
     );
     const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as {
-      shapes: Array<{ key: string; owner: string | null }>;
+      tenant: string;
+      shapes: Array<{ key: string; owner: string | null; clinical: boolean }>;
     };
+    expect(fixture.tenant).toBe("55555555-5555-4555-8555-555555555555");
+    expect(fixture.shapes).toHaveLength(16);
     for (const shape of fixture.shapes) {
       expect(clinicalAccountIdFromKey(shape.key)).toBe(shape.owner);
+      expect(shape.clinical).toBe(shape.key !== "legacy-unkeyed-record");
     }
   });
 

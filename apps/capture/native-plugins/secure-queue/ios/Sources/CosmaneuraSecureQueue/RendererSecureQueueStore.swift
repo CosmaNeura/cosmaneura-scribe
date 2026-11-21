@@ -44,6 +44,10 @@ final class RendererSecureQueueStore {
   func setActiveWriteAccount(_ accountId: String?) throws {
     try store.setActiveWriteAccount(accountId)
   }
+  @discardableResult
+  func clearActiveWriteAccount(ifMatches expectedAccountId: String) throws -> Bool {
+    try store.clearActiveWriteAccount(ifMatches: expectedAccountId)
+  }
   /// H4 no-op stub — legacy items are never claimed.
   func claimLegacyAccount(_ accountId: String) throws {
     try store.claimLegacyAccount(accountId)

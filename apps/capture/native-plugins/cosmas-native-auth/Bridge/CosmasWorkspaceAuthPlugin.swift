@@ -213,9 +213,15 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             do {
                 guard let auth = self.auth else { throw NativeAuthError.unavailable }
                 #if os(iOS)
-                try? ClinicalSecureQueuePurge.setActiveWriteAccount(nil)
+                let writeOwner = self.clinicalAccountIdForPurgeMarker()
                 #endif
-                call.resolve(Self.payload(try await auth.signOut()))
+                let payload = Self.payload(try await auth.signOut())
+                #if os(iOS)
+                if let writeOwner {
+                    _ = try? ClinicalSecureQueuePurge.clearActiveWriteAccount(ifMatches: writeOwner)
+                }
+                #endif
+                call.resolve(payload)
             } catch { Self.reject(call) }
         }
     }
@@ -807,7 +813,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         let settings = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any]
         let profile = (settings?["identityProfile"] as? String).flatMap(NativeIdentityProfile.init(rawValue:))
         var value = NativeAuthPayload.state(state, identityProfile: profile)
-        if let digest = NativeAuthPayload.accountIdentitySHA256(state) {
+        if state.phase == .ready, let digest = NativeAuthPayload.accountIdentitySHA256(state) {
             value["accountIdentitySHA256"] = digest
         }
         return value

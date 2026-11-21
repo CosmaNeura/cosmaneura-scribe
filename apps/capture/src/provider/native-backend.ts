@@ -61,6 +61,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
   let account: ProviderAccount | undefined;
   let existingPatientOnly = false, fullNativeVisits = false;
   let providerDisplayName: string | undefined;
+  let serverRecoveryScope: string | undefined;
   const owners: { setup?: ReturnType<typeof createEncounterSetup> } = {};
   const encounters = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
   const inheritedAbort = (): void => abort.abort();
@@ -236,6 +237,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     if (supportsCreation) {
       if ("recoveryScope" in value && !isUuid(value.recoveryScope)) throw unavailable();
       encounterSetup.initializeCatalog(value, signal);
+      if (isUuid(value.recoveryScope)) serverRecoveryScope = String(value.recoveryScope).toLowerCase();
     }
     current(signal); encounters.clear();
     openingReviewSupported = value.opening_review_v1 === true;
@@ -279,6 +281,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     get providerDisplayName() { return !abort.signal.aborted && !options.signal.aborted ? providerDisplayName : undefined; },
     get encounterSetup() { return creationSupported ? existingPatientOnly ? existingPatientSetup(encounterSetup) : fullNativeVisits ? fullNativeVisitSetup(encounterSetup) : encounterSetup : undefined; },
     get account() { return account; },
+    get recoveryScope() { return serverRecoveryScope; },
     signal: abort.signal, dispose,
     recordReadyDiagnostic: durationMs => {
       if (!revision || abort.signal.aborted || options.signal.aborted || !plugin.recordProviderReadyTiming) return;
@@ -303,6 +306,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
         ...(openingNonce ? { opening_nonce: openingNonce } : {}) }, signal);
       if (!isUuid(value.recoveryScope) || value.workspaceId !== row.workspaceId || value.appointmentRef !== appointmentRef
         || !reference(value.bindingRef, "scribe_capture_binding") || !record(value.encounter)) throw unavailable();
+      serverRecoveryScope = String(value.recoveryScope).toLowerCase();
       const displayed = encounter(value.encounter);
       if (displayed.appointmentRef !== appointmentRef) throw unavailable();
       const scope = Object.freeze({ workspaceId: row.workspaceId, appointmentRef, bindingRef: value.bindingRef });

@@ -165,10 +165,14 @@ public final class SecureQueuePlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc public func setActiveWriteAccount(_ call: CAPPluginCall) {
         let accountId = call.getString("accountId")
+        let ifMatches = call.getString("ifMatches")
         if call.options.keys.contains("accountId"), accountId == nil {
-            // Explicit null clears the write owner.
             perform(call) { store in
-                try store.setActiveWriteAccount(nil)
+                if let ifMatches {
+                    _ = try store.clearActiveWriteAccount(ifMatches: ifMatches)
+                } else {
+                    try store.setActiveWriteAccount(nil)
+                }
                 return nil
             }
             return

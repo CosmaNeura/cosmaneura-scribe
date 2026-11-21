@@ -300,6 +300,7 @@ test("iOS SecureQueue wipe is per-account with idempotent migration", async () =
   assert.match(iosStore, /completePendingOrClearAll/u);
   assert.match(nativeApplication, /SecureQueue\.wipeAccount/u);
   assert.match(nativeApplication, /SecureQueue\.setActiveWriteAccount/u);
+  assert.match(nativeApplication, /ifMatches/u);
   assert.doesNotMatch(
     nativeApplication,
     /SecureQueue\.claimLegacyAccount/u,
@@ -308,4 +309,19 @@ test("iOS SecureQueue wipe is per-account with idempotent migration", async () =
     nativeApplication,
     /SecureQueue\.clearAll\s*\(/u,
   );
+});
+
+test("deleteAccount clinical id once before attempt; CAS clear; restore owner", async () => {
+  const auth = await source(
+    "../../cosmas-native-auth/Bridge/CosmasWorkspaceAuthPlugin.swift",
+  );
+  const body = auth.slice(auth.indexOf("func deleteAccount"), auth.indexOf("func deleteAccount") + 2200);
+  assert.equal((body.match(/clinicalAccountIdForPurgeMarker\s*\(/gu) ?? []).length, 1);
+  assert.match(body, /clinicalAccountIdForPurgeMarker\s*\(\)[\s\S]*AccountSelfDeleteContract\.attempt/u);
+  assert.doesNotMatch(body, /marker(?:Prepared|Sent|Confirm)\s*:\s*\{[\s\S]*clinicalAccountIdForPurgeMarker/u);
+  assert.match(auth, /phase == \.ready[\s\S]{0,120}accountIdentitySHA256/u);
+  assert.match(auth, /clearActiveWriteAccount\(ifMatches:[\s\S]*call\.resolve\(payload\)/u);
+  const store = await source("../ios/Sources/CosmaneuraSecureQueue/SecureQueueStore.swift");
+  assert.match(store, /clearActiveWriteAccount\(ifMatches/u);
+  assert.match(store, /restoreOwnerEntryLocked/u);
 });

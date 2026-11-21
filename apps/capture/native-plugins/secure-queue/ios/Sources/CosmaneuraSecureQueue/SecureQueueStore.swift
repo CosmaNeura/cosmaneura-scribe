@@ -231,10 +231,15 @@ final class SecureQueueStore {
         try migrateAccountsIfNeededLocked()
         var index = try loadAccountIndex()
         index.remember(accountId: account, identity: identity)
+        index.setActiveWriteAccountId(account)
         try writeAccountIndex(index)
     }
 
-    /// Set or clear the live write owner (sign-in / sign-out / dispose / connect start).
+#if DEBUG
+    var debugFailNextRecordWrite = false
+#endif
+
+    /// Set the live write owner. Passing nil unconditionally clears.
     func setActiveWriteAccount(_ accountId: String?) throws {
         operationLock.lock()
         defer { operationLock.unlock() }
@@ -247,6 +252,28 @@ final class SecureQueueStore {
         var index = try loadAccountIndex()
         index.setActiveWriteAccountId(accountId)
         try writeAccountIndex(index)
+    }
+
+    /// Compare-and-clear so a late dispose cannot clear a newer session's owner.
+    @discardableResult
+    func clearActiveWriteAccount(ifMatches expectedAccountId: String) throws -> Bool {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard let expected = SecureQueueAccountScope.normalizedAccountId(expectedAccountId) else {
+            throw SecureQueueError.invalidArgument
+        }
+        try migrateAccountsIfNeededLocked()
+        var index = try loadAccountIndex()
+        guard index.activeWriteAccountId == expected else { return false }
+        index.setActiveWriteAccountId(nil)
+        try writeAccountIndex(index)
+        return true
+    }
+
+    func activeWriteAccountId() throws -> String? {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        return try loadAccountIndex().activeWriteAccountId
     }
 
     /// Lookup by exact identity. Null / missing identity never matches a remembered scope.
@@ -428,8 +455,6 @@ final class SecureQueueStore {
         }
     }
 
-    /// Resolve ownership before the record write. Orphan index entries are harmless;
-    /// roll back a newly written record if ownership persistence fails.
     private func commitRecordWithOwnershipLocked(
         key: String,
         data: Data,
@@ -438,9 +463,18 @@ final class SecureQueueStore {
         storageKey: SymmetricKey,
         target: URL
     ) throws {
+        try migrateAccountsIfNeededLocked()
+        let hex = SecureQueueAccountScope.digestHex(fromDigest: digest)
+        let priorOwner = try loadAccountIndex().owner(forDigestHex: hex)
         try prepareWriteOwnershipLocked(key: key, digest: digest)
         let existedBefore = fileManager.fileExists(atPath: target.path)
         do {
+#if DEBUG
+            if debugFailNextRecordWrite {
+                debugFailNextRecordWrite = false
+                throw SecureQueueError.io
+            }
+#endif
             try writeRecord(
                 key: key,
                 data: data,
@@ -449,13 +483,7 @@ final class SecureQueueStore {
                 storageKey: storageKey
             )
         } catch {
-            // Ownership index may already list this digest; orphan entry is harmless.
-            throw error
-        }
-        // Re-affirm ownership after a successful write (index already stamped).
-        do {
-            try prepareWriteOwnershipLocked(key: key, digest: digest)
-        } catch {
+            restoreOwnerEntryLocked(digestHex: hex, priorOwner: priorOwner)
             if !existedBefore {
                 try? fileManager.removeItem(at: target)
             }
@@ -463,13 +491,28 @@ final class SecureQueueStore {
         }
     }
 
-    /// Stamp opaque ownership before the record hits disk. Always migrates first so
-    /// new opaque writes are never left unowned via a !migrated early return.
+    private func restoreOwnerEntryLocked(digestHex: String, priorOwner: String?) {
+        guard var index = try? loadAccountIndex() else { return }
+        if let priorOwner {
+            index.assignOwner(digestHex: digestHex, accountId: priorOwner)
+        } else {
+            index.ownedDigests.removeValue(forKey: digestHex.lowercased())
+        }
+        try? writeAccountIndex(index)
+    }
+
+    /// Clinical-opaque keys require an owner; non-clinical unparseable keys are exempt.
     private func prepareWriteOwnershipLocked(key: String, digest: Data) throws {
         try migrateAccountsIfNeededLocked()
         var index = try loadAccountIndex()
         if SecureQueueAccountScope.accountId(forKey: key) != nil {
-            // Parseable keys own via key shape; still mark migrated if a prior migrate write failed.
+            if !index.migrated {
+                index.migrated = true
+                try writeAccountIndex(index)
+            }
+            return
+        }
+        if !SecureQueueAccountScope.isClinicalKey(key) {
             if !index.migrated {
                 index.migrated = true
                 try writeAccountIndex(index)
