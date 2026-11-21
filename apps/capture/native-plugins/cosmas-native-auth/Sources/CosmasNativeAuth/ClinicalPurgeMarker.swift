@@ -63,8 +63,7 @@ public enum ClinicalPurgeMarker {
     /// Never demotes an existing id-bearing marker to a no-id marker (caller always supplies id).
     public static func write(_ state: State, accountId: String) {
         guard let value = normalizedAccountId(accountId) else { return }
-        // Never overwrite a marker that has an id with one that doesn't — accountId is required.
-        var payload: [String: Any] = [
+        let payload: [String: Any] = [
             "state": state.rawValue,
             "v": 2,
             "accountId": value,
