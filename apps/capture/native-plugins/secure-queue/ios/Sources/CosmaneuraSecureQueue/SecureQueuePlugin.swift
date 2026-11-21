@@ -15,6 +15,11 @@ public final class SecureQueuePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "delete", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clear", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clearAll", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "wipeAccount", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "rememberAccount", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "claimLegacyAccount", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "rememberedAccount", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "migrateAccounts", returnType: CAPPluginReturnPromise),
     ]
 
     private let operationQueue = DispatchQueue(
@@ -131,6 +136,58 @@ public final class SecureQueuePlugin: CAPPlugin, CAPBridgedPlugin {
     @objc public func clearAll(_ call: CAPPluginCall) {
         perform(call) { store in
             ["cleared": try store.clearAll()]
+        }
+    }
+
+    @objc public func wipeAccount(_ call: CAPPluginCall) {
+        guard let accountId = call.getString("accountId") else {
+            reject(call, with: .invalidArgument)
+            return
+        }
+        perform(call) { store in
+            ["cleared": try store.wipeAccount(accountId)]
+        }
+    }
+
+    @objc public func rememberAccount(_ call: CAPPluginCall) {
+        guard let accountId = call.getString("accountId") else {
+            reject(call, with: .invalidArgument)
+            return
+        }
+        let identity = call.getString("accountIdentitySHA256")
+        perform(call) { store in
+            try store.rememberAccount(accountId: accountId, accountIdentitySHA256: identity)
+            return nil
+        }
+    }
+
+    @objc public func claimLegacyAccount(_ call: CAPPluginCall) {
+        guard let accountId = call.getString("accountId") else {
+            reject(call, with: .invalidArgument)
+            return
+        }
+        perform(call) { store in
+            try store.claimLegacyAccount(accountId)
+            return nil
+        }
+    }
+
+    @objc public func rememberedAccount(_ call: CAPPluginCall) {
+        perform(call) { store in
+            guard let remembered = try store.rememberedAccount() else {
+                return ["accountId": NSNull(), "accountIdentitySHA256": NSNull()]
+            }
+            return [
+                "accountId": remembered.accountId,
+                "accountIdentitySHA256": remembered.accountIdentitySHA256 as Any? ?? NSNull(),
+            ]
+        }
+    }
+
+    @objc public func migrateAccounts(_ call: CAPPluginCall) {
+        perform(call) { store in
+            try store.migrateAccountsIfNeeded()
+            return nil
         }
     }
 

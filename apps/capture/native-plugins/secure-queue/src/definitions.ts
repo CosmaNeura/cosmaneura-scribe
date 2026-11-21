@@ -25,6 +25,18 @@ export interface SecureQueueClearResult {
   cleared: number;
 }
 
+export interface SecureQueueAccountOptions {
+  /** Core recoveryScope UUID (lowercase). */
+  accountId: string;
+  /** Optional ready-account correlation digest; never an authorization grant. */
+  accountIdentitySHA256?: string;
+}
+
+export interface SecureQueueRememberedAccountResult {
+  accountId: string | null;
+  accountIdentitySHA256: string | null;
+}
+
 export interface SecureQueueRevisionResult {
   revision: string;
 }
@@ -52,6 +64,18 @@ export interface SecureQueuePlugin {
   delete(options: SecureQueueKeyOptions): Promise<SecureQueueDeleteResult>;
   /** Renderer-only clear; refuses when native recording keys exist. */
   clear(): Promise<SecureQueueClearResult>;
-  /** Full clinical wipe (journal/drafts/review/queue/native recordings) after account delete. */
+  /**
+   * Legacy full-device clinical wipe. Account delete must use wipeAccount instead so
+   * other accounts' queued items survive.
+   */
   clearAll(): Promise<SecureQueueClearResult>;
+  /** Per-account clinical wipe; returns remaining key count for that account (0 = empty). */
+  wipeAccount(options: SecureQueueAccountOptions): Promise<SecureQueueClearResult>;
+  /** Remember the signed-in recoveryScope for a later purge; claims legacy items to it. */
+  rememberAccount(options: SecureQueueAccountOptions): Promise<void>;
+  /** Attribute unkeyed legacy digests to accountId without deleting anything. */
+  claimLegacyAccount(options: Pick<SecureQueueAccountOptions, "accountId">): Promise<void>;
+  rememberedAccount(): Promise<SecureQueueRememberedAccountResult>;
+  /** Idempotent migration of the pre-account queue; never drops records on failure. */
+  migrateAccounts(): Promise<void>;
 }

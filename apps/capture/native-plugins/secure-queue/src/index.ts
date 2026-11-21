@@ -3,6 +3,7 @@ import { registerPlugin } from "@capacitor/core";
 import type { SecureQueuePlugin } from "./definitions.js";
 
 export type {
+  SecureQueueAccountOptions,
   SecureQueueClearResult,
   SecureQueueCompareAndSwapOptions,
   SecureQueueDeleteResult,
@@ -10,6 +11,7 @@ export type {
   SecureQueueListResult,
   SecureQueuePlugin,
   SecureQueueRecord,
+  SecureQueueRememberedAccountResult,
   SecureQueueRevisionResult,
   VersionedSecureQueueRecord,
 } from "./definitions.js";

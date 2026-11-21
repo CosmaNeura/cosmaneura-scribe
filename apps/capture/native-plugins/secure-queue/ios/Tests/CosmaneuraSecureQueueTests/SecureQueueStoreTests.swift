@@ -100,6 +100,26 @@ final class SecureQueueStoreTests: XCTestCase {
         XCTAssertEqual(try store.list(), [])
     }
 
+    func testWipeAccountDoesNotUseClearAllSemanticsForForeignAccounts() throws {
+        let accountA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        let accountB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        let workspace = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        let session = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        try store.create(
+            key: "scribe-provider-queue:v1:\(accountA):\(workspace):\(session):a",
+            data: Data([1])
+        )
+        try store.create(
+            key: "scribe-provider-queue:v1:\(accountB):\(workspace):\(session):b",
+            data: Data([2])
+        )
+        let renderer = RendererSecureQueueStore(store: store)
+        XCTAssertEqual(try renderer.wipeAccount(accountA), 0)
+        XCTAssertEqual(try store.list(), [
+            "scribe-provider-queue:v1:\(accountB):\(workspace):\(session):b",
+        ])
+    }
+
     func testRendererAdapterDeniesEveryPrivateJournalOperation() throws {
         let renderer = RendererSecureQueueStore(store: store)
         for kind in ["flow", "binding", "lease", "reservations"] {

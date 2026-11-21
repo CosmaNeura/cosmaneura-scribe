@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  CLINICAL_KEY_PREFIXES, CLINICAL_STORE_NAMES, clinicalStoresFromKeys,
+  CLINICAL_KEY_PREFIXES, CLINICAL_STORE_NAMES, clinicalAccountIdFromKey, clinicalStoresFromKeys,
   deleteProviderFlowDatabases, purgeLocalClinicalData, type ClinicalStoreName,
 } from "./purge-local-clinical";
+
+const accountA = "11111111-1111-4111-8111-111111111111";
+const accountB = "22222222-2222-4222-8222-222222222222";
+const workspace = "33333333-3333-4333-8333-333333333333";
+const session = "44444444-4444-4444-8444-444444444444";
 
 describe("purgeLocalClinicalData", () => {
   it("empties clinical stores; throws when a store remains non-empty", async () => {
@@ -29,6 +34,41 @@ describe("purgeLocalClinicalData", () => {
       journal: { clear: async () => undefined, isEmpty: async () => false },
       drafts: empty, review: empty, queuedAudio: empty, recordings: empty,
     })).rejects.toThrow(/clinical_store_not_empty:journal/);
+  });
+
+  it("per-account wipe of A leaves B's clinical keys", async () => {
+    expect(clinicalAccountIdFromKey(`scribe-provider-queue:v1:${accountA}:${workspace}:${session}:q`))
+      .toBe(accountA);
+    const keys = [
+      `scribe-provider-queue:v1:${accountA}:${workspace}:${session}:a`,
+      `scribe-provider-queue:v1:${accountB}:${workspace}:${session}:b`,
+      `provider-workspace-v1:${accountA}:${workspace}`,
+      `provider-workspace-v1:${accountB}:${workspace}`,
+    ];
+    let wiped = false;
+    const stores = clinicalStoresFromKeys({
+      accountId: accountA,
+      list: async () => keys,
+      delete: async key => {
+        const index = keys.indexOf(key);
+        if (index >= 0) keys.splice(index, 1);
+      },
+      clearAll: async () => {
+        for (let index = keys.length - 1; index >= 0; index -= 1) {
+          if (clinicalAccountIdFromKey(keys[index]!) === accountA) keys.splice(index, 1);
+        }
+        wiped = true;
+        return keys.filter(key => clinicalAccountIdFromKey(key) === accountA).length;
+      },
+    });
+    await purgeLocalClinicalData(stores);
+    expect(wiped).toBe(true);
+    expect(keys).toEqual([
+      `scribe-provider-queue:v1:${accountB}:${workspace}:${session}:b`,
+      `provider-workspace-v1:${accountB}:${workspace}`,
+    ]);
+    expect(await stores.queuedAudio.isEmpty()).toBe(true);
+    expect(await stores.journal.isEmpty()).toBe(true);
   });
 
   it("H8: IDB delete rejects blocked/unsupported; allSettled throws", async () => {

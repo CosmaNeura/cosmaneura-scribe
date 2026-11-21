@@ -18,26 +18,68 @@ export async function purgeLocalClinicalData(stores: LocalClinicalStores): Promi
   }
 }
 
+const ACCOUNT_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+
+/** recoveryScope embedded in known clinical / native key shapes. */
+export function clinicalAccountIdFromKey(key: string): string | null {
+  const parts = key.split(":");
+  const uuid = (index: number): string | null => {
+    const value = parts[index]?.toLowerCase();
+    return value && ACCOUNT_UUID.test(value) ? value : null;
+  };
+  switch (parts[0]) {
+    case "provider-workspace-v1":
+    case "creator-transcript-edit-v1":
+    case "creator-review-v1":
+    case "provider-encounter-creation-v1":
+    case "provider-hidden-visits-v1":
+    case "provider-patient-match-v1":
+      return uuid(1);
+    case "scribe-provider-queue":
+      return parts[1] === "v1" ? uuid(2) : null;
+    case "scribe-native-flow":
+    case "scribe-native-reservations":
+    case "scribe-native-initial-window":
+    case "scribe-native-resume-window":
+      return parts[1] === "v1" ? uuid(3) : null;
+    default:
+      return null;
+  }
+}
+
 export function clinicalStoresFromKeys(
   keys: {
     list(): Promise<readonly string[]>;
     delete(key: string): Promise<void>;
     clearAll?: () => Promise<number>;
+    /** When set, empty checks only consider this account's keys (per-account wipe). */
+    accountId?: string;
   },
 ): LocalClinicalStores {
   let cleared = false;
+  const accountId = keys.accountId?.toLowerCase();
+  if (accountId && !ACCOUNT_UUID.test(accountId)) throw new Error("clinical_account_unavailable");
+  const matchesAccount = (key: string): boolean => {
+    if (!accountId) return true;
+    const parsed = clinicalAccountIdFromKey(key);
+    return parsed === accountId;
+  };
   const wipe = async (): Promise<void> => {
     if (cleared) return;
     if (keys.clearAll) {
       const remaining = await keys.clearAll();
       if (remaining !== 0) throw new Error(`clinical_clear_all_remaining:${remaining}`);
     } else {
-      for (const key of await keys.list()) await keys.delete(key);
+      for (const key of await keys.list()) {
+        if (matchesAccount(key)) await keys.delete(key);
+      }
     }
     cleared = true;
   };
   const empty = (prefixes: readonly string[]) => async (): Promise<boolean> => {
-    const remaining = (await keys.list()).filter(key => prefixes.some(prefix => key.startsWith(prefix)));
+    const remaining = (await keys.list()).filter(key =>
+      prefixes.some(prefix => key.startsWith(prefix)) && matchesAccount(key));
     return remaining.length === 0;
   };
   const store = (prefixes: readonly string[]): ClinicalStore => ({ clear: wipe, isEmpty: empty(prefixes) });

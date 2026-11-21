@@ -1,7 +1,8 @@
 import { Capacitor } from "@capacitor/core";
 import { SecureQueue } from "@cosmaneura-scribe/capacitor-secure-queue";
+import { isUuid } from "../../../review-ui/src/contracts";
 import { mountProviderApplication } from "./application";
-import { createProviderIOSHost } from "./ios-host";
+import { createProviderIOSHost, type ProviderIOSBackend } from "./ios-host";
 import { connectNativeProviderIOSBackend, type NativeProviderOptions } from "./native-backend";
 import { nativeProviderPlugin as native } from "./native-plugin";
 import { subscribeIOSRecordingOpen } from "./recording-open";
@@ -22,17 +23,44 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
     || !["CosmasWorkspaceAuth", "IOSPCM", "SecureQueue"].every(name => Capacitor.isPluginAvailable(name))) {
     throw new Error("provider_native_application_unavailable");
   }
+  /** Core recoveryScope for the signed-in account; required for per-account SecureQueue wipe. */
+  let clinicalAccountId: string | undefined;
+  const rememberClinicalAccount = async (accountId: string): Promise<void> => {
+    if (!isUuid(accountId)) return;
+    clinicalAccountId = accountId.toLowerCase();
+    const state = await native.getState().catch(() => null);
+    const identity = state?.accountIdentitySHA256;
+    await SecureQueue.rememberAccount({
+      accountId: clinicalAccountId,
+      ...(typeof identity === "string" ? { accountIdentitySHA256: identity } : {}),
+    });
+  };
+  const resolveClinicalAccountId = async (): Promise<string> => {
+    if (clinicalAccountId && isUuid(clinicalAccountId)) return clinicalAccountId.toLowerCase();
+    const remembered = await SecureQueue.rememberedAccount();
+    if (typeof remembered.accountId === "string" && isUuid(remembered.accountId)) {
+      const state = await native.getState().catch(() => null);
+      const identity = state?.accountIdentitySHA256;
+      if (!remembered.accountIdentitySHA256 || remembered.accountIdentitySHA256 === identity) {
+        clinicalAccountId = remembered.accountId.toLowerCase();
+        return clinicalAccountId;
+      }
+    }
+    throw new Error("clinical_account_unavailable");
+  };
   return mountProviderApplication(root, {
     session: native,
     cancellation: nativeScribeCancellation(native),
     purgeLocalClinicalData: async () => {
+      const accountId = await resolveClinicalAccountId();
       await purgeLocalClinicalData(clinicalStoresFromKeys({
+        accountId,
         list: async () => (await SecureQueue.list()).keys,
         delete: async key => { await SecureQueue.delete({ key }); },
-        // H8: verify remaining keys after clearAll (plugin may return cleared or remaining).
+        // H8: verify remaining keys for this account after wipeAccount (0 = empty).
         clearAll: async () => {
-          await SecureQueue.clearAll();
-          return (await SecureQueue.list()).keys.length;
+          const result = await SecureQueue.wipeAccount({ accountId });
+          return result.cleared;
         },
       }));
     },
@@ -61,13 +89,33 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
     connect: async signal => {
       const backend = await connectNativeProviderIOSBackend({ ...options, signal }, native);
       try {
+        await SecureQueue.migrateAccounts();
+        const remembered = await SecureQueue.rememberedAccount();
+        const state = await native.getState().catch(() => null);
+        if (typeof remembered.accountId === "string" && isUuid(remembered.accountId)
+          && (!remembered.accountIdentitySHA256
+            || remembered.accountIdentitySHA256 === state?.accountIdentitySHA256)) {
+          clinicalAccountId = remembered.accountId.toLowerCase();
+          await SecureQueue.claimLegacyAccount({ accountId: clinicalAccountId });
+        }
         // Classify setup before mounting a workspace that could own a recorder.
         const initialCatalog = await backend.listEncounters(signal);
         // John Clemente's internal staging comparison, through 16 November.
         // Production and expired candidates retain the existing consent flow.
         const draftConsent = options.profile === "core-staging-personal-v1"
           && Date.now() < Date.parse("2026-11-17T00:00:00Z");
-        return { workspace: createProviderIOSHost(backend, consentPreparation, initialCatalog, entryStartedAt, draftConsent), dispose: () => backend.dispose() };
+        const scopedBackend: ProviderIOSBackend = {
+          ...backend,
+          openEncounter: async (appointmentRef, openSignal) => {
+            const mount = await backend.openEncounter(appointmentRef, openSignal);
+            await rememberClinicalAccount(mount.recoveryScope);
+            return mount;
+          },
+        };
+        return {
+          workspace: createProviderIOSHost(scopedBackend, consentPreparation, initialCatalog, entryStartedAt, draftConsent),
+          dispose: () => backend.dispose(),
+        };
       }
       catch (error) { await backend.dispose(); throw error; }
     },

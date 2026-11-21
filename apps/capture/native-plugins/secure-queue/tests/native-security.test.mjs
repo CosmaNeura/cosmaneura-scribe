@@ -240,6 +240,12 @@ test("keeps the bridge narrow and contains no native logging calls", async () =>
     "compareAndSwap",
     "delete",
     "clear",
+    "clearAll",
+    "wipeAccount",
+    "rememberAccount",
+    "claimLegacyAccount",
+    "rememberedAccount",
+    "migrateAccounts",
   ]) {
     assert.match(definitions, new RegExp(`\\b${method}\\(`, "u"));
     assert.match(distributedDefinitions, new RegExp(`\\b${method}\\(`, "u"));
@@ -269,4 +275,25 @@ test("implements atomic create and compare-and-swap with fixed conflict codes", 
   assert.match(iosErrors, /SECURE_QUEUE_REVISION_CONFLICT/u);
   assert.match(androidErrors, /SECURE_QUEUE_ALREADY_EXISTS/u);
   assert.match(androidErrors, /SECURE_QUEUE_REVISION_CONFLICT/u);
+});
+
+test("iOS SecureQueue wipe is per-account with idempotent migration", async () => {
+  const iosStore = await source("../ios/Sources/CosmaneuraSecureQueue/SecureQueueStore.swift");
+  const iosScope = await source("../ios/Sources/CosmaneuraSecureQueue/SecureQueueAccountScope.swift");
+  const iosPurge = await source("../ios/Sources/CosmaneuraSecureQueue/ClinicalSecureQueuePurge.swift");
+  const nativeApplication = await source(
+    "../../../src/provider/native-application.ts",
+  );
+
+  assert.match(iosStore, /func wipeAccount\(/u);
+  assert.match(iosStore, /migrateAccountsIfNeededLocked/u);
+  assert.match(iosStore, /claimLegacyAccount/u);
+  assert.match(iosScope, /accountId\(forKey/u);
+  assert.match(iosPurge, /wipeAccountRemaining/u);
+  assert.match(iosPurge, /completePendingOrClearAll/u);
+  assert.match(nativeApplication, /SecureQueue\.wipeAccount/u);
+  assert.doesNotMatch(
+    nativeApplication,
+    /SecureQueue\.clearAll\s*\(/u,
+  );
 });
