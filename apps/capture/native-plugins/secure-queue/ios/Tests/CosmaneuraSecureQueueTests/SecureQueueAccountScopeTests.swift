@@ -11,10 +11,12 @@ final class SecureQueueAccountScopeTests: XCTestCase {
     private let identityB = String(repeating: "bb", count: 32)
 
     func testParsesRecoveryScopeFromClinicalKeyShapes() throws {
+        // #file → .../secure-queue/ios/Tests/CosmaneuraSecureQueueTests/*.swift
         let fixtureURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // CosmaneuraSecureQueueTests
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // ios
+            .deletingLastPathComponent() // secure-queue
             .appendingPathComponent("fixtures/clinical-key-shapes.json")
         let data = try Data(contentsOf: fixtureURL)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
