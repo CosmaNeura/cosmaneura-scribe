@@ -150,7 +150,6 @@ func runAttemptChecks() async throws {
     try require(counts.sends == 1 && counts.began == 1 && counts.confirmed == 0)
     try require(ClinicalPurgeMarker.readState() != .confirmed)
 
-    // Online delete reaches send with beginDeletion wired; v2 marker carries accountId.
     counts.reset(); ClinicalPurgeMarker.clear()
     let ok = await attempt(status: 200, bodyData: deleted)
     try require(ok?["status"] as? String == "deleted")
@@ -160,7 +159,6 @@ func runAttemptChecks() async throws {
     try require(ClinicalPurgeMarker.readVersion() == 2)
     try require(ClinicalPurgeMarker.readAccountId() == clinicalAccountId)
 
-    // B4: prepared v1 marker at launch does not wipe.
     ClinicalPurgeMarker.clear()
     ClinicalPurgeMarker.writeV1(.prepared)
     let wipeProbe = AttemptCounters()
@@ -172,7 +170,6 @@ func runAttemptChecks() async throws {
     try require(ClinicalPurgeMarker.readState() == .prepared)
     ClinicalPurgeMarker.clear()
 
-    // v2 confirmed marker retry receives the captured account id.
     ClinicalPurgeMarker.write(.confirmed, accountId: clinicalAccountId)
     var wipedId: String?
     let v2Retried = try ClinicalPurgeMarker.retryPurge { accountId in
@@ -182,7 +179,6 @@ func runAttemptChecks() async throws {
     try require(v2Retried == true && wipedId == clinicalAccountId)
     try require(ClinicalPurgeMarker.readState() == nil)
 
-    // v2 marker with bad accountId fails closed (keep marker, wipe nothing).
     let badPayload: [String: Any] = ["state": "confirmed", "v": 2, "accountId": "not-a-uuid"]
     let badData = try JSONSerialization.data(withJSONObject: badPayload)
     let markerURL: URL = {
@@ -204,7 +200,6 @@ func runAttemptChecks() async throws {
     }
     ClinicalPurgeMarker.clear()
 
-    // writeV1 refuses to overwrite an id-bearing marker.
     ClinicalPurgeMarker.write(.prepared, accountId: clinicalAccountId)
     ClinicalPurgeMarker.writeV1(.sent)
     try require(ClinicalPurgeMarker.readState() == .prepared)

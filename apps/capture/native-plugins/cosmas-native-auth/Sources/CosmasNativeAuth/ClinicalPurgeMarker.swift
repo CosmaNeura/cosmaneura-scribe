@@ -1,8 +1,5 @@
 import Foundation
 
-/// Durable native purge marker. Wipe only after `confirmed`.
-/// v2 always carries a validated accountId for per-account launch retry.
-/// clearAll is allowed ONLY for legacy v1 markers with no accountId key.
 public enum ClinicalPurgeMarker {
     public enum State: String { case prepared, sent, confirmed }
 
@@ -48,19 +45,15 @@ public enum ClinicalPurgeMarker {
         readObject()?["v"] as? Int
     }
 
-    /// Validated account id when present and well-formed; nil when absent or regex-failing.
     public static func readAccountId() -> String? {
         guard let raw = readObject()?["accountId"] as? String else { return nil }
         return normalizedAccountId(raw)
     }
 
-    /// True when the file has an accountId key (even if the value fails validation).
     public static func hasAccountIdKey() -> Bool {
         readObject()?["accountId"] != nil
     }
 
-    /// Production write: always v2 with a non-optional validated accountId.
-    /// Never demotes an existing id-bearing marker to a no-id marker (caller always supplies id).
     public static func write(_ state: State, accountId: String) {
         guard let value = normalizedAccountId(accountId) else { return }
         let payload: [String: Any] = [
@@ -73,8 +66,6 @@ public enum ClinicalPurgeMarker {
         excludeFromBackup(fileURL)
     }
 
-    /// Legacy/test-only v1 marker with no accountId key.
-    /// Refuses to overwrite an existing marker that already carries an accountId.
     public static func writeV1(_ state: State) {
         if hasAccountIdKey() { return }
         let payload: [String: Any] = ["state": state.rawValue, "v": 1]
@@ -90,10 +81,6 @@ public enum ClinicalPurgeMarker {
 
     public static func clear() { try? FileManager.default.removeItem(at: fileURL) }
 
-    /// Launch/sign-in retry: wipe only when already confirmed — never promote prepared/sent.
-    /// - v2 with valid accountId → wipe(accountId)
-    /// - v2 with missing/bad id → fail closed (keep marker, wipe nothing)
-    /// - v1 with no accountId key → wipe(nil) so caller may clearAll
     @MainActor
     public static func retryPurge(wipe: (_ accountId: String?) throws -> Int) throws -> Bool {
         guard readState() == .confirmed else { return false }
@@ -102,7 +89,6 @@ public enum ClinicalPurgeMarker {
         let accountId = readAccountId()
 
         if version >= 2 || hasKey {
-            // v2 (or any marker carrying accountId): require a valid id; otherwise fail closed.
             guard let accountId else {
                 throw NSError(
                     domain: "clinical_purge",
@@ -117,7 +103,6 @@ public enum ClinicalPurgeMarker {
             return true
         }
 
-        // v1 with no accountId key only — clearAll path.
         guard version == 1, !hasKey else {
             throw NSError(
                 domain: "clinical_purge",

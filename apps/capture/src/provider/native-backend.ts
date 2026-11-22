@@ -237,8 +237,9 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     combinedCreationOpening = value.native_create_opening_v1 === true && capabilities.fullNativeVisits;
     const { supportsCreation, existingPatientOnly: nextExistingPatientOnly } = capabilities;
     const nextAccount = supportsCreation ? parseProviderAccount({ email: objectAccount(value.account).email, environment: value.environment }, capabilities.environment) : undefined;
-    if ("recoveryScope" in value && !isUuid(value.recoveryScope)) throw unavailable();
-    if (isUuid(value.recoveryScope)) serverRecoveryScope = String(value.recoveryScope).toLowerCase();
+    if (value.recoveryScope == null || value.recoveryScope === "") delete value.recoveryScope;
+    else if (!isUuid(value.recoveryScope)) throw unavailable();
+    else serverRecoveryScope = String(value.recoveryScope).toLowerCase();
     if (supportsCreation) {
       encounterSetup.initializeCatalog(value, signal);
     }

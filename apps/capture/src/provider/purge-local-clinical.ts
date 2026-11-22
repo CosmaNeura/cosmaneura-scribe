@@ -21,7 +21,6 @@ export async function purgeLocalClinicalData(stores: LocalClinicalStores): Promi
 const ACCOUNT_UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
-/** recoveryScope embedded in known clinical / native key shapes. */
 export function clinicalAccountIdFromKey(key: string): string | null {
   const parts = key.split(":");
   const uuid = (index: number): string | null => {
@@ -53,15 +52,12 @@ export function clinicalStoresFromKeys(
     list(): Promise<readonly string[]>;
     delete(key: string): Promise<void>;
     clearAll?: () => Promise<number>;
-    /** When set, empty checks only consider this account's keys (per-account wipe). */
     accountId?: string;
   },
 ): LocalClinicalStores {
   let cleared = false;
   const accountId = keys.accountId?.toLowerCase();
   if (accountId && !ACCOUNT_UUID.test(accountId)) throw new Error("clinical_account_unavailable");
-  /** Parseable account match only. Unowned clinical residue is counted by wipeAccount
-   * remaining (H1); opaque digests owned by another account are invisible here. */
   const matchesAccount = (key: string): boolean => {
     if (!accountId) return true;
     return clinicalAccountIdFromKey(key) === accountId;
