@@ -310,7 +310,6 @@ test("iOS SecureQueue wipe is per-account with idempotent migration", async () =
     /SecureQueue\.clearAll\s*\(/u,
   );
 });
-
 test("deleteAccount clinical id once before attempt; CAS clear; restore owner", async () => {
   const auth = await source("../../cosmas-native-auth/Bridge/CosmasWorkspaceAuthPlugin.swift");
   const i = auth.indexOf("func deleteAccount"), body = auth.slice(i, i + 2200);

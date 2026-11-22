@@ -16,11 +16,11 @@ export async function nativeAccountSelfDeleteAdapter(
   return interpretAccountSelfDeleteBridge(await nativeDelete({ confirm: "DELETE" }));
 }
 
-/** On clinical_account_unavailable: remember with server scope, retry once, then a specific error. */
+/** clinical_account_unavailable → fetch Core catalog recoveryScope, remember, retry once. */
 export async function nativeAccountSelfDeleteWithRememberRetry(options: {
   nativeDelete: (request: { confirm: "DELETE" }) => Promise<unknown>;
   remember: (scope: string) => Promise<void>;
-  serverScope: () => string | undefined;
+  serverScope: () => Promise<string | undefined>;
   request: { confirm: "DELETE" };
   signal?: AbortSignal | undefined;
 }): Promise<AccountSelfDeleteResult> {
@@ -29,7 +29,7 @@ export async function nativeAccountSelfDeleteWithRememberRetry(options: {
     return await attempt();
   } catch (error) {
     if (!hasPluginCode(error, "clinical_account_unavailable")) throw error;
-    const scope = options.serverScope();
+    const scope = await options.serverScope();
     if (!scope || !isUuid(scope)) {
       throw new Error("clinical_account_unavailable_after_remember", { cause: error });
     }
@@ -43,6 +43,14 @@ export async function nativeAccountSelfDeleteWithRememberRetry(options: {
       throw retryError;
     }
   }
+}
+
+export async function clearWriteOwnerAfterBackendDispose(
+  disposeBackend: () => Promise<void>,
+  clearOwner: () => Promise<void>,
+): Promise<void> {
+  await disposeBackend();
+  await clearOwner();
 }
 
 export async function desktopAccountSelfDeleteAdapter(

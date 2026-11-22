@@ -79,7 +79,6 @@ final class SecureQueueStore {
         return revision
     }
 
-    /// Checks the existing queue volume without loading or creating a storage key.
     func availableBytes() throws -> Int {
         operationLock.lock()
         defer { operationLock.unlock() }
@@ -197,14 +196,12 @@ final class SecureQueueStore {
         return try clearLocked(forRenderer: forRenderer)
     }
 
-    /// Idempotent migration of the pre-account (unkeyed) queue. Never deletes records on failure.
     func migrateAccountsIfNeeded() throws {
         operationLock.lock()
         defer { operationLock.unlock() }
         try migrateAccountsIfNeededLocked()
     }
 
-    /// H4: legacy claiming removed. No-op stub retained for the Capacitor interface.
     func claimLegacyAccount(_ accountId: String) throws {
         operationLock.lock()
         defer { operationLock.unlock() }
@@ -215,8 +212,6 @@ final class SecureQueueStore {
         try migrateAccountsIfNeededLocked()
     }
 
-    /// Remember recoveryScope keyed by exact accountIdentitySHA256. Null identity is refused.
-    /// Also sets the active write owner from this live signed-in session.
     func rememberAccount(accountId: String, accountIdentitySHA256: String?) throws {
         operationLock.lock()
         defer { operationLock.unlock() }
@@ -274,7 +269,6 @@ final class SecureQueueStore {
         return try loadAccountIndex().activeWriteAccountId
     }
 
-    /// Lookup by exact identity. Null / missing identity never matches a remembered scope.
     func rememberedAccount(accountIdentitySHA256: String?) throws -> (accountId: String, accountIdentitySHA256: String?)? {
         operationLock.lock()
         defer { operationLock.unlock() }
@@ -288,16 +282,12 @@ final class SecureQueueStore {
         return (accountId, identity)
     }
 
-    /// Delete every record owned by `accountId`, then unconditionally delete unattributable
-    /// pre-upgrade residue. Returns remaining count (account-owned + unowned clinical); 0 = empty.
     func wipeAccount(_ accountId: String) throws -> Int {
         operationLock.lock()
         defer { operationLock.unlock() }
         return try wipeAccountLocked(accountId)
     }
 
-    /// Pending per-account wipe when a wipe left residue; otherwise full clear.
-    /// Not used for v1 marker retry — that path must ignore the pending-wipe file.
     func completePendingOrClearAll() throws -> Int {
         operationLock.lock()
         defer { operationLock.unlock() }
@@ -307,7 +297,6 @@ final class SecureQueueStore {
         return try clearLocked(forRenderer: false)
     }
 
-    /// v1 marker clearAll path: ignore any pending-wipe-account file.
     func clearAllIgnoringPendingWipe() throws -> Int {
         operationLock.lock()
         defer { operationLock.unlock() }
@@ -400,7 +389,6 @@ final class SecureQueueStore {
         return remaining
     }
 
-    /// CTO: default residue policy — delete unowned / unattributable items unconditionally.
     @discardableResult
     func deleteUnattributableClinicalResidue() throws -> Int {
         operationLock.lock()
@@ -552,8 +540,6 @@ final class SecureQueueStore {
         return false
     }
 
-    /// Remaining after wipe: account-owned keys, unowned clinical-prefix keys, and any
-    /// .sq file that could not be proven to belong to another account (failed removals).
     private func remainingAfterWipeLocked(account: String) throws -> Int {
         try ensureDirectory()
         let index = try loadAccountIndex()
@@ -619,7 +605,6 @@ final class SecureQueueStore {
         var index: SecureQueueAccountIndex
     }
 
-    /// H6: corrupt / missing record files are deleted and skipped; Keychain failures fail closed.
     private func listRecordsForWipeLocked() throws -> WipeListing {
         try ensureDirectory()
         let index = try loadAccountIndex()

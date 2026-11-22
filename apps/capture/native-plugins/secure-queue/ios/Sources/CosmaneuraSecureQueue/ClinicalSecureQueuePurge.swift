@@ -1,8 +1,6 @@
 import Foundation
 
-/// Account-scoped clinical SecureQueue purge helpers for CosmasWorkspaceAuth launch retry.
 public enum ClinicalSecureQueuePurge {
-    /// v1 marker only (no account id key): full-device clinical wipe. Ignores pending-wipe file.
     public static func clearAllRemaining() throws -> Int {
         let store = try SecureQueueStore.shared.get()
         return try store.clearAllIgnoringPendingWipe()

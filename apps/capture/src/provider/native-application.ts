@@ -10,9 +10,11 @@ import type { ConsentPreparationRelease } from "./consent-preparation";
 import { nativeScribeCancellation } from "./native-cancellation";
 import { activateNativeScribe } from "./native-activation";
 import { clinicalStoresFromKeys, purgeLocalClinicalData } from "./purge-local-clinical";
-import { nativeAccountSelfDeleteWithRememberRetry } from "./account-self-delete-host";
+import {
+  clearWriteOwnerAfterBackendDispose,
+  nativeAccountSelfDeleteWithRememberRetry,
+} from "./account-self-delete-host";
 
-/** Standalone iOS startup after the host's upload/Core configuration is supplied. */
 export function mountNativeProviderIOSApplication(root: HTMLElement, options: Omit<NativeProviderOptions, "signal">,
   consentPreparation?: ConsentPreparationRelease): () => Promise<void> {
   const entryStartedAt = performance.now();
@@ -21,6 +23,7 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
     throw new Error("provider_native_application_unavailable");
   }
   let clinicalAccountId: string | undefined;
+  let refreshServerScope: () => Promise<string | undefined> = async () => undefined;
   const clearWriteOwnerIfMatches = async (sessionId: string | undefined): Promise<void> => {
     if (!sessionId || !isUuid(sessionId)) return;
     try {
@@ -91,7 +94,7 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
         deleteAccount: (request, signal) => nativeAccountSelfDeleteWithRememberRetry({
           nativeDelete: req => native.deleteAccount!(req),
           remember: rememberClinicalAccount,
-          serverScope: () => clinicalAccountId,
+          serverScope: () => refreshServerScope(),
           request, signal,
         }),
       },
@@ -118,6 +121,15 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
         if (catalogScope && isUuid(catalogScope) && clinicalAccountId !== catalogScope.toLowerCase()) {
           await rememberClinicalAccount(catalogScope);
         }
+        if (!clinicalAccountId) {
+          try { await SecureQueue.setActiveWriteAccount({ accountId: null }); } catch { /* best-effort */ }
+        }
+        refreshServerScope = async () => {
+          try {
+            await backend.listEncounters(AbortSignal.timeout(30_000));
+            return backend.recoveryScope;
+          } catch { return undefined; }
+        };
         const draftConsent = options.profile === "core-staging-personal-v1"
           && Date.now() < Date.parse("2026-11-17T00:00:00Z");
         const sessionId = clinicalAccountId;
@@ -132,9 +144,12 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
         return {
           workspace: createProviderIOSHost(scopedBackend, consentPreparation, initialCatalog, entryStartedAt, draftConsent),
           dispose: async () => {
-            await backend.dispose();
-            await clearWriteOwnerIfMatches(sessionId);
+            await clearWriteOwnerAfterBackendDispose(
+              () => backend.dispose(),
+              () => clearWriteOwnerIfMatches(sessionId),
+            );
             clinicalAccountId = undefined;
+            refreshServerScope = async () => undefined;
           },
         };
       }
