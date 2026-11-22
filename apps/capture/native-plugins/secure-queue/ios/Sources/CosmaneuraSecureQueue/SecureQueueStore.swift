@@ -239,7 +239,6 @@ final class SecureQueueStore {
     var debugFailNextRecordWrite = false
 #endif
 
-    /// Set the live write owner. Passing nil unconditionally clears.
     func setActiveWriteAccount(_ accountId: String?) throws {
         operationLock.lock()
         defer { operationLock.unlock() }
@@ -254,7 +253,6 @@ final class SecureQueueStore {
         try writeAccountIndex(index)
     }
 
-    /// Compare-and-clear so a late dispose cannot clear a newer session's owner.
     @discardableResult
     func clearActiveWriteAccount(ifMatches expectedAccountId: String) throws -> Bool {
         operationLock.lock()
@@ -501,7 +499,6 @@ final class SecureQueueStore {
         try? writeAccountIndex(index)
     }
 
-    /// Clinical-opaque keys require an owner; non-clinical unparseable keys are exempt.
     private func prepareWriteOwnershipLocked(key: String, digest: Data) throws {
         try migrateAccountsIfNeededLocked()
         var index = try loadAccountIndex()

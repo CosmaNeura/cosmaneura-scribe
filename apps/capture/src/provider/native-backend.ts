@@ -35,7 +35,10 @@ export interface NativeProviderOptions {
     openEncounter(appointmentRef: string, noteRef: string | null, signal: AbortSignal): Promise<void>;
   };
 }
-export interface NativeProviderBackend extends ProviderIOSBackend { dispose(): Promise<void> }
+export interface NativeProviderBackend extends ProviderIOSBackend {
+  dispose(): Promise<void>;
+  readonly recoveryScope?: string | undefined;
+}
 
 /** Bind the existing signed-in iOS session to the fixed provider receiver.
  * The plugin obtains a fresh SDK token natively for every operation. This module

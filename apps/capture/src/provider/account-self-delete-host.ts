@@ -22,7 +22,7 @@ export async function nativeAccountSelfDeleteWithRememberRetry(options: {
   remember: (scope: string) => Promise<void>;
   serverScope: () => string | undefined;
   request: { confirm: "DELETE" };
-  signal?: AbortSignal;
+  signal?: AbortSignal | undefined;
 }): Promise<AccountSelfDeleteResult> {
   const attempt = () => nativeAccountSelfDeleteAdapter(options.nativeDelete, options.request, options.signal);
   try {

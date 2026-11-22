@@ -10,7 +10,6 @@ final class SecureQueueAccountScopeTests: XCTestCase {
     private let identityA = String(repeating: "aa", count: 32)
     private let identityB = String(repeating: "bb", count: 32)
     private let opaqueDigest = String(repeating: "ab", count: 32)
-
     func testParsesRecoveryScopeFromClinicalKeyShapes() throws {
         let fixtureURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
@@ -28,7 +27,6 @@ final class SecureQueueAccountScopeTests: XCTestCase {
             XCTAssertEqual(SecureQueueAccountScope.isClinicalKey(key), clinical, key)
         }
     }
-
     func testWipeAccountLeavesOtherAccountsUntouched() throws {
         let harness = try Harness(); defer { harness.tearDown() }
         try harness.store.create(key: "scribe-provider-queue:v1:\(accountA):\(workspace):\(session):a", data: Data([1]))
@@ -38,7 +36,6 @@ final class SecureQueueAccountScopeTests: XCTestCase {
         XCTAssertEqual(try harness.store.list(), ["scribe-provider-queue:v1:\(accountB):\(workspace):\(session):b"])
         XCTAssertEqual(try harness.store.get(key: try harness.store.list()[0]).data, Data([2]))
     }
-
     func testDeleteARemovesOwnedAndUnownedResidueLeavesB() throws {
         let harness = try Harness(); defer { harness.tearDown() }
         try harness.store.create(key: "scribe-provider-queue:v1:\(accountA):\(workspace):\(session):a", data: Data([1]))
@@ -51,7 +48,6 @@ final class SecureQueueAccountScopeTests: XCTestCase {
         XCTAssertEqual(try harness.store.wipeAccount(accountA), 0)
         XCTAssertEqual(try harness.store.list(), ["scribe-provider-queue:v1:\(accountB):\(workspace):\(session):b"])
     }
-
     func testBsDeleteLeavesAsOwnedOpaqueDigest() throws {
         let harness = try Harness(); defer { harness.tearDown() }
         try harness.store.setActiveWriteAccount(accountA)
@@ -62,7 +58,6 @@ final class SecureQueueAccountScopeTests: XCTestCase {
         XCTAssertEqual(try harness.store.list(), [opaque])
         XCTAssertEqual(try harness.store.get(key: opaque).data, Data([4]))
     }
-
     func testFailedOpaqueWriteLeavesNoRecord() throws {
         let harness = try Harness(); defer { harness.tearDown() }
         XCTAssertThrowsError(try harness.store.create(
@@ -70,13 +65,11 @@ final class SecureQueueAccountScopeTests: XCTestCase {
         )) { XCTAssertEqual($0 as? SecureQueueError, .invalidArgument) }
         XCTAssertEqual(try harness.store.list(), [])
     }
-
     func testNonClinicalOpaqueWriteAllowedWithoutOwner() throws {
         let harness = try Harness(); defer { harness.tearDown() }
         try harness.store.create(key: "legacy-unkeyed-record", data: Data([7]))
         XCTAssertEqual(try harness.store.list(), ["legacy-unkeyed-record"])
     }
-
     func testSwitchingAccountsWithoutRememberRefusesOpaqueWrite() throws {
         let harness = try Harness(); defer { harness.tearDown() }
         try harness.store.setActiveWriteAccount(accountA)
@@ -85,7 +78,6 @@ final class SecureQueueAccountScopeTests: XCTestCase {
             key: "scribe-native-passage:v1:\(String(repeating: "11", count: 32)):seg", data: Data([2])
         )) { XCTAssertEqual($0 as? SecureQueueError, .invalidArgument) }
     }
-
     func testPostUpgradeOpaqueWriteRequiresOwnerAndWipesWithAccount() throws {
         let harness = try Harness(); defer { harness.tearDown() }
         try harness.store.rememberAccount(accountId: accountA, accountIdentitySHA256: identityA)
@@ -95,14 +87,13 @@ final class SecureQueueAccountScopeTests: XCTestCase {
         XCTAssertEqual(try harness.store.wipeAccount(accountA), 0)
         XCTAssertEqual(try harness.store.list(), ["scribe-provider-queue:v1:\(accountB):\(workspace):\(session):b"])
     }
-
     func testFailedWriteRestoresPriorOwnerEntry() throws {
         let harness = try Harness(); defer { harness.tearDown() }
         let opaque = "scribe-native-binding:v1:\(String(repeating: "33", count: 32))"
         let hex = try SecureQueueAccountScope.digestHex(for: opaque)
         try harness.store.setActiveWriteAccount(accountA)
         try harness.store.create(key: opaque, data: Data([1]))
-        try harness.stripOwnedDigests() // pre-upgrade unowned
+        try harness.stripOwnedDigests()
         try harness.store.setActiveWriteAccount(accountB)
         harness.store.debugFailNextRecordWrite = true
         XCTAssertThrowsError(try harness.store.put(key: opaque, data: Data([2]))) {
@@ -119,16 +110,6 @@ final class SecureQueueAccountScopeTests: XCTestCase {
         }
         XCTAssertEqual(try harness.owner(of: hex), accountA)
     }
-
-    func testClearActiveWriteAccountCompareAndClear() throws {
-        let harness = try Harness(); defer { harness.tearDown() }
-        try harness.store.setActiveWriteAccount(accountA)
-        XCTAssertFalse(try harness.store.clearActiveWriteAccount(ifMatches: accountB))
-        XCTAssertEqual(try harness.store.activeWriteAccountId(), accountA)
-        XCTAssertTrue(try harness.store.clearActiveWriteAccount(ifMatches: accountA))
-        XCTAssertNil(try harness.store.activeWriteAccountId())
-    }
-
     func testInterruptedMigrationNeverDropsRecords() throws {
         let harness = try Harness(); defer { harness.tearDown() }
         try harness.store.setActiveWriteAccount(accountA)
@@ -139,7 +120,6 @@ final class SecureQueueAccountScopeTests: XCTestCase {
         XCTAssertEqual(try harness.store.list().count, 2)
         XCTAssertEqual(try harness.store.get(key: "legacy-unkeyed-record").data, Data([7]))
     }
-
     func testRememberedAccountRequiresExactIdentity() throws {
         let harness = try Harness(); defer { harness.tearDown() }
         try harness.store.rememberAccount(accountId: accountA, accountIdentitySHA256: identityA)
@@ -147,11 +127,14 @@ final class SecureQueueAccountScopeTests: XCTestCase {
         XCTAssertEqual(remembered.accountId, accountA)
         XCTAssertEqual(remembered.accountIdentitySHA256, identityA)
         XCTAssertEqual(try harness.store.activeWriteAccountId(), accountA)
+        XCTAssertFalse(try harness.store.clearActiveWriteAccount(ifMatches: accountB))
+        XCTAssertTrue(try harness.store.clearActiveWriteAccount(ifMatches: accountA))
+        XCTAssertNil(try harness.store.activeWriteAccountId())
+        try harness.store.rememberAccount(accountId: accountA, accountIdentitySHA256: identityA)
         XCTAssertNil(try harness.store.rememberedAccount(accountIdentitySHA256: nil))
         XCTAssertNil(try harness.store.rememberedAccount(accountIdentitySHA256: identityB))
         XCTAssertThrowsError(try harness.store.rememberAccount(accountId: accountA, accountIdentitySHA256: nil))
     }
-
     func testCorruptIndexFailsClosedAndNeverRebuildsClaims() throws {
         let harness = try Harness(); defer { harness.tearDown() }
         try harness.store.create(key: "provider-workspace-v1:\(accountA):\(workspace)", data: Data([1]))
@@ -160,14 +143,12 @@ final class SecureQueueAccountScopeTests: XCTestCase {
         XCTAssertThrowsError(try harness.store.wipeAccount(accountA)) { XCTAssertEqual($0 as? SecureQueueError, .corrupt) }
         XCTAssertEqual(try harness.store.list().count, 1)
     }
-
     func testV2IndexMissingOwnedDigestsIsCorrupt() throws {
         let data = try JSONSerialization.data(withJSONObject: [
             "v": 2, "migrated": true, "rememberedScopes": [identityA: accountA], "activeWriteAccountId": NSNull(),
         ] as [String: Any])
         XCTAssertThrowsError(try SecureQueueAccountIndex.decode(data)) { XCTAssertEqual($0 as? SecureQueueError, .corrupt) }
     }
-
     func testV2IndexRejectsNonHexDigest() throws {
         let data = try JSONSerialization.data(withJSONObject: [
             "v": 2, "migrated": true, "ownedDigests": ["not-64-hex": accountA],
@@ -175,7 +156,6 @@ final class SecureQueueAccountScopeTests: XCTestCase {
         ] as [String: Any])
         XCTAssertThrowsError(try SecureQueueAccountIndex.decode(data)) { XCTAssertEqual($0 as? SecureQueueError, .corrupt) }
     }
-
     func testDecodesRound1IndexWithoutInferringActiveWriteOwner() throws {
         let data = try JSONSerialization.data(withJSONObject: [
             "v": 1, "migrated": true, "legacyDigests": [String(repeating: "ab", count: 32)],
@@ -188,7 +168,6 @@ final class SecureQueueAccountScopeTests: XCTestCase {
         XCTAssertNil(index.activeWriteAccountId)
         XCTAssertEqual(index.ownedDigests, [:])
     }
-
     func testPendingWipeRetryOnFreshStoreInstance() throws {
         let harness = try Harness(); defer { harness.tearDown() }
         try harness.store.create(key: "scribe-provider-queue:v1:\(accountA):\(workspace):\(session):a", data: Data([1]))
@@ -201,7 +180,6 @@ final class SecureQueueAccountScopeTests: XCTestCase {
         XCTAssertEqual(try relaunched.completePendingOrClearAll(), 0)
         XCTAssertEqual(try relaunched.list(), ["scribe-provider-queue:v1:\(accountB):\(workspace):\(session):b"])
     }
-
     func testClearAllIgnoringPendingWipeDoesNotHonorPendingFile() throws {
         let harness = try Harness(); defer { harness.tearDown() }
         try harness.store.create(key: "scribe-provider-queue:v1:\(accountA):\(workspace):\(session):a", data: Data([1]))
@@ -211,7 +189,6 @@ final class SecureQueueAccountScopeTests: XCTestCase {
         XCTAssertEqual(try harness.store.clearAllIgnoringPendingWipe(), 2)
         XCTAssertEqual(try harness.store.list(), [])
     }
-
     func testWipeDeletesUnreadableRecordAndContinues() throws {
         let harness = try Harness(); defer { harness.tearDown() }
         try harness.store.create(key: "scribe-provider-queue:v1:\(accountA):\(workspace):\(session):good", data: Data([1]))

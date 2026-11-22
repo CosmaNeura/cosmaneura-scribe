@@ -12,10 +12,7 @@ import { activateNativeScribe } from "./native-activation";
 import { clinicalStoresFromKeys, purgeLocalClinicalData } from "./purge-local-clinical";
 import { nativeAccountSelfDeleteWithRememberRetry } from "./account-self-delete-host";
 
-/** Standalone iOS startup after the host's upload/Core configuration is supplied.
- * Reuses the registered native sign-in/out UI and existing complete provider
- * workflow. Does not configure a bundle identity or enable an absent receiver.
- */
+/** Standalone iOS startup after the host's upload/Core configuration is supplied. */
 export function mountNativeProviderIOSApplication(root: HTMLElement, options: Omit<NativeProviderOptions, "signal">,
   consentPreparation?: ConsentPreparationRelease): () => Promise<void> {
   const entryStartedAt = performance.now();
@@ -117,7 +114,7 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
           }
         }
         const initialCatalog = await backend.listEncounters(signal);
-        const catalogScope = (backend as { recoveryScope?: string }).recoveryScope;
+        const catalogScope = backend.recoveryScope;
         if (catalogScope && isUuid(catalogScope) && clinicalAccountId !== catalogScope.toLowerCase()) {
           await rememberClinicalAccount(catalogScope);
         }
