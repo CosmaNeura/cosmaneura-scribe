@@ -30,13 +30,15 @@ export async function nativeAccountSelfDeleteWithRememberRetry(options: {
   } catch (error) {
     if (!hasPluginCode(error, "clinical_account_unavailable")) throw error;
     const scope = options.serverScope();
-    if (!scope || !isUuid(scope)) throw new Error("clinical_account_unavailable_after_remember");
+    if (!scope || !isUuid(scope)) {
+      throw new Error("clinical_account_unavailable_after_remember", { cause: error });
+    }
     await options.remember(scope);
     try {
       return await attempt();
     } catch (retryError) {
       if (hasPluginCode(retryError, "clinical_account_unavailable")) {
-        throw new Error("clinical_account_unavailable_after_remember");
+        throw new Error("clinical_account_unavailable_after_remember", { cause: retryError });
       }
       throw retryError;
     }
