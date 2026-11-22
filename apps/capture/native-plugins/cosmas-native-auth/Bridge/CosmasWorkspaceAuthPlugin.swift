@@ -98,8 +98,6 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         }
     }
 
-    /// H2/H3/H6: retry confirmed native purge only; refuse while a confirmed marker remains.
-    /// v2 marker with accountId → wipeAccountRemaining; v1 no-id → clearAll only.
     @MainActor private func ensureClinicalPurgeCleared() -> Bool {
 #if os(iOS)
         guard ClinicalPurgeMarker.readState() == .confirmed else { return true }
@@ -117,7 +115,6 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
 #endif
     }
 
-    /// Best-effort recoveryScope for purge marker (H3). Never logs the value.
     @MainActor private func clinicalAccountIdForPurgeMarker() -> String? {
 #if os(iOS)
         guard let auth = self.auth else { return nil }
@@ -611,7 +608,6 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             else { return Self.reject(call) }
             self.initializeAuth()
             guard let auth = self.auth, auth.state().phase == .ready else { return Self.reject(call) }
-            // Capture clinical account id ONCE before the server delete; refuse if nil.
             guard let clinicalAccountId = self.clinicalAccountIdForPurgeMarker() else {
                 call.reject("Clinical account unavailable", "clinical_account_unavailable")
                 return

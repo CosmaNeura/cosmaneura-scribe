@@ -18,7 +18,6 @@ final class SecureQueueStoreTests: XCTestCase {
             keychainService: service,
             keychainAccount: account
         )
-        // Opaque writes require a verified live write owner (hole 2/3).
         try store.setActiveWriteAccount("11111111-1111-4111-8111-111111111111")
     }
 

@@ -29,12 +29,10 @@ final class RendererSecureQueueStore {
   }
   func list() throws -> [String] { try store.list().filter(SecureQueueRecordCodec.isRendererKey) }
   func clear() throws -> Int { try store.clear(forRenderer: true) }
-  /** Account delete (legacy): wipe renderer + native custody; returns remaining key count (0 = empty). */
   func clearAll() throws -> Int {
     _ = try store.clear(forRenderer: false)
     return try store.list().count
   }
-  /** Per-account clinical wipe; returns remaining key count for that account (0 = empty). */
   func wipeAccount(_ accountId: String) throws -> Int {
     try store.wipeAccount(accountId)
   }
@@ -48,7 +46,6 @@ final class RendererSecureQueueStore {
   func clearActiveWriteAccount(ifMatches expectedAccountId: String) throws -> Bool {
     try store.clearActiveWriteAccount(ifMatches: expectedAccountId)
   }
-  /// H4 no-op stub — legacy items are never claimed.
   func claimLegacyAccount(_ accountId: String) throws {
     try store.claimLegacyAccount(accountId)
   }

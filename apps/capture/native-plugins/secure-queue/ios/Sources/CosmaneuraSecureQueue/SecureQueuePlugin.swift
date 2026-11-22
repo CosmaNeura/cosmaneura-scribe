@@ -196,7 +196,6 @@ public final class SecureQueuePlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         perform(call) { store in
-            // H4: no-op stub — pre-upgrade unowned items stay unowned.
             try store.claimLegacyAccount(accountId)
             return nil
         }

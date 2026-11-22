@@ -1,13 +1,10 @@
 import Foundation
 
-/// Per-account SecureQueue ownership. Account id is the Core recoveryScope UUID
-/// already embedded in clinical key prefixes (same custody unit desktop wipeAccount uses).
 enum SecureQueueAccountScope {
     private static let uuidPattern =
         #"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"#
     private static let identityPattern = #"^[0-9a-f]{64}$"#
 
-    /// Clinical key prefixes that must not remain after a successful account wipe.
     static let clinicalPrefixes: [String] = [
         "provider-workspace-v1:",
         "creator-transcript-edit-v1:",
@@ -35,8 +32,6 @@ enum SecureQueueAccountScope {
         clinicalPrefixes.contains { key.hasPrefix($0) }
     }
 
-    /// Extract recoveryScope from known clinical / native key shapes. Returns nil when
-    /// the key has no recoverable account field (opaque native digests / legacy).
     static func accountId(forKey key: String) -> String? {
         let parts = key.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
         guard parts.count >= 2 else { return nil }
@@ -55,14 +50,12 @@ enum SecureQueueAccountScope {
              "provider-patient-match-v1":
             return uuid(at: 1)
         case "scribe-provider-queue":
-            // scribe-provider-queue:v1:{recoveryScope}:{workspaceId}:{sessionId}:...
             guard parts.count >= 3, parts[1] == "v1" else { return nil }
             return uuid(at: 2)
         case "scribe-native-flow",
              "scribe-native-reservations",
              "scribe-native-initial-window",
              "scribe-native-resume-window":
-            // scribe-native-*:v1:{keyAccount}:{recoveryScope}...
             guard parts.count >= 4, parts[1] == "v1" else { return nil }
             return uuid(at: 3)
         default:

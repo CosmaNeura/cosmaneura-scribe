@@ -35,12 +35,24 @@ describe("nativeAccountSelfDeleteWithRememberRetry", () => {
 });
 
 describe("clearWriteOwnerAfterBackendDispose", () => {
-  it("clears owner after backend.dispose", async () => {
-    const order: string[] = [];
-    await clearWriteOwnerAfterBackendDispose(
-      async () => { order.push("dispose"); },
-      async () => { order.push("clear"); },
-    );
-    expect(order).toEqual(["dispose", "clear"]);
+  it("clearOwner waits until dispose resolves", async () => {
+    let resolveDispose!: () => void;
+    const dispose = new Promise<void>(resolve => { resolveDispose = resolve; });
+    const clearOwner = vi.fn(async () => undefined);
+    const done = clearWriteOwnerAfterBackendDispose(async () => dispose, clearOwner);
+    await Promise.resolve();
+    expect(clearOwner).not.toHaveBeenCalled();
+    resolveDispose();
+    await done;
+    expect(clearOwner).toHaveBeenCalledOnce();
+  });
+
+  it("dispose reject: clearOwner never called, rejection propagates", async () => {
+    const clearOwner = vi.fn(async () => undefined);
+    await expect(clearWriteOwnerAfterBackendDispose(
+      async () => { throw new Error("dispose_failed"); },
+      clearOwner,
+    )).rejects.toThrow("dispose_failed");
+    expect(clearOwner).not.toHaveBeenCalled();
   });
 });

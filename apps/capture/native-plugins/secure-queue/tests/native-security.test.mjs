@@ -301,6 +301,7 @@ test("iOS SecureQueue wipe is per-account with idempotent migration", async () =
   assert.match(nativeApplication, /SecureQueue\.wipeAccount/u);
   assert.match(nativeApplication, /SecureQueue\.setActiveWriteAccount/u);
   assert.match(nativeApplication, /ifMatches/u);
+  assert.match(nativeApplication, /accountId: null[\s\S]*?provider_session_unavailable/u);
   assert.doesNotMatch(
     nativeApplication,
     /SecureQueue\.claimLegacyAccount/u,

@@ -122,7 +122,8 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
           await rememberClinicalAccount(catalogScope);
         }
         if (!clinicalAccountId) {
-          try { await SecureQueue.setActiveWriteAccount({ accountId: null }); } catch { /* best-effort */ }
+          try { await SecureQueue.setActiveWriteAccount({ accountId: null }); }
+          catch (error) { throw new Error("provider_session_unavailable", { cause: error }); }
         }
         refreshServerScope = async () => {
           try {

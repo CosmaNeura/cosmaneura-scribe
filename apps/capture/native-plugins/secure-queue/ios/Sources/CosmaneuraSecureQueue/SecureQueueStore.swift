@@ -208,7 +208,6 @@ final class SecureQueueStore {
         guard SecureQueueAccountScope.normalizedAccountId(accountId) != nil else {
             throw SecureQueueError.invalidArgument
         }
-        // Intentionally no-op: pre-upgrade unowned items stay unowned and are wiped as residue.
         try migrateAccountsIfNeededLocked()
     }
 
@@ -361,7 +360,6 @@ final class SecureQueueStore {
         try migrateAccountsIfNeededLocked()
         try writePendingWipeAccount(account)
 
-        // H6: listing deletes unreadable records and continues; fail closed only on transient Keychain.
         let listed = try listRecordsForWipeLocked()
         for entry in listed.readable {
             let ownedByAccount = SecureQueueAccountScope.belongs(key: entry.key, toAccount: account)
@@ -371,8 +369,6 @@ final class SecureQueueStore {
                 try removeRecordFileLocked(at: entry.url)
             }
         }
-
-        // CTO residue: unattributable pre-upgrade items deleted on ANY account delete.
         _ = try deleteUnattributableClinicalResidueLocked(
             readable: listed.readable,
             index: listed.index
@@ -422,23 +418,11 @@ final class SecureQueueStore {
     }
 
     private func migrateAccountsIfNeededLocked() throws {
-        let index: SecureQueueAccountIndex
-        do {
-            index = try loadAccountIndex()
-        } catch {
-            // Missing → empty. Corrupt → fail closed (H5); never rebuild claims.
-            throw error
-        }
+        let index = try loadAccountIndex()
         if index.migrated { return }
-        // Mark migrated without claiming legacy digests (H4). Failure must not delete records.
         var next = index
         next.migrated = true
-        do {
-            try writeAccountIndex(next)
-        } catch {
-            // Leave migrated=false so a later launch retries; records remain.
-            return
-        }
+        do { try writeAccountIndex(next) } catch { return }
     }
 
     private func commitRecordWithOwnershipLocked(
@@ -563,7 +547,6 @@ final class SecureQueueStore {
             do {
                 digest = try SecureQueueRecordCodec.digest(fromFilename: url.lastPathComponent)
             } catch {
-                // Unparseable filename that still exists → counts as remaining.
                 remaining += 1
                 continue
             }
@@ -587,13 +570,10 @@ final class SecureQueueStore {
                        SecureQueueAccountScope.isClinicalKey(record.key) {
                         remaining += 1
                     }
-                    // Owned by another account via digest — not remaining for this wipe.
                 }
-                // Parseable other-account keys are not remaining.
             } catch let error as SecureQueueError where error == .keyUnavailable || error == .io {
                 throw error
             } catch {
-                // Unreadable but still on disk and not proven other-account → remaining.
                 remaining += 1
             }
         }
@@ -646,7 +626,6 @@ final class SecureQueueStore {
             } catch let error as SecureQueueError where error == .keyUnavailable || error == .io {
                 throw error
             } catch {
-                // Corrupt / errSecItemNotFound-style read failures: delete and continue.
                 try? fileManager.removeItem(at: url)
             }
         }
@@ -704,7 +683,6 @@ final class SecureQueueStore {
         } catch let error as SecureQueueError {
             throw error
         } catch {
-            // H5: present but unparseable → fail closed as corrupt; never rebuild claims.
             throw SecureQueueError.corrupt
         }
     }

@@ -147,7 +147,6 @@ public final class SecureQueuePlugin extends Plugin {
         });
     }
 
-    /** iOS owns per-account wipe; Android keeps device-wide clear until a matching Android ticket. */
     @PluginMethod
     public void wipeAccount(PluginCall call) {
         perform(call, queue -> {

@@ -16,7 +16,6 @@ export async function nativeAccountSelfDeleteAdapter(
   return interpretAccountSelfDeleteBridge(await nativeDelete({ confirm: "DELETE" }));
 }
 
-/** clinical_account_unavailable → fetch Core catalog recoveryScope, remember, retry once. */
 export async function nativeAccountSelfDeleteWithRememberRetry(options: {
   nativeDelete: (request: { confirm: "DELETE" }) => Promise<unknown>;
   remember: (scope: string) => Promise<void>;

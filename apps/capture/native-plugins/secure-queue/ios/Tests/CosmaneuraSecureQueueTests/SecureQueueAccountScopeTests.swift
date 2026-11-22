@@ -197,13 +197,8 @@ final class SecureQueueAccountScopeTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: badURL.path))
         XCTAssertEqual(try harness.store.list(), ["scribe-provider-queue:v1:\(accountB):\(workspace):\(session):keep"])
     }
-
     private final class Harness {
-        let directory: URL
-        let service: String
-        let account: String
-        let store: SecureQueueStore
-
+        let directory: URL; let service: String; let account: String; let store: SecureQueueStore
         init() throws {
             directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("secure-queue-account-\(UUID().uuidString)", isDirectory: true)
@@ -211,19 +206,16 @@ final class SecureQueueAccountScopeTests: XCTestCase {
             account = "test-key"
             store = try SecureQueueStore(directoryURL: directory, keychainService: service, keychainAccount: account)
         }
-
         func stripOwnedDigests() throws {
             let url = directory.appendingPathComponent(SecureQueueAccountIndex.fileName)
             var index = try SecureQueueAccountIndex.decode(Data(contentsOf: url))
             index.ownedDigests = [:]
             try index.encode().write(to: url, options: [.atomic])
         }
-
         func owner(of digestHex: String) throws -> String? {
             let url = directory.appendingPathComponent(SecureQueueAccountIndex.fileName)
             return try SecureQueueAccountIndex.decode(Data(contentsOf: url)).owner(forDigestHex: digestHex)
         }
-
         func tearDown() {
             try? FileManager.default.removeItem(at: directory)
             SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service,

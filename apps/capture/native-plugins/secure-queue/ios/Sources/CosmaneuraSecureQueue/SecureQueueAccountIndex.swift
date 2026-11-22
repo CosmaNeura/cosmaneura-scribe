@@ -1,7 +1,5 @@
 import Foundation
 
-/// Durable, metadata-only account ownership sidecar for SecureQueue.
-/// Never stores PHI, transcript text, or object URLs — only account ids and key digests.
 struct SecureQueueAccountIndex: Equatable {
     static let schemaVersion = 2
     static let fileName = "account-index-v1.json"
@@ -9,11 +7,8 @@ struct SecureQueueAccountIndex: Equatable {
     private static let digestPattern = #"^[0-9a-f]{64}$"#
 
     var migrated: Bool
-    /// Opaque / unparseable digests written after migration → owning recoveryScope.
     var ownedDigests: [String: String]
-    /// Exact accountIdentitySHA256 → recoveryScope. Null identity never matches.
     var rememberedScopes: [String: String]
-    /// Explicit write-time owner from the live signed-in session. Never inferred.
     var activeWriteAccountId: String?
 
     static var empty: SecureQueueAccountIndex {
@@ -65,7 +60,6 @@ struct SecureQueueAccountIndex: Equatable {
             "ownedDigests": ownedDigests,
             "rememberedScopes": rememberedScopes,
         ]
-        // Explicit null — never infer a write owner from rememberedScopes.
         if let activeWriteAccountId {
             payload["activeWriteAccountId"] = activeWriteAccountId
         } else {
@@ -87,7 +81,6 @@ struct SecureQueueAccountIndex: Equatable {
         let owned: [String: String]
         let scopes: [String: String]
         if version >= schemaVersion {
-            // v2: missing or wrong-typed maps are corrupt; digests must be 64 hex chars.
             guard let rawOwned = object["ownedDigests"] as? [String: String] else {
                 throw SecureQueueError.corrupt
             }
@@ -97,7 +90,6 @@ struct SecureQueueAccountIndex: Equatable {
             owned = try decodeOwnedDigests(rawOwned)
             scopes = try decodeRememberedScopes(rawScopes)
         } else {
-            // Round-1: ownedDigests absent; absorb remembered pair; drop claims.
             if let rawOwned = object["ownedDigests"] as? [String: String] {
                 owned = try decodeOwnedDigests(rawOwned)
             } else if object["ownedDigests"] != nil {
