@@ -23,7 +23,7 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
     throw new Error("provider_native_application_unavailable");
   }
   let clinicalAccountId: string | undefined;
-  let refreshServerScope: () => Promise<string | undefined> = async () => undefined;
+  let refreshServerScope: () => Promise<string | undefined> = () => Promise.resolve(undefined);
   const clearWriteOwnerIfMatches = async (sessionId: string | undefined): Promise<void> => {
     if (!sessionId || !isUuid(sessionId)) return;
     try {
@@ -149,7 +149,7 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
               () => clearWriteOwnerIfMatches(sessionId),
             );
             clinicalAccountId = undefined;
-            refreshServerScope = async () => undefined;
+            refreshServerScope = () => Promise.resolve(undefined);
           },
         };
       }
