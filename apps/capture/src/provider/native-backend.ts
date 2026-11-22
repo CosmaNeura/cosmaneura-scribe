@@ -35,7 +35,10 @@ export interface NativeProviderOptions {
     openEncounter(appointmentRef: string, noteRef: string | null, signal: AbortSignal): Promise<void>;
   };
 }
-export interface NativeProviderBackend extends ProviderIOSBackend { dispose(): Promise<void> }
+export interface NativeProviderBackend extends ProviderIOSBackend {
+  dispose(): Promise<void>;
+  readonly recoveryScope?: string | undefined;
+}
 
 /** Bind the existing signed-in iOS session to the fixed provider receiver.
  * The plugin obtains a fresh SDK token natively for every operation. This module
@@ -61,6 +64,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
   let account: ProviderAccount | undefined;
   let existingPatientOnly = false, fullNativeVisits = false;
   let providerDisplayName: string | undefined;
+  let serverRecoveryScope: string | undefined;
   const owners: { setup?: ReturnType<typeof createEncounterSetup> } = {};
   const encounters = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
   const inheritedAbort = (): void => abort.abort();
@@ -233,8 +237,10 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     combinedCreationOpening = value.native_create_opening_v1 === true && capabilities.fullNativeVisits;
     const { supportsCreation, existingPatientOnly: nextExistingPatientOnly } = capabilities;
     const nextAccount = supportsCreation ? parseProviderAccount({ email: objectAccount(value.account).email, environment: value.environment }, capabilities.environment) : undefined;
+    if (value.recoveryScope == null || value.recoveryScope === "") delete value.recoveryScope;
+    else if (!isUuid(value.recoveryScope)) throw unavailable();
+    else serverRecoveryScope = String(value.recoveryScope).toLowerCase();
     if (supportsCreation) {
-      if ("recoveryScope" in value && !isUuid(value.recoveryScope)) throw unavailable();
       encounterSetup.initializeCatalog(value, signal);
     }
     current(signal); encounters.clear();
@@ -279,6 +285,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     get providerDisplayName() { return !abort.signal.aborted && !options.signal.aborted ? providerDisplayName : undefined; },
     get encounterSetup() { return creationSupported ? existingPatientOnly ? existingPatientSetup(encounterSetup) : fullNativeVisits ? fullNativeVisitSetup(encounterSetup) : encounterSetup : undefined; },
     get account() { return account; },
+    get recoveryScope() { return serverRecoveryScope; },
     signal: abort.signal, dispose,
     recordReadyDiagnostic: durationMs => {
       if (!revision || abort.signal.aborted || options.signal.aborted || !plugin.recordProviderReadyTiming) return;
@@ -303,6 +310,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
         ...(openingNonce ? { opening_nonce: openingNonce } : {}) }, signal);
       if (!isUuid(value.recoveryScope) || value.workspaceId !== row.workspaceId || value.appointmentRef !== appointmentRef
         || !reference(value.bindingRef, "scribe_capture_binding") || !record(value.encounter)) throw unavailable();
+      serverRecoveryScope = String(value.recoveryScope).toLowerCase();
       const displayed = encounter(value.encounter);
       if (displayed.appointmentRef !== appointmentRef) throw unavailable();
       const scope = Object.freeze({ workspaceId: row.workspaceId, appointmentRef, bindingRef: value.bindingRef });

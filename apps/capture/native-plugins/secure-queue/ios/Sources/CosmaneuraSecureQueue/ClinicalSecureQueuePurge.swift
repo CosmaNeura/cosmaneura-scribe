@@ -1,10 +1,30 @@
 import Foundation
 
-/// Account-delete / launch purge: clear every SecureQueue key; return remaining count.
 public enum ClinicalSecureQueuePurge {
     public static func clearAllRemaining() throws -> Int {
         let store = try SecureQueueStore.shared.get()
-        _ = try store.clear(forRenderer: false)
-        return try store.list().count
+        return try store.clearAllIgnoringPendingWipe()
+    }
+
+    /// Per-account wipe + unconditional unattributable residue delete. Returns remaining (0 = empty).
+    public static func wipeAccountRemaining(_ accountId: String) throws -> Int {
+        let store = try SecureQueueStore.shared.get()
+        return try store.wipeAccount(accountId)
+    }
+
+    public static func rememberedAccountId(forIdentity identity: String) throws -> String? {
+        let store = try SecureQueueStore.shared.get()
+        return try store.rememberedAccount(accountIdentitySHA256: identity)?.accountId
+    }
+
+    public static func setActiveWriteAccount(_ accountId: String?) throws {
+        let store = try SecureQueueStore.shared.get()
+        try store.setActiveWriteAccount(accountId)
+    }
+
+    @discardableResult
+    public static func clearActiveWriteAccount(ifMatches expectedAccountId: String) throws -> Bool {
+        let store = try SecureQueueStore.shared.get()
+        return try store.clearActiveWriteAccount(ifMatches: expectedAccountId)
     }
 }

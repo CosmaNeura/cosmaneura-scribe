@@ -181,16 +181,23 @@ describe("native provider connection", () => {
       expect(f.plugin.providerRequest.mock.calls.map(([request]) => request.action)).toEqual(["catalog", "catalog"]);
     } finally { await backend.dispose(); }
   });
-  it.each([null, "", "not-a-uuid", 7])("rejects malformed present mobile catalog scope (%s)", async recoveryScope => {
+  it.each([
+    [undefined, true], [null, true], ["", true], [recovery, true], ["not-a-uuid", false], [7, false],
+  ] as const)("catalog recoveryScope %j ok=%s", async (raw, ok) => {
     const f = fixture("core-staging-personal-v1");
-    f.plugin.providerRequest.mockImplementation(async request => f.reply(request, {
-      ...JSON.parse(f.reply(request).body), encounter_creation_v1: true, environment: "Staging", recoveryScope,
-      account: { email: "provider@synthetic.invalid" } }));
+    f.plugin.providerRequest.mockImplementation(async request => {
+      const body: Record<string, unknown> = { ...JSON.parse(f.reply(request).body),
+        encounter_creation_v1: true, environment: "Staging", account: { email: "provider@synthetic.invalid" } };
+      if (raw !== undefined) body.recoveryScope = raw;
+      return f.reply(request, body);
+    });
     const backend = await f.connect();
     try {
-      await expect(backend.listEncounters(backend.signal)).rejects.toThrow();
-      expect(backend.account).toBeUndefined();
-      expect(f.plugin.providerRequest.mock.calls.map(([request]) => request.action)).toEqual(["catalog"]);
+      const run = backend.listEncounters(backend.signal);
+      if (!ok) { await expect(run).rejects.toThrow(); expect(backend.account).toBeUndefined(); return; }
+      await expect(run).resolves.toHaveLength(1);
+      expect(backend.recoveryScope).toBe(raw === recovery ? recovery : undefined);
+      expect(backend.account?.email).toBe("provider@synthetic.invalid");
     } finally { await backend.dispose(); }
   });
   it("maps a cold recording return against a fresh catalog without auto-start or admission", async () => {

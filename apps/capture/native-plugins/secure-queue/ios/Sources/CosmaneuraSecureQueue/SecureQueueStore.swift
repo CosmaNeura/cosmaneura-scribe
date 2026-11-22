@@ -68,17 +68,17 @@ final class SecureQueueStore {
             storageKey = try loadStorageKey(allowCreate: !hasRecords)
             revision = 1
         }
-        try writeRecord(
+        try commitRecordWithOwnershipLocked(
             key: key,
             data: data,
             revision: revision,
             digest: digest,
-            storageKey: storageKey
+            storageKey: storageKey,
+            target: target
         )
         return revision
     }
 
-    /// Checks the existing queue volume without loading or creating a storage key.
     func availableBytes() throws -> Int {
         operationLock.lock()
         defer { operationLock.unlock() }
@@ -100,12 +100,13 @@ final class SecureQueueStore {
         }
         let hasRecords = try hasCommittedRecords()
         let storageKey = try loadStorageKey(allowCreate: !hasRecords)
-        try writeRecord(
+        try commitRecordWithOwnershipLocked(
             key: key,
             data: data,
             revision: 1,
             digest: digest,
-            storageKey: storageKey
+            storageKey: storageKey,
+            target: target
         )
         return 1
     }
@@ -134,12 +135,13 @@ final class SecureQueueStore {
             throw SecureQueueError.revisionConflict
         }
         let revision = try nextRevision(after: current.revision)
-        try writeRecord(
+        try commitRecordWithOwnershipLocked(
             key: key,
             data: data,
             revision: revision,
             digest: digest,
-            storageKey: storageKey
+            storageKey: storageKey,
+            target: target
         )
         return revision
     }
@@ -163,36 +165,7 @@ final class SecureQueueStore {
     func list() throws -> [String] {
         operationLock.lock()
         defer { operationLock.unlock() }
-        try ensureDirectory()
-        let urls: [URL]
-        do {
-            urls = try fileManager.contentsOfDirectory(
-                at: directoryURL,
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
-            )
-        } catch {
-            throw SecureQueueError.io
-        }
-        let recordURLs = urls
-            .filter { $0.pathExtension == "sq" }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        guard !recordURLs.isEmpty else {
-            return []
-        }
-        let storageKey = try loadStorageKey(allowCreate: false)
-        var keys = [String]()
-        keys.reserveCapacity(recordURLs.count)
-        for url in recordURLs {
-            let digest = try SecureQueueRecordCodec.digest(fromFilename: url.lastPathComponent)
-            let record = try readRecord(at: url, digest: digest, storageKey: storageKey)
-            let actualDigest = try SecureQueueRecordCodec.digest(for: record.key)
-            guard actualDigest == digest else {
-                throw SecureQueueError.corrupt
-            }
-            keys.append(record.key)
-        }
-        return keys.sorted()
+        return try listKeysLocked()
     }
 
     func delete(key: String) throws -> Bool {
@@ -205,15 +178,132 @@ final class SecureQueueStore {
         }
         do {
             try fileManager.removeItem(at: target)
-            return true
         } catch {
             throw SecureQueueError.io
         }
+        if var index = try? loadAccountIndex() {
+            let hex = SecureQueueAccountScope.digestHex(fromDigest: digest)
+            if index.ownedDigests.removeValue(forKey: hex) != nil {
+                try? writeAccountIndex(index)
+            }
+        }
+        return true
     }
 
     func clear(forRenderer: Bool = false) throws -> Int {
         operationLock.lock()
         defer { operationLock.unlock() }
+        return try clearLocked(forRenderer: forRenderer)
+    }
+
+    func migrateAccountsIfNeeded() throws {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        try migrateAccountsIfNeededLocked()
+    }
+
+    func claimLegacyAccount(_ accountId: String) throws {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard SecureQueueAccountScope.normalizedAccountId(accountId) != nil else {
+            throw SecureQueueError.invalidArgument
+        }
+        try migrateAccountsIfNeededLocked()
+    }
+
+    func rememberAccount(accountId: String, accountIdentitySHA256: String?) throws {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard let account = SecureQueueAccountScope.normalizedAccountId(accountId) else {
+            throw SecureQueueError.invalidArgument
+        }
+        guard let rawIdentity = accountIdentitySHA256,
+              let identity = SecureQueueAccountScope.normalizedIdentity(rawIdentity)
+        else {
+            throw SecureQueueError.invalidArgument
+        }
+        try migrateAccountsIfNeededLocked()
+        var index = try loadAccountIndex()
+        index.remember(accountId: account, identity: identity)
+        index.setActiveWriteAccountId(account)
+        try writeAccountIndex(index)
+    }
+
+#if DEBUG
+    var debugFailNextRecordWrite = false
+#endif
+
+    func setActiveWriteAccount(_ accountId: String?) throws {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        if let accountId {
+            guard SecureQueueAccountScope.normalizedAccountId(accountId) != nil else {
+                throw SecureQueueError.invalidArgument
+            }
+        }
+        try migrateAccountsIfNeededLocked()
+        var index = try loadAccountIndex()
+        index.setActiveWriteAccountId(accountId)
+        try writeAccountIndex(index)
+    }
+
+    @discardableResult
+    func clearActiveWriteAccount(ifMatches expectedAccountId: String) throws -> Bool {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard let expected = SecureQueueAccountScope.normalizedAccountId(expectedAccountId) else {
+            throw SecureQueueError.invalidArgument
+        }
+        try migrateAccountsIfNeededLocked()
+        var index = try loadAccountIndex()
+        guard index.activeWriteAccountId == expected else { return false }
+        index.setActiveWriteAccountId(nil)
+        try writeAccountIndex(index)
+        return true
+    }
+
+    func activeWriteAccountId() throws -> String? {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        return try loadAccountIndex().activeWriteAccountId
+    }
+
+    func rememberedAccount(accountIdentitySHA256: String?) throws -> (accountId: String, accountIdentitySHA256: String?)? {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard let rawIdentity = accountIdentitySHA256,
+              let identity = SecureQueueAccountScope.normalizedIdentity(rawIdentity)
+        else {
+            return nil
+        }
+        let index = try loadAccountIndex()
+        guard let accountId = index.rememberedAccountId(forIdentity: identity) else { return nil }
+        return (accountId, identity)
+    }
+
+    func wipeAccount(_ accountId: String) throws -> Int {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        return try wipeAccountLocked(accountId)
+    }
+
+    func completePendingOrClearAll() throws -> Int {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        if let pending = try readPendingWipeAccount() {
+            return try wipeAccountLocked(pending)
+        }
+        return try clearLocked(forRenderer: false)
+    }
+
+    func clearAllIgnoringPendingWipe() throws -> Int {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        try? clearPendingWipeAccount()
+        return try clearLocked(forRenderer: false)
+    }
+
+    private func clearLocked(forRenderer: Bool) throws -> Int {
         try ensureDirectory()
         let urls: [URL]
         do {
@@ -242,6 +332,10 @@ final class SecureQueueStore {
         }
         var removedRecords = 0
         for url in urls {
+            let name = url.lastPathComponent
+            if name == SecureQueueAccountIndex.fileName || name == SecureQueueAccountIndex.pendingWipeFileName {
+                if forRenderer { continue }
+            }
             let isCommittedRecord = url.pathExtension == "sq"
             do {
                 try fileManager.removeItem(at: url)
@@ -252,7 +346,397 @@ final class SecureQueueStore {
                 removedRecords += 1
             }
         }
+        if !forRenderer {
+            try? writeAccountIndex(.empty)
+            try? clearPendingWipeAccount()
+        }
         return removedRecords
+    }
+
+    private func wipeAccountLocked(_ accountId: String) throws -> Int {
+        guard let account = SecureQueueAccountScope.normalizedAccountId(accountId) else {
+            throw SecureQueueError.invalidArgument
+        }
+        try migrateAccountsIfNeededLocked()
+        try writePendingWipeAccount(account)
+
+        let listed = try listRecordsForWipeLocked()
+        for entry in listed.readable {
+            let ownedByAccount = SecureQueueAccountScope.belongs(key: entry.key, toAccount: account)
+                || (SecureQueueAccountScope.accountId(forKey: entry.key) == nil
+                    && listed.index.owner(forDigestHex: SecureQueueAccountScope.digestHex(fromDigest: entry.digest)) == account)
+            if ownedByAccount {
+                try removeRecordFileLocked(at: entry.url)
+            }
+        }
+        _ = try deleteUnattributableClinicalResidueLocked(
+            readable: listed.readable,
+            index: listed.index
+        )
+
+        var index = try loadAccountIndex()
+        index.forgetAccount(account)
+        try writeAccountIndex(index)
+
+        let remaining = try remainingAfterWipeLocked(account: account)
+        if remaining == 0 {
+            try clearPendingWipeAccount()
+        }
+        return remaining
+    }
+
+    @discardableResult
+    func deleteUnattributableClinicalResidue() throws -> Int {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        let listed = try listRecordsForWipeLocked()
+        return try deleteUnattributableClinicalResidueLocked(readable: listed.readable, index: listed.index)
+    }
+
+    private func deleteUnattributableClinicalResidueLocked(
+        readable: [(key: String, digest: Data, url: URL)],
+        index: SecureQueueAccountIndex
+    ) throws -> Int {
+        var removed = 0
+        for entry in readable {
+            guard SecureQueueAccountScope.accountId(forKey: entry.key) == nil else { continue }
+            let hex = SecureQueueAccountScope.digestHex(fromDigest: entry.digest)
+            if index.owner(forDigestHex: hex) != nil { continue }
+            try removeRecordFileLocked(at: entry.url)
+            removed += 1
+        }
+        return removed
+    }
+
+    private func removeRecordFileLocked(at url: URL) throws {
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        do {
+            try fileManager.removeItem(at: url)
+        } catch {
+            throw SecureQueueError.io
+        }
+    }
+
+    private func migrateAccountsIfNeededLocked() throws {
+        let index = try loadAccountIndex()
+        if index.migrated { return }
+        var next = index
+        next.migrated = true
+        do { try writeAccountIndex(next) } catch { return }
+    }
+
+    private func commitRecordWithOwnershipLocked(
+        key: String,
+        data: Data,
+        revision: UInt64,
+        digest: Data,
+        storageKey: SymmetricKey,
+        target: URL
+    ) throws {
+        try migrateAccountsIfNeededLocked()
+        let hex = SecureQueueAccountScope.digestHex(fromDigest: digest)
+        let priorOwner = try loadAccountIndex().owner(forDigestHex: hex)
+        try prepareWriteOwnershipLocked(key: key, digest: digest)
+        let existedBefore = fileManager.fileExists(atPath: target.path)
+        do {
+#if DEBUG
+            if debugFailNextRecordWrite {
+                debugFailNextRecordWrite = false
+                throw SecureQueueError.io
+            }
+#endif
+            try writeRecord(
+                key: key,
+                data: data,
+                revision: revision,
+                digest: digest,
+                storageKey: storageKey
+            )
+        } catch {
+            restoreOwnerEntryLocked(digestHex: hex, priorOwner: priorOwner)
+            if !existedBefore {
+                try? fileManager.removeItem(at: target)
+            }
+            throw error
+        }
+    }
+
+    private func restoreOwnerEntryLocked(digestHex: String, priorOwner: String?) {
+        guard var index = try? loadAccountIndex() else { return }
+        if let priorOwner {
+            index.assignOwner(digestHex: digestHex, accountId: priorOwner)
+        } else {
+            index.ownedDigests.removeValue(forKey: digestHex.lowercased())
+        }
+        try? writeAccountIndex(index)
+    }
+
+    private func prepareWriteOwnershipLocked(key: String, digest: Data) throws {
+        try migrateAccountsIfNeededLocked()
+        var index = try loadAccountIndex()
+        if SecureQueueAccountScope.accountId(forKey: key) != nil {
+            if !index.migrated {
+                index.migrated = true
+                try writeAccountIndex(index)
+            }
+            return
+        }
+        if !SecureQueueAccountScope.isClinicalKey(key) {
+            if !index.migrated {
+                index.migrated = true
+                try writeAccountIndex(index)
+            }
+            return
+        }
+        guard let owner = index.activeWriteAccountId else {
+            throw SecureQueueError.invalidArgument
+        }
+        index.migrated = true
+        index.assignOwner(
+            digestHex: SecureQueueAccountScope.digestHex(fromDigest: digest),
+            accountId: owner
+        )
+        try writeAccountIndex(index)
+    }
+
+    private func keysOwnedByAccountLocked(_ account: String) throws -> [String] {
+        let listed = try listRecordsForWipeLocked()
+        var owned: [String] = []
+        for entry in listed.readable {
+            if isOwnedByAccount(key: entry.key, digest: entry.digest, account: account, index: listed.index) {
+                owned.append(entry.key)
+            }
+        }
+        return owned
+    }
+
+    private func isOwnedByAccount(
+        key: String,
+        digest: Data,
+        account: String,
+        index: SecureQueueAccountIndex
+    ) -> Bool {
+        if SecureQueueAccountScope.belongs(key: key, toAccount: account) { return true }
+        if SecureQueueAccountScope.accountId(forKey: key) == nil {
+            let hex = SecureQueueAccountScope.digestHex(fromDigest: digest)
+            if index.owner(forDigestHex: hex) == account { return true }
+        }
+        return false
+    }
+
+    private func remainingAfterWipeLocked(account: String) throws -> Int {
+        try ensureDirectory()
+        let index = try loadAccountIndex()
+        let urls: [URL]
+        do {
+            urls = try fileManager.contentsOfDirectory(
+                at: directoryURL,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            throw SecureQueueError.io
+        }
+        let recordURLs = urls.filter { $0.pathExtension == "sq" }
+        guard !recordURLs.isEmpty else { return 0 }
+
+        var remaining = 0
+        var storageKey: SymmetricKey?
+        for url in recordURLs {
+            let digest: Data
+            do {
+                digest = try SecureQueueRecordCodec.digest(fromFilename: url.lastPathComponent)
+            } catch {
+                remaining += 1
+                continue
+            }
+            do {
+                if storageKey == nil {
+                    storageKey = try loadStorageKey(allowCreate: false)
+                }
+                let record = try readRecord(at: url, digest: digest, storageKey: storageKey!)
+                let actualDigest = try SecureQueueRecordCodec.digest(for: record.key)
+                guard actualDigest == digest else {
+                    remaining += 1
+                    continue
+                }
+                if isOwnedByAccount(key: record.key, digest: digest, account: account, index: index) {
+                    remaining += 1
+                    continue
+                }
+                if SecureQueueAccountScope.accountId(forKey: record.key) == nil {
+                    let hex = SecureQueueAccountScope.digestHex(fromDigest: digest)
+                    if index.owner(forDigestHex: hex) == nil,
+                       SecureQueueAccountScope.isClinicalKey(record.key) {
+                        remaining += 1
+                    }
+                }
+            } catch let error as SecureQueueError where error == .keyUnavailable || error == .io {
+                throw error
+            } catch {
+                remaining += 1
+            }
+        }
+        return remaining
+    }
+
+    private struct WipeListing {
+        var readable: [(key: String, digest: Data, url: URL)]
+        var index: SecureQueueAccountIndex
+    }
+
+    private func listRecordsForWipeLocked() throws -> WipeListing {
+        try ensureDirectory()
+        let index = try loadAccountIndex()
+        let urls: [URL]
+        do {
+            urls = try fileManager.contentsOfDirectory(
+                at: directoryURL,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            throw SecureQueueError.io
+        }
+        let recordURLs = urls
+            .filter { $0.pathExtension == "sq" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        guard !recordURLs.isEmpty else {
+            return WipeListing(readable: [], index: index)
+        }
+        let storageKey = try loadStorageKey(allowCreate: false)
+        var readable: [(key: String, digest: Data, url: URL)] = []
+        readable.reserveCapacity(recordURLs.count)
+        for url in recordURLs {
+            let digest: Data
+            do {
+                digest = try SecureQueueRecordCodec.digest(fromFilename: url.lastPathComponent)
+            } catch {
+                try? fileManager.removeItem(at: url)
+                continue
+            }
+            do {
+                let record = try readRecord(at: url, digest: digest, storageKey: storageKey)
+                let actualDigest = try SecureQueueRecordCodec.digest(for: record.key)
+                guard actualDigest == digest else {
+                    try? fileManager.removeItem(at: url)
+                    continue
+                }
+                readable.append((record.key, digest, url))
+            } catch let error as SecureQueueError where error == .keyUnavailable || error == .io {
+                throw error
+            } catch {
+                try? fileManager.removeItem(at: url)
+            }
+        }
+        return WipeListing(readable: readable, index: index)
+    }
+
+    private func listKeysLocked() throws -> [String] {
+        try ensureDirectory()
+        let urls: [URL]
+        do {
+            urls = try fileManager.contentsOfDirectory(
+                at: directoryURL,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            throw SecureQueueError.io
+        }
+        let recordURLs = urls
+            .filter { $0.pathExtension == "sq" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        guard !recordURLs.isEmpty else { return [] }
+        let storageKey = try loadStorageKey(allowCreate: false)
+        var keys = [String]()
+        keys.reserveCapacity(recordURLs.count)
+        for url in recordURLs {
+            let digest = try SecureQueueRecordCodec.digest(fromFilename: url.lastPathComponent)
+            let record = try readRecord(at: url, digest: digest, storageKey: storageKey)
+            let actualDigest = try SecureQueueRecordCodec.digest(for: record.key)
+            guard actualDigest == digest else { throw SecureQueueError.corrupt }
+            keys.append(record.key)
+        }
+        return keys.sorted()
+    }
+
+    private func accountIndexURL() -> URL {
+        directoryURL.appendingPathComponent(SecureQueueAccountIndex.fileName, isDirectory: false)
+    }
+
+    private func pendingWipeURL() -> URL {
+        directoryURL.appendingPathComponent(SecureQueueAccountIndex.pendingWipeFileName, isDirectory: false)
+    }
+
+    private func loadAccountIndex() throws -> SecureQueueAccountIndex {
+        let url = accountIndexURL()
+        guard fileManager.fileExists(atPath: url.path) else { return .empty }
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            throw SecureQueueError.io
+        }
+        do {
+            return try SecureQueueAccountIndex.decode(data)
+        } catch let error as SecureQueueError {
+            throw error
+        } catch {
+            throw SecureQueueError.corrupt
+        }
+    }
+
+    private func writeAccountIndex(_ index: SecureQueueAccountIndex) throws {
+        try ensureDirectory()
+        let data: Data
+        do { data = try index.encode() } catch { throw SecureQueueError.io }
+        do {
+            try data.write(to: accountIndexURL(), options: [.atomic])
+        } catch {
+            throw SecureQueueError.io
+        }
+    }
+
+    private func writePendingWipeAccount(_ accountId: String) throws {
+        try ensureDirectory()
+        let data: Data
+        do {
+            data = try JSONSerialization.data(
+                withJSONObject: ["v": 1, "accountId": accountId],
+                options: [.sortedKeys]
+            )
+        } catch {
+            throw SecureQueueError.io
+        }
+        do {
+            try data.write(to: pendingWipeURL(), options: [.atomic])
+        } catch {
+            throw SecureQueueError.io
+        }
+    }
+
+    private func readPendingWipeAccount() throws -> String? {
+        let url = pendingWipeURL()
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        do {
+            let data = try Data(contentsOf: url)
+            guard
+                let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let accountId = object["accountId"] as? String
+            else {
+                return nil
+            }
+            return SecureQueueAccountScope.normalizedAccountId(accountId)
+        } catch {
+            return nil
+        }
+    }
+
+    private func clearPendingWipeAccount() throws {
+        let url = pendingWipeURL()
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        do { try fileManager.removeItem(at: url) } catch { throw SecureQueueError.io }
     }
 
     private func open(

@@ -97,11 +97,13 @@ func runAttemptChecks() async throws {
     ClinicalPurgeMarker.clear()
     let counts = AttemptCounters()
     let deleted = try body("deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true)
+    let clinicalAccountId = "11111111-1111-4111-8111-111111111111"
 
     func attempt(
         status: Int = 200,
         bodyData: Data? = nil,
-        mintThrows: Bool = false
+        mintThrows: Bool = false,
+        accountId: String = clinicalAccountId
     ) async -> [String: Any]? {
         await AccountSelfDeleteContract.attempt(
             holdsOrOpeningRecording: { false },
@@ -119,10 +121,18 @@ func runAttemptChecks() async throws {
             endDeletion: { counts.ended += 1 },
             markerPrepared: {
                 counts.prepared += 1
-                if ClinicalPurgeMarker.readState() != .sent { ClinicalPurgeMarker.write(.prepared) }
+                if ClinicalPurgeMarker.readState() != .sent {
+                    ClinicalPurgeMarker.write(.prepared, accountId: accountId)
+                }
             },
-            markerSent: { counts.sent += 1; ClinicalPurgeMarker.write(.sent) },
-            markerConfirm: { counts.confirmed += 1; ClinicalPurgeMarker.write(.confirmed) },
+            markerSent: {
+                counts.sent += 1
+                ClinicalPurgeMarker.write(.sent, accountId: accountId)
+            },
+            markerConfirm: {
+                counts.confirmed += 1
+                ClinicalPurgeMarker.write(.confirmed, accountId: accountId)
+            },
             markerAbandonPrepared: { ClinicalPurgeMarker.abandonPrepared() })
     }
 
@@ -140,18 +150,19 @@ func runAttemptChecks() async throws {
     try require(counts.sends == 1 && counts.began == 1 && counts.confirmed == 0)
     try require(ClinicalPurgeMarker.readState() != .confirmed)
 
-    // Online delete reaches send with beginDeletion wired.
     counts.reset(); ClinicalPurgeMarker.clear()
     let ok = await attempt(status: 200, bodyData: deleted)
     try require(ok?["status"] as? String == "deleted")
     try require(counts.sends == 1 && counts.began == 1 && counts.ended == 1
         && counts.sent == 1 && counts.confirmed == 1)
     try require(ClinicalPurgeMarker.readState() == .confirmed)
+    try require(ClinicalPurgeMarker.readVersion() == 2)
+    try require(ClinicalPurgeMarker.readAccountId() == clinicalAccountId)
 
-    // B4: prepared marker at launch does not wipe.
-    ClinicalPurgeMarker.write(.prepared)
+    ClinicalPurgeMarker.clear()
+    ClinicalPurgeMarker.writeV1(.prepared)
     let wipeProbe = AttemptCounters()
-    let retried = try ClinicalPurgeMarker.retryPurge {
+    let retried = try ClinicalPurgeMarker.retryPurge { _ in
         wipeProbe.began += 1
         return 0
     }
@@ -159,11 +170,48 @@ func runAttemptChecks() async throws {
     try require(ClinicalPurgeMarker.readState() == .prepared)
     ClinicalPurgeMarker.clear()
 
+    ClinicalPurgeMarker.write(.confirmed, accountId: clinicalAccountId)
+    var wipedId: String?
+    let v2Retried = try ClinicalPurgeMarker.retryPurge { accountId in
+        wipedId = accountId
+        return 0
+    }
+    try require(v2Retried == true && wipedId == clinicalAccountId)
+    try require(ClinicalPurgeMarker.readState() == nil)
+
+    let badPayload: [String: Any] = ["state": "confirmed", "v": 2, "accountId": "not-a-uuid"]
+    let badData = try JSONSerialization.data(withJSONObject: badPayload)
+    let markerURL: URL = {
+        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return root.appendingPathComponent("CosmaneuraClinicalPurge/clinical-purge-pending-v1.json")
+    }()
+    try? FileManager.default.createDirectory(at: markerURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try badData.write(to: markerURL, options: [.atomic])
+    var badWiped = false
+    do {
+        _ = try ClinicalPurgeMarker.retryPurge { _ in
+            badWiped = true
+            return 0
+        }
+        try require(false) // must throw
+    } catch {
+        try require(!badWiped)
+        try require(ClinicalPurgeMarker.readState() == .confirmed)
+    }
+    ClinicalPurgeMarker.clear()
+
+    ClinicalPurgeMarker.write(.prepared, accountId: clinicalAccountId)
+    ClinicalPurgeMarker.writeV1(.sent)
+    try require(ClinicalPurgeMarker.readState() == .prepared)
+    try require(ClinicalPurgeMarker.readAccountId() == clinicalAccountId)
+    ClinicalPurgeMarker.clear()
+
     // Earlier-attempt sent + definitive later 200 confirms (does not demote sent).
-    ClinicalPurgeMarker.write(.sent)
+    ClinicalPurgeMarker.write(.sent, accountId: clinicalAccountId)
     counts.reset()
     let recovered = await attempt(status: 200, bodyData: deleted)
     try require(recovered?["status"] as? String == "deleted")
     try require(counts.confirmed == 1 && ClinicalPurgeMarker.readState() == .confirmed)
+    try require(ClinicalPurgeMarker.readAccountId() == clinicalAccountId)
     ClinicalPurgeMarker.clear()
 }

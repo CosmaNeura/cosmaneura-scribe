@@ -98,16 +98,32 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         }
     }
 
-    /// H2/H6: retry confirmed native purge only; refuse while a confirmed marker remains.
     @MainActor private func ensureClinicalPurgeCleared() -> Bool {
 #if os(iOS)
         guard ClinicalPurgeMarker.readState() == .confirmed else { return true }
         do {
-            _ = try ClinicalPurgeMarker.retryPurge { try ClinicalSecureQueuePurge.clearAllRemaining() }
+            _ = try ClinicalPurgeMarker.retryPurge { accountId in
+                if let accountId {
+                    return try ClinicalSecureQueuePurge.wipeAccountRemaining(accountId)
+                }
+                return try ClinicalSecureQueuePurge.clearAllRemaining()
+            }
             return ClinicalPurgeMarker.readState() != .confirmed
         } catch { return false }
 #else
         return true
+#endif
+    }
+
+    @MainActor private func clinicalAccountIdForPurgeMarker() -> String? {
+#if os(iOS)
+        guard let auth = self.auth else { return nil }
+        let state = auth.state()
+        guard state.phase == .ready,
+              let identity = NativeAuthPayload.accountIdentitySHA256(state) else { return nil }
+        return try? ClinicalSecureQueuePurge.rememberedAccountId(forIdentity: identity)
+#else
+        return nil
 #endif
     }
 
@@ -193,7 +209,16 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             self.initializeAuth()
             do {
                 guard let auth = self.auth else { throw NativeAuthError.unavailable }
-                call.resolve(Self.payload(try await auth.signOut()))
+                #if os(iOS)
+                let writeOwner = self.clinicalAccountIdForPurgeMarker()
+                #endif
+                let payload = Self.payload(try await auth.signOut())
+                #if os(iOS)
+                if let writeOwner {
+                    _ = try? ClinicalSecureQueuePurge.clearActiveWriteAccount(ifMatches: writeOwner)
+                }
+                #endif
+                call.resolve(payload)
             } catch { Self.reject(call) }
         }
     }
@@ -583,6 +608,10 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             else { return Self.reject(call) }
             self.initializeAuth()
             guard let auth = self.auth, auth.state().phase == .ready else { return Self.reject(call) }
+            guard let clinicalAccountId = self.clinicalAccountIdForPurgeMarker() else {
+                call.reject("Clinical account unavailable", "clinical_account_unavailable")
+                return
+            }
             let revision = auth.state().revision
             let origin = Self.providerApplicationConfiguration()?["coreOrigin"] as? String
             guard let payload = await AccountSelfDeleteContract.attempt(
@@ -598,10 +627,16 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                 endDeletion: { Self.recordingBridge.endAccountDeletion() },
                 markerPrepared: {
                     // Never demote an earlier-attempt sent marker (B1 recovery).
-                    if ClinicalPurgeMarker.readState() != .sent { ClinicalPurgeMarker.write(.prepared) }
+                    if ClinicalPurgeMarker.readState() != .sent {
+                        ClinicalPurgeMarker.write(.prepared, accountId: clinicalAccountId)
+                    }
                 },
-                markerSent: { ClinicalPurgeMarker.write(.sent) },
-                markerConfirm: { ClinicalPurgeMarker.write(.confirmed) },
+                markerSent: {
+                    ClinicalPurgeMarker.write(.sent, accountId: clinicalAccountId)
+                },
+                markerConfirm: {
+                    ClinicalPurgeMarker.write(.confirmed, accountId: clinicalAccountId)
+                },
                 markerAbandonPrepared: { ClinicalPurgeMarker.abandonPrepared() })
             else { call.reject("Account deletion unavailable", "account_self_delete_failed"); return }
             call.resolve(payload)
@@ -774,7 +809,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         let settings = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any]
         let profile = (settings?["identityProfile"] as? String).flatMap(NativeIdentityProfile.init(rawValue:))
         var value = NativeAuthPayload.state(state, identityProfile: profile)
-        if let digest = NativeAuthPayload.accountIdentitySHA256(state) {
+        if state.phase == .ready, let digest = NativeAuthPayload.accountIdentitySHA256(state) {
             value["accountIdentitySHA256"] = digest
         }
         return value

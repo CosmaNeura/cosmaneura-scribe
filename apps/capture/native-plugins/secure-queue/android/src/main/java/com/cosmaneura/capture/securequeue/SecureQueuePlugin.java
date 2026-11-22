@@ -9,6 +9,8 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import org.json.JSONObject;
+
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -143,6 +145,46 @@ public final class SecureQueuePlugin extends Plugin {
             result.put("cleared", queue.clear());
             return result;
         });
+    }
+
+    @PluginMethod
+    public void wipeAccount(PluginCall call) {
+        perform(call, queue -> {
+            queue.clear();
+            int remaining = queue.list().size();
+            JSObject result = new JSObject();
+            result.put("cleared", remaining);
+            result.put("remaining", remaining);
+            return result;
+        });
+    }
+
+    @PluginMethod
+    public void rememberAccount(PluginCall call) {
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void setActiveWriteAccount(PluginCall call) {
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void claimLegacyAccount(PluginCall call) {
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void rememberedAccount(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("accountId", JSONObject.NULL);
+        result.put("accountIdentitySHA256", JSONObject.NULL);
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void migrateAccounts(PluginCall call) {
+        call.resolve();
     }
 
     @Override

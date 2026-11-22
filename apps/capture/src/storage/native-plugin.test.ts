@@ -145,6 +145,18 @@ class FakeSecureQueuePlugin implements SecureQueuePlugin {
     return this.clear();
   }
 
+  async wipeAccount() {
+    return this.clear();
+  }
+
+  async rememberAccount() {}
+  async setActiveWriteAccount() {}
+  async claimLegacyAccount() {}
+  async rememberedAccount() {
+    return { accountId: null, accountIdentitySHA256: null };
+  }
+  async migrateAccounts() {}
+
   async #write(options: SecureQueueRecord) {
     const revision = (this.#records.get(options.key)?.revision ?? 0n) + 1n;
     this.lastData = options.data;

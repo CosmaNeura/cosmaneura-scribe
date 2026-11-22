@@ -1,7 +1,8 @@
 import { Capacitor } from "@capacitor/core";
 import { SecureQueue } from "@cosmaneura-scribe/capacitor-secure-queue";
+import { isUuid } from "../../../review-ui/src/contracts";
 import { mountProviderApplication } from "./application";
-import { createProviderIOSHost } from "./ios-host";
+import { createProviderIOSHost, type ProviderIOSBackend } from "./ios-host";
 import { connectNativeProviderIOSBackend, type NativeProviderOptions } from "./native-backend";
 import { nativeProviderPlugin as native } from "./native-plugin";
 import { subscribeIOSRecordingOpen } from "./recording-open";
@@ -9,12 +10,11 @@ import type { ConsentPreparationRelease } from "./consent-preparation";
 import { nativeScribeCancellation } from "./native-cancellation";
 import { activateNativeScribe } from "./native-activation";
 import { clinicalStoresFromKeys, purgeLocalClinicalData } from "./purge-local-clinical";
-import { nativeAccountSelfDeleteAdapter } from "./account-self-delete-host";
+import {
+  clearWriteOwnerAfterBackendDispose,
+  nativeAccountSelfDeleteWithRememberRetry,
+} from "./account-self-delete-host";
 
-/** Standalone iOS startup after the host's upload/Core configuration is supplied.
- * Reuses the registered native sign-in/out UI and existing complete provider
- * workflow. Does not configure a bundle identity or enable an absent receiver.
- */
 export function mountNativeProviderIOSApplication(root: HTMLElement, options: Omit<NativeProviderOptions, "signal">,
   consentPreparation?: ConsentPreparationRelease): () => Promise<void> {
   const entryStartedAt = performance.now();
@@ -22,17 +22,53 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
     || !["CosmasWorkspaceAuth", "IOSPCM", "SecureQueue"].every(name => Capacitor.isPluginAvailable(name))) {
     throw new Error("provider_native_application_unavailable");
   }
+  let clinicalAccountId: string | undefined;
+  let refreshServerScope: () => Promise<string | undefined> = () => Promise.resolve(undefined);
+  const clearWriteOwnerIfMatches = async (sessionId: string | undefined): Promise<void> => {
+    if (!sessionId || !isUuid(sessionId)) return;
+    try {
+      await SecureQueue.setActiveWriteAccount({ accountId: null, ifMatches: sessionId });
+    } catch { /* best-effort after successful dispose/sign-out */ }
+  };
+  const rememberClinicalAccount = async (accountId: string): Promise<void> => {
+    if (!isUuid(accountId)) throw new Error("clinical_account_unavailable");
+    clinicalAccountId = accountId.toLowerCase();
+    const state = await native.getState();
+    if (state.phase !== "ready" || typeof state.accountIdentitySHA256 !== "string") {
+      throw new Error("provider_session_unavailable");
+    }
+    await SecureQueue.rememberAccount({
+      accountId: clinicalAccountId,
+      accountIdentitySHA256: state.accountIdentitySHA256,
+    });
+    await SecureQueue.setActiveWriteAccount({ accountId: clinicalAccountId });
+  };
+  const resolveClinicalAccountId = async (): Promise<string> => {
+    if (clinicalAccountId && isUuid(clinicalAccountId)) return clinicalAccountId.toLowerCase();
+    const state = await native.getState().catch(() => null);
+    const identity = typeof state?.accountIdentitySHA256 === "string" ? state.accountIdentitySHA256 : undefined;
+    const remembered = await SecureQueue.rememberedAccount(
+      identity ? { accountIdentitySHA256: identity } : undefined,
+    );
+    if (typeof remembered.accountId === "string" && isUuid(remembered.accountId)
+      && identity && remembered.accountIdentitySHA256 === identity) {
+      clinicalAccountId = remembered.accountId.toLowerCase();
+      return clinicalAccountId;
+    }
+    throw new Error("clinical_account_unavailable");
+  };
   return mountProviderApplication(root, {
     session: native,
     cancellation: nativeScribeCancellation(native),
     purgeLocalClinicalData: async () => {
+      const accountId = await resolveClinicalAccountId();
       await purgeLocalClinicalData(clinicalStoresFromKeys({
+        accountId,
         list: async () => (await SecureQueue.list()).keys,
         delete: async key => { await SecureQueue.delete({ key }); },
-        // H8: verify remaining keys after clearAll (plugin may return cleared or remaining).
         clearAll: async () => {
-          await SecureQueue.clearAll();
-          return (await SecureQueue.list()).keys.length;
+          const result = await SecureQueue.wipeAccount({ accountId });
+          return result.remaining ?? result.cleared;
         },
       }));
     },
@@ -55,19 +91,68 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
     recordingOpen: listener => subscribeIOSRecordingOpen(native, listener),
     ...(typeof native.deleteAccount === "function" ? {
       accountSelfDelete: {
-        deleteAccount: (request, signal) => nativeAccountSelfDeleteAdapter(req => native.deleteAccount!(req), request, signal),
+        deleteAccount: (request, signal) => nativeAccountSelfDeleteWithRememberRetry({
+          nativeDelete: req => native.deleteAccount!(req),
+          remember: rememberClinicalAccount,
+          serverScope: () => refreshServerScope(),
+          request, signal,
+        }),
       },
     } : {}),
     connect: async signal => {
       const backend = await connectNativeProviderIOSBackend({ ...options, signal }, native);
       try {
-        // Classify setup before mounting a workspace that could own a recorder.
+        try { await SecureQueue.migrateAccounts(); } catch { /* best-effort */ }
+        clinicalAccountId = undefined;
+        const state = await native.getState().catch(() => null);
+        if (state?.phase === "ready" && typeof state.accountIdentitySHA256 !== "string") {
+          throw new Error("provider_session_unavailable");
+        }
+        const identity = typeof state?.accountIdentitySHA256 === "string" ? state.accountIdentitySHA256 : undefined;
+        if (identity) {
+          const remembered = await SecureQueue.rememberedAccount({ accountIdentitySHA256: identity });
+          if (typeof remembered.accountId === "string" && isUuid(remembered.accountId)
+            && remembered.accountIdentitySHA256 === identity) {
+            await rememberClinicalAccount(remembered.accountId);
+          }
+        }
         const initialCatalog = await backend.listEncounters(signal);
-        // John Clemente's internal staging comparison, through 16 November.
-        // Production and expired candidates retain the existing consent flow.
+        const catalogScope = backend.recoveryScope;
+        if (catalogScope && isUuid(catalogScope) && clinicalAccountId !== catalogScope.toLowerCase()) {
+          await rememberClinicalAccount(catalogScope);
+        }
+        if (!clinicalAccountId) {
+          try { await SecureQueue.setActiveWriteAccount({ accountId: null }); }
+          catch (error) { throw new Error("provider_session_unavailable", { cause: error }); }
+        }
+        refreshServerScope = async () => {
+          try {
+            await backend.listEncounters(AbortSignal.timeout(30_000));
+            return backend.recoveryScope;
+          } catch { return undefined; }
+        };
         const draftConsent = options.profile === "core-staging-personal-v1"
           && Date.now() < Date.parse("2026-11-17T00:00:00Z");
-        return { workspace: createProviderIOSHost(backend, consentPreparation, initialCatalog, entryStartedAt, draftConsent), dispose: () => backend.dispose() };
+        const sessionId = clinicalAccountId;
+        const scopedBackend: ProviderIOSBackend = {
+          ...backend,
+          openEncounter: async (appointmentRef, openSignal) => {
+            const mount = await backend.openEncounter(appointmentRef, openSignal);
+            await rememberClinicalAccount(mount.recoveryScope);
+            return mount;
+          },
+        };
+        return {
+          workspace: createProviderIOSHost(scopedBackend, consentPreparation, initialCatalog, entryStartedAt, draftConsent),
+          dispose: async () => {
+            await clearWriteOwnerAfterBackendDispose(
+              () => backend.dispose(),
+              () => clearWriteOwnerIfMatches(sessionId),
+            );
+            clinicalAccountId = undefined;
+            refreshServerScope = () => Promise.resolve(undefined);
+          },
+        };
       }
       catch (error) { await backend.dispose(); throw error; }
     },

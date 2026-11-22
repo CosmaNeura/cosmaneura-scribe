@@ -29,11 +29,30 @@ final class RendererSecureQueueStore {
   }
   func list() throws -> [String] { try store.list().filter(SecureQueueRecordCodec.isRendererKey) }
   func clear() throws -> Int { try store.clear(forRenderer: true) }
-  /** Account delete: wipe renderer + native custody; returns remaining key count (0 = empty). */
   func clearAll() throws -> Int {
     _ = try store.clear(forRenderer: false)
     return try store.list().count
   }
+  func wipeAccount(_ accountId: String) throws -> Int {
+    try store.wipeAccount(accountId)
+  }
+  func rememberAccount(accountId: String, accountIdentitySHA256: String?) throws {
+    try store.rememberAccount(accountId: accountId, accountIdentitySHA256: accountIdentitySHA256)
+  }
+  func setActiveWriteAccount(_ accountId: String?) throws {
+    try store.setActiveWriteAccount(accountId)
+  }
+  @discardableResult
+  func clearActiveWriteAccount(ifMatches expectedAccountId: String) throws -> Bool {
+    try store.clearActiveWriteAccount(ifMatches: expectedAccountId)
+  }
+  func claimLegacyAccount(_ accountId: String) throws {
+    try store.claimLegacyAccount(accountId)
+  }
+  func rememberedAccount(accountIdentitySHA256: String?) throws -> (accountId: String, accountIdentitySHA256: String?)? {
+    try store.rememberedAccount(accountIdentitySHA256: accountIdentitySHA256)
+  }
+  func migrateAccountsIfNeeded() throws { try store.migrateAccountsIfNeeded() }
   func availableBytes() throws -> Int { try store.availableBytes() }
 
   private func allow(_ key: String) throws {

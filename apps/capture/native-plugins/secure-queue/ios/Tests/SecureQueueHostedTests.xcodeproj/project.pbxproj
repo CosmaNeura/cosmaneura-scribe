@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		C0DE00000000000000000024 /* NativeLongVisitStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE00000000000000000023 /* NativeLongVisitStoreTests.swift */; };
+		C0DE00000000000000000026 /* SecureQueueAccountScopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE00000000000000000025 /* SecureQueueAccountScopeTests.swift */; };
 		C0DE0000000000000000000B /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE00000000000000000008 /* AppDelegate.swift */; };
 		C0DE0000000000000000000C /* SecureQueueStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE0000000000000000000A /* SecureQueueStoreTests.swift */; };
 		C0DE00000000000000000020 /* CosmaneuraScribeCapacitorSecureQueue in Frameworks */ = {isa = PBXBuildFile; productRef = C0DE0000000000000000001F /* CosmaneuraScribeCapacitorSecureQueue */; };
@@ -25,6 +26,7 @@
 
 /* Begin PBXFileReference section */
 		C0DE00000000000000000023 /* NativeLongVisitStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLongVisitStoreTests.swift; sourceTree = "<group>"; };
+		C0DE00000000000000000025 /* SecureQueueAccountScopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureQueueAccountScopeTests.swift; sourceTree = "<group>"; };
 		C0DE00000000000000000006 /* SecureQueueTestHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SecureQueueTestHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C0DE00000000000000000007 /* SecureQueueHostedTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SecureQueueHostedTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C0DE00000000000000000008 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
@@ -74,6 +76,7 @@
 			children = (
 				C0DE0000000000000000000A /* SecureQueueStoreTests.swift */,
 				C0DE00000000000000000023 /* NativeLongVisitStoreTests.swift */,
+				C0DE00000000000000000025 /* SecureQueueAccountScopeTests.swift */,
 			);
 			path = CosmaneuraSecureQueueTests;
 			sourceTree = "<group>";
@@ -204,6 +207,7 @@
 			files = (
 				C0DE0000000000000000000C /* SecureQueueStoreTests.swift in Sources */,
 				C0DE00000000000000000024 /* NativeLongVisitStoreTests.swift in Sources */,
+				C0DE00000000000000000026 /* SecureQueueAccountScopeTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

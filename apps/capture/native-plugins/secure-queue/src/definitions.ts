@@ -23,6 +23,21 @@ export interface SecureQueueDeleteResult {
 
 export interface SecureQueueClearResult {
   cleared: number;
+  remaining?: number;
+}
+
+export interface SecureQueueAccountOptions {
+  accountId: string;
+  accountIdentitySHA256?: string;
+}
+
+export interface SecureQueueRememberedAccountResult {
+  accountId: string | null;
+  accountIdentitySHA256: string | null;
+}
+
+export interface SecureQueueRememberedAccountOptions {
+  accountIdentitySHA256?: string;
 }
 
 export interface SecureQueueRevisionResult {
@@ -52,6 +67,15 @@ export interface SecureQueuePlugin {
   delete(options: SecureQueueKeyOptions): Promise<SecureQueueDeleteResult>;
   /** Renderer-only clear; refuses when native recording keys exist. */
   clear(): Promise<SecureQueueClearResult>;
-  /** Full clinical wipe (journal/drafts/review/queue/native recordings) after account delete. */
   clearAll(): Promise<SecureQueueClearResult>;
+  wipeAccount(options: SecureQueueAccountOptions): Promise<SecureQueueClearResult>;
+  rememberAccount(options: SecureQueueAccountOptions): Promise<void>;
+  setActiveWriteAccount(
+    options: { accountId: string | null; ifMatches?: string },
+  ): Promise<void>;
+  claimLegacyAccount(options: Pick<SecureQueueAccountOptions, "accountId">): Promise<void>;
+  rememberedAccount(
+    options?: SecureQueueRememberedAccountOptions,
+  ): Promise<SecureQueueRememberedAccountResult>;
+  migrateAccounts(): Promise<void>;
 }

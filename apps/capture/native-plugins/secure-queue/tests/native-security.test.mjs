@@ -240,6 +240,13 @@ test("keeps the bridge narrow and contains no native logging calls", async () =>
     "compareAndSwap",
     "delete",
     "clear",
+    "clearAll",
+    "wipeAccount",
+    "rememberAccount",
+    "setActiveWriteAccount",
+    "claimLegacyAccount",
+    "rememberedAccount",
+    "migrateAccounts",
   ]) {
     assert.match(definitions, new RegExp(`\\b${method}\\(`, "u"));
     assert.match(distributedDefinitions, new RegExp(`\\b${method}\\(`, "u"));
@@ -269,4 +276,50 @@ test("implements atomic create and compare-and-swap with fixed conflict codes", 
   assert.match(iosErrors, /SECURE_QUEUE_REVISION_CONFLICT/u);
   assert.match(androidErrors, /SECURE_QUEUE_ALREADY_EXISTS/u);
   assert.match(androidErrors, /SECURE_QUEUE_REVISION_CONFLICT/u);
+});
+
+test("iOS SecureQueue wipe is per-account with idempotent migration", async () => {
+  const iosStore = await source("../ios/Sources/CosmaneuraSecureQueue/SecureQueueStore.swift");
+  const iosScope = await source("../ios/Sources/CosmaneuraSecureQueue/SecureQueueAccountScope.swift");
+  const iosPurge = await source("../ios/Sources/CosmaneuraSecureQueue/ClinicalSecureQueuePurge.swift");
+  const nativeApplication = await source(
+    "../../../src/provider/native-application.ts",
+  );
+
+  assert.match(iosStore, /func wipeAccount\(/u);
+  assert.match(iosStore, /migrateAccountsIfNeededLocked/u);
+  assert.match(iosStore, /deleteUnattributableClinicalResidue/u);
+  assert.match(iosStore, /claimLegacyAccount/u);
+  assert.match(
+    await source("../ios/Sources/CosmaneuraSecureQueue/SecureQueueAccountIndex.swift"),
+    /ownedDigests/u,
+  );
+  assert.match(iosScope, /accountId\(forKey/u);
+  assert.match(iosPurge, /wipeAccountRemaining/u);
+  assert.match(iosPurge, /clearAllIgnoringPendingWipe/u);
+  assert.match(iosStore, /completePendingOrClearAll/u);
+  assert.match(nativeApplication, /SecureQueue\.wipeAccount/u);
+  assert.match(nativeApplication, /SecureQueue\.setActiveWriteAccount/u);
+  assert.match(nativeApplication, /ifMatches/u);
+  assert.match(nativeApplication, /accountId: null[\s\S]*?provider_session_unavailable/u);
+  assert.doesNotMatch(
+    nativeApplication,
+    /SecureQueue\.claimLegacyAccount/u,
+  );
+  assert.doesNotMatch(
+    nativeApplication,
+    /SecureQueue\.clearAll\s*\(/u,
+  );
+});
+test("deleteAccount clinical id once before attempt; CAS clear; restore owner", async () => {
+  const auth = await source("../../cosmas-native-auth/Bridge/CosmasWorkspaceAuthPlugin.swift");
+  const i = auth.indexOf("func deleteAccount"), body = auth.slice(i, i + 2200);
+  assert.equal((body.match(/clinicalAccountIdForPurgeMarker\s*\(/gu) ?? []).length, 1);
+  assert.match(body, /clinicalAccountIdForPurgeMarker\s*\(\)[\s\S]*AccountSelfDeleteContract\.attempt/u);
+  assert.doesNotMatch(body, /marker(?:Prepared|Sent|Confirm)\s*:\s*\{[\s\S]*clinicalAccountIdForPurgeMarker/u);
+  assert.match(auth, /phase == \.ready[\s\S]{0,120}accountIdentitySHA256/u);
+  assert.match(auth, /clearActiveWriteAccount\(ifMatches:[\s\S]*call\.resolve\(payload\)/u);
+  const store = await source("../ios/Sources/CosmaneuraSecureQueue/SecureQueueStore.swift");
+  assert.match(store, /clearActiveWriteAccount\(ifMatches/u);
+  assert.match(store, /restoreOwnerEntryLocked/u);
 });
