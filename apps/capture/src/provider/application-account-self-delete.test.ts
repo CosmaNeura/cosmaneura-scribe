@@ -79,9 +79,9 @@ async function fixture() {
 }
 
 describe("account self-delete recording guard", () => {
-  it("refuses while recording or sealing; allows post-seal pending upload (Delete anyway); opens when idle", async () => {
-    // Live recording: active without upload-pending (workspace classification for
-    // recording / sealing — sealing must not set providerUploadPending).
+  it("refuses while recording; allows post-seal pending upload (Delete anyway); opens when idle", async () => {
+    // Live recording / sealing / sealed+busy: active without upload-pending
+    // (workspace classification — sealing and host.busy must not set providerUploadPending).
     const blocked = await fixture();
     blocked.root.querySelector("[data-provider-workflow]")!.dataset.providerRecordingActive = "true";
     await blocked.click("delete-account");
@@ -89,16 +89,7 @@ describe("account self-delete recording guard", () => {
     expect(blocked.deleteAccount).not.toHaveBeenCalled();
     expect(blocked.root.querySelector("[data-session-message]")?.textContent)
       .toBe(ACCOUNT_SELF_DELETE_MESSAGES.recordingActive);
-    // Same flag shape as native phase sealing after workspace syncRecordingActive.
-    const sealing = await fixture();
-    sealing.root.querySelector("[data-provider-workflow]")!.dataset.providerRecordingActive = "true";
-    delete sealing.root.querySelector("[data-provider-workflow]")!.dataset.providerUploadPending;
-    await sealing.click("delete-account");
-    expect(mountAccountSelfDeleteDialog).not.toHaveBeenCalled();
-    expect(sealing.deleteAccount).not.toHaveBeenCalled();
-    expect(sealing.root.querySelector("[data-session-message]")?.textContent)
-      .toBe(ACCOUNT_SELF_DELETE_MESSAGES.recordingActive);
-    // Post-seal uploading only (John Delete anyway): active + upload-pending.
+    // Post-seal idle uploading only (John Delete anyway): active + upload-pending.
     const pending = await fixture();
     const workflow = pending.root.querySelector("[data-provider-workflow]")!;
     workflow.dataset.providerRecordingActive = "true";

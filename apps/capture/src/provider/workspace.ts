@@ -838,10 +838,11 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const stopObserving = controller.subscribe(snapshot => {
       if (!authorized(n) || context !== activeContext || snapshot.sessionId !== id) return;
       const device = snapshot as ProviderRecorderSnapshot;
-      // Delete anyway only after seal. Sealing still holds the recording
-      // (native holdsOrOpeningRecording); keep it live, not upload-pending.
+      // Delete anyway only after seal with the native host idle, matching
+      // native holdsOrOpeningRecording; sealing/busy stay live, not upload-pending.
       recorderUploadPending = snapshot.state === "uploading"
-        && device.native?.phase !== "sealing";
+        && device.native?.phase !== "sealing"
+        && device.native?.busy !== true;
       recorderBlocksRefresh = ["recording", "uploading"].includes(snapshot.state)
         || ["stopping", "stop_unconfirmed"].includes(device.desktop?.phase ?? "")
         || ["pausing", "stopPending", "sealing"].includes(device.native?.phase ?? "");

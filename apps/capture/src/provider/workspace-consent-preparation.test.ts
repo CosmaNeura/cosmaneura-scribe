@@ -125,8 +125,9 @@ function fixture(options: { preparing?: boolean; admission?: Promise<void>; acqu
   const opened = async (waitForIdle = true) => { await vi.waitFor(() => expect(root.attributes.has("aria-busy")).toBe(false)); click("open"); if (waitForIdle) await vi.waitFor(() => expect(root.attributes.has("aria-busy")).toBe(false)); };
   return { root, content, request, journal, recorder, start, deactivate, controller, app, abort, dispose, click, consent, opened, doc, signIn, recordReadyDiagnostic,
     recording: () => publish({ state: "recording", desktop: { ...snapshot.desktop!, phase: "recording" } }),
-    // Native sealing maps snapshot.state to "uploading" (native-recorder); phase decides Delete.
+    // Native sealing maps snapshot.state to "uploading" (native-recorder); phase+busy decide Delete.
     sealing: () => publish({ state: "uploading", statusCode: "capture_sealing", native: { phase: "sealing", busy: true } }),
+    sealedBusy: () => publish({ state: "uploading", statusCode: "capture_upload_pending", native: { phase: "sealed", busy: true } }),
     sealedUploading: () => publish({ state: "uploading", statusCode: "capture_upload_pending", native: { phase: "sealed", busy: false } }),
     stored: () => stored, binding: () => binding, ready: () => publish(options.ios ? { state: "ready" } : { state: "ready", desktop: { ...snapshot.desktop!, phase: "ready" } }) };
 }
@@ -175,6 +176,9 @@ it("marks sealing as live (not upload-pending); sealed uploading stays Delete-an
   const f = fixture({ ios: true }); await f.opened();
   f.consent(true); await vi.waitFor(() => expect(f.app.bindProvider).toHaveBeenCalledOnce());
   f.sealing();
+  expect(f.root.dataset.providerRecordingActive).toBe("true");
+  expect(f.root.dataset.providerUploadPending).toBeUndefined();
+  f.sealedBusy();
   expect(f.root.dataset.providerRecordingActive).toBe("true");
   expect(f.root.dataset.providerUploadPending).toBeUndefined();
   f.sealedUploading();
