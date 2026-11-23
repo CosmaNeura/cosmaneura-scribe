@@ -129,6 +129,9 @@ function fixture(options: { preparing?: boolean; admission?: Promise<void>; acqu
     sealing: () => publish({ state: "uploading", statusCode: "capture_sealing", native: { phase: "sealing", busy: true } }),
     sealedBusy: () => publish({ state: "uploading", statusCode: "capture_upload_pending", native: { phase: "sealed", busy: true } }),
     sealedUploading: () => publish({ state: "uploading", statusCode: "capture_upload_pending", native: { phase: "sealed", busy: false } }),
+    // Upload accepted → processing; native phase closed: holdsOrOpeningRecording is false.
+    processing: () => publish({ state: "processing", statusCode: "capture_processing", native: { phase: "sealed", busy: false } }),
+    closedPhase: () => publish({ state: "error", statusCode: "capture_reopen_required", native: { phase: "closed", busy: false } }),
     stored: () => stored, binding: () => binding, ready: () => publish(options.ios ? { state: "ready" } : { state: "ready", desktop: { ...snapshot.desktop!, phase: "ready" } }) };
 }
 it("retains the first queued Record time through admission and ignores repeated clicks", async () => {
@@ -184,6 +187,22 @@ it("marks sealing as live (not upload-pending); sealed uploading stays Delete-an
   f.sealedUploading();
   expect(f.root.dataset.providerRecordingActive).toBe("true");
   expect(f.root.dataset.providerUploadPending).toBe("true");
+});
+it("aligns with holdsOrOpeningRecording: processing and closed clear live hold despite closeRecorder", async () => {
+  const f = fixture({ ios: true }); await f.opened();
+  f.consent(true); await vi.waitFor(() => expect(f.app.bindProvider).toHaveBeenCalledOnce());
+  // closeRecorder is set after bind; sealing still blocks (direction: hold).
+  f.sealing();
+  expect(f.root.dataset.providerRecordingActive).toBe("true");
+  expect(f.root.dataset.providerUploadPending).toBeUndefined();
+  // Upload accepted / processing: native allows delete (direction: allow).
+  f.processing();
+  expect(f.root.dataset.providerRecordingActive).toBeUndefined();
+  expect(f.root.dataset.providerUploadPending).toBeUndefined();
+  // Phase closed: native allows delete (direction: allow).
+  f.closedPhase();
+  expect(f.root.dataset.providerRecordingActive).toBeUndefined();
+  expect(f.root.dataset.providerUploadPending).toBeUndefined();
 });
 it("an open screen stops checkbox preparation at expiry and retains explicit Start preparation", async () => {
   const expiry = Date.parse("2026-11-01T00:00:00Z");

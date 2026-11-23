@@ -16,6 +16,9 @@ export async function nativeAccountSelfDeleteAdapter(
   return interpretAccountSelfDeleteBridge(await nativeDelete({ confirm: "DELETE" }));
 }
 
+/** Distinct from clinical_account_unavailable / …_after_remember; maps to keepSession. */
+export const CLINICAL_RECOVERY_SCOPE_UNAVAILABLE = "clinical_recovery_scope_unavailable";
+
 export async function nativeAccountSelfDeleteWithRememberRetry(options: {
   nativeDelete: (request: { confirm: "DELETE" }) => Promise<unknown>;
   remember: (scope: string) => Promise<void>;
@@ -29,8 +32,9 @@ export async function nativeAccountSelfDeleteWithRememberRetry(options: {
   } catch (error) {
     if (!hasPluginCode(error, "clinical_account_unavailable")) throw error;
     const scope = await options.serverScope();
+    // Null/missing/invalid Core recoveryScope: distinct code (parser also drops null at native-backend ~240).
     if (!scope || !isUuid(scope)) {
-      throw new Error("clinical_account_unavailable_after_remember", { cause: error });
+      throw new Error(CLINICAL_RECOVERY_SCOPE_UNAVAILABLE, { cause: error });
     }
     await options.remember(scope);
     try {
@@ -42,6 +46,29 @@ export async function nativeAccountSelfDeleteWithRememberRetry(options: {
       throw retryError;
     }
   }
+}
+
+/** While delete is in flight or confirmed, catalog refresh must not re-supply scope for remember. */
+export function createDeleteAwareServerScopeRefresh(options: {
+  refresh: () => Promise<string | undefined>;
+  deleteActive: () => boolean;
+}): () => Promise<string | undefined> {
+  return async () => options.deleteActive() ? undefined : options.refresh();
+}
+
+export function createAccountSelfDeleteScopeGate(): {
+  begin(): void;
+  confirm(): void;
+  clear(): void;
+  active(): boolean;
+} {
+  let state: "open" | "in_flight" | "confirmed" = "open";
+  return {
+    begin: () => { if (state !== "confirmed") state = "in_flight"; },
+    confirm: () => { state = "confirmed"; },
+    clear: () => { if (state === "in_flight") state = "open"; },
+    active: () => state !== "open",
+  };
 }
 
 export async function clearWriteOwnerAfterBackendDispose(
