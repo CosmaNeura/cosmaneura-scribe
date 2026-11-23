@@ -125,6 +125,9 @@ function fixture(options: { preparing?: boolean; admission?: Promise<void>; acqu
   const opened = async (waitForIdle = true) => { await vi.waitFor(() => expect(root.attributes.has("aria-busy")).toBe(false)); click("open"); if (waitForIdle) await vi.waitFor(() => expect(root.attributes.has("aria-busy")).toBe(false)); };
   return { root, content, request, journal, recorder, start, deactivate, controller, app, abort, dispose, click, consent, opened, doc, signIn, recordReadyDiagnostic,
     recording: () => publish({ state: "recording", desktop: { ...snapshot.desktop!, phase: "recording" } }),
+    // Native sealing maps snapshot.state to "uploading" (native-recorder); phase decides Delete.
+    sealing: () => publish({ state: "uploading", statusCode: "capture_sealing", native: { phase: "sealing", busy: true } }),
+    sealedUploading: () => publish({ state: "uploading", statusCode: "capture_upload_pending", native: { phase: "sealed", busy: false } }),
     stored: () => stored, binding: () => binding, ready: () => publish(options.ios ? { state: "ready" } : { state: "ready", desktop: { ...snapshot.desktop!, phase: "ready" } }) };
 }
 it("retains the first queued Record time through admission and ignores repeated clicks", async () => {
@@ -167,6 +170,16 @@ it("checkbox alone prepares exactly once and never invokes any recording continu
   // Account Delete reads this flag from real syncRecordingActive (unmocked workspace).
   expect(f.root.dataset.providerRecordingActive).toBe("true");
   await f.binding()!.controller.startRecording(); expect(f.start).toHaveBeenCalledOnce();
+});
+it("marks sealing as live (not upload-pending); sealed uploading stays Delete-anyway", async () => {
+  const f = fixture({ ios: true }); await f.opened();
+  f.consent(true); await vi.waitFor(() => expect(f.app.bindProvider).toHaveBeenCalledOnce());
+  f.sealing();
+  expect(f.root.dataset.providerRecordingActive).toBe("true");
+  expect(f.root.dataset.providerUploadPending).toBeUndefined();
+  f.sealedUploading();
+  expect(f.root.dataset.providerRecordingActive).toBe("true");
+  expect(f.root.dataset.providerUploadPending).toBe("true");
 });
 it("an open screen stops checkbox preparation at expiry and retains explicit Start preparation", async () => {
   const expiry = Date.parse("2026-11-01T00:00:00Z");
