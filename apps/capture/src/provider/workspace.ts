@@ -131,8 +131,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const patientDetail = root.querySelector<HTMLElement>("[data-provider-patient-detail]")!;
   const syncRecordingActive = (): void => {
     // Shared iPhone + Mac ownership flag (refresh + delete). Post-seal
-    // pending-upload is marked separately so Delete can proceed (John
-    // "Delete anyway"); sealing stays live via recorderBlocksRefresh alone.
+    // idle pending-upload is marked separately so Delete can proceed (John
+    // "Delete anyway"); sealing / host.busy stay live via recorderBlocksRefresh.
     const active = !disposed && (recorderBlocksRefresh || closeRecorder !== null || acquiringRecorder !== null);
     if (active) root.dataset.providerRecordingActive = "true";
     else delete root.dataset.providerRecordingActive;
