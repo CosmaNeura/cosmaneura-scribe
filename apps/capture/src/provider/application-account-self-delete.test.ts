@@ -79,13 +79,17 @@ async function fixture() {
 }
 
 describe("account self-delete recording guard", () => {
-  it("refuses while recording; allows pending upload (Delete anyway); opens when idle", async () => {
+  it("refuses while recording; allows post-seal pending upload (Delete anyway); opens when idle", async () => {
+    // Live recording / sealing / sealed+busy: active without upload-pending
+    // (workspace classification — sealing and host.busy must not set providerUploadPending).
     const blocked = await fixture();
     blocked.root.querySelector("[data-provider-workflow]")!.dataset.providerRecordingActive = "true";
     await blocked.click("delete-account");
     expect(mountAccountSelfDeleteDialog).not.toHaveBeenCalled();
+    expect(blocked.deleteAccount).not.toHaveBeenCalled();
     expect(blocked.root.querySelector("[data-session-message]")?.textContent)
       .toBe(ACCOUNT_SELF_DELETE_MESSAGES.recordingActive);
+    // Post-seal idle uploading only (John Delete anyway): active + upload-pending.
     const pending = await fixture();
     const workflow = pending.root.querySelector("[data-provider-workflow]")!;
     workflow.dataset.providerRecordingActive = "true";

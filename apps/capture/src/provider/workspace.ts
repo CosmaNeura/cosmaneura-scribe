@@ -130,8 +130,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const accountLabel = root.querySelector<HTMLElement>("[data-provider-account]")!;
   const patientDetail = root.querySelector<HTMLElement>("[data-provider-patient-detail]")!;
   const syncRecordingActive = (): void => {
-    // Shared iPhone + Mac ownership flag (refresh + delete). Pending-upload is
-    // marked separately so Delete can proceed (John "Delete anyway").
+    // Shared iPhone + Mac ownership flag (refresh + delete). Post-seal
+    // idle pending-upload is marked separately so Delete can proceed (John
+    // "Delete anyway"); sealing / host.busy stay live via recorderBlocksRefresh.
     const active = !disposed && (recorderBlocksRefresh || closeRecorder !== null || acquiringRecorder !== null);
     if (active) root.dataset.providerRecordingActive = "true";
     else delete root.dataset.providerRecordingActive;
@@ -837,8 +838,11 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const stopObserving = controller.subscribe(snapshot => {
       if (!authorized(n) || context !== activeContext || snapshot.sessionId !== id) return;
       const device = snapshot as ProviderRecorderSnapshot;
+      // Delete anyway only after seal with the native host idle, matching
+      // native holdsOrOpeningRecording; sealing/busy stay live, not upload-pending.
       recorderUploadPending = snapshot.state === "uploading"
-        || device.native?.phase === "sealing";
+        && device.native?.phase !== "sealing"
+        && device.native?.busy !== true;
       recorderBlocksRefresh = ["recording", "uploading"].includes(snapshot.state)
         || ["stopping", "stop_unconfirmed"].includes(device.desktop?.phase ?? "")
         || ["pausing", "stopPending", "sealing"].includes(device.native?.phase ?? "");
