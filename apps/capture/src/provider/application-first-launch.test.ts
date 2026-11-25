@@ -20,7 +20,17 @@ const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const dispose of cleanups.splice(0)) await dispose();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
+
+const settle = async () => { for (let i = 0; i < 100; i++) await Promise.resolve(); };
+function click(root: Surface, action: string) {
+  const button = new Surface();
+  button.dataset.sessionAction = action;
+  const event = new Event("click");
+  Object.defineProperty(event, "target", { value: button });
+  root.dispatchEvent(event);
+}
 
 async function fixture(phase: ProviderSessionState["phase"] | null, notice?: string) {
   vi.stubGlobal("Element", Surface);
@@ -57,7 +67,7 @@ async function fixture(phase: ProviderSessionState["phase"] | null, notice?: str
   };
   const root = new Surface();
   cleanups.push(mountProviderApplication(root as unknown as HTMLElement, host));
-  for (let i = 0; i < 100; i++) await Promise.resolve();
+  await settle();
   return { root, host, signIn, order };
 }
 
@@ -72,7 +82,6 @@ describe("first-launch session recovery copy", () => {
 
   it("keeps Session unavailable without Sign in when state is null with a notice", async () => {
     const { root } = await fixture(null, "The native session is unavailable. Reopen Scribe to try again.");
-    for (let i = 0; i < 100; i++) await Promise.resolve();
     expect(root.querySelector("[data-session-title]").textContent).toBe("Session unavailable");
     expect(root.querySelector("[data-session-recovery]").innerHTML).not.toContain('data-session-action="sign-in"');
     expect(root.querySelector("[data-session-recovery]").innerHTML).toContain("Try again");
@@ -95,15 +104,45 @@ describe("first-launch session recovery copy", () => {
   it("clicks Sign in in unavailable and calls signIn once after close", async () => {
     const { root, signIn, order } = await fixture("unavailable");
     expect(root.querySelector("[data-session-recovery]").innerHTML).toContain('data-session-action="sign-in"');
-    const button = new Surface();
-    button.dataset = { sessionAction: "sign-in" };
-    const event = new Event("click");
-    Object.defineProperty(event, "target", { value: button });
-    root.dispatchEvent(event);
-    for (let i = 0; i < 100; i++) await Promise.resolve();
+    click(root, "sign-in");
+    await settle();
     expect(signIn).toHaveBeenCalledOnce();
     // No prior workspace on cold unavailable; close() is a no-op, then signIn, then open/connect.
     expect(order[0]).toBe("signIn");
     expect(order.filter(step => step === "signIn")).toEqual(["signIn"]);
+  });
+
+  it("explains how to recover after an unchanged unavailable result", async () => {
+    const { root, signIn } = await fixture("unavailable");
+    click(root, "check");
+    expect(root.querySelector("[data-session-message]").textContent).toBe("Checking your secure session…");
+    await settle();
+    expect(root.querySelector("[data-session-message]").textContent).toContain("Sign in to start a new session");
+    expect(signIn).not.toHaveBeenCalled();
+  });
+
+  it("restores usable controls after a stalled check and ignores its late ready result", async () => {
+    vi.useFakeTimers();
+    const { root, host, order, signIn } = await fixture("unavailable");
+    let reply!: (value: ProviderSessionState) => void;
+    const stalled = new Promise<ProviderSessionState>(resolve => { reply = resolve; });
+    const getState = vi.spyOn(host.session, "getState").mockReturnValueOnce(stalled);
+    click(root, "check");
+    const controls = root.querySelector("[data-session-recovery]");
+    expect(controls.innerHTML).toContain('data-session-action="check" disabled');
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(root.querySelector("[data-session-message]").textContent).toContain("timed out");
+    expect(controls.innerHTML).not.toContain('data-session-action="check" disabled');
+    expect(controls.innerHTML).toContain('data-session-action="sign-in"');
+
+    reply({ phase: "ready", revision: crypto.randomUUID() });
+    await settle();
+    expect(root.querySelector("[data-session-title]").textContent).toBe("Session unavailable");
+    expect(order).toEqual([]);
+    expect(getState).toHaveBeenCalledOnce();
+    click(root, "sign-in");
+    await settle();
+    expect(signIn).toHaveBeenCalledOnce();
+    expect(order.slice(0, 2)).toEqual(["signIn", "connect"]);
   });
 });
