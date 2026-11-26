@@ -52,6 +52,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let recordingOpenPending = false;
   let recorderBlocksRefresh = false;
   let recorderUploadPending = false;
+  // Native holdsOrOpeningRecording is false for sealed/closed idle; closeRecorder may linger.
+  let recorderPostHoldIdle = false;
   let context: AuthorizedProviderEncounter | null = null;
   let client: CoreCaptureClient | null = null;
   let journal: JournalSnapshot = { revision: null, progress: null };
@@ -130,10 +132,13 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const accountLabel = root.querySelector<HTMLElement>("[data-provider-account]")!;
   const patientDetail = root.querySelector<HTMLElement>("[data-provider-patient-detail]")!;
   const syncRecordingActive = (): void => {
-    // Shared iPhone + Mac ownership flag (refresh + delete). Post-seal
-    // idle pending-upload is marked separately so Delete can proceed (John
-    // "Delete anyway"); sealing / host.busy stay live via recorderBlocksRefresh.
-    const active = !disposed && (recorderBlocksRefresh || closeRecorder !== null || acquiringRecorder !== null);
+    // Shared iPhone + Mac ownership flag (refresh + delete). Match native
+    // holdsOrOpeningRecording: sealing / opening / busy stay live; sealed or
+    // closed idle (and upload-accepted processing) do not — even if closeRecorder
+    // is still set. Post-seal idle pending-upload is marked separately so Delete
+    // can proceed (John "Delete anyway").
+    const closeHolds = closeRecorder !== null && !recorderPostHoldIdle;
+    const active = !disposed && (recorderBlocksRefresh || closeHolds || acquiringRecorder !== null);
     if (active) root.dataset.providerRecordingActive = "true";
     else delete root.dataset.providerRecordingActive;
     if (recorderUploadPending) root.dataset.providerUploadPending = "true";
@@ -218,7 +223,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (closed.status === "rejected") throw closed.reason;
     preparationControls = null;
     privateNoteSession?.dispose(); privateNoteSession = null; identityOverride = null;
-    recorderBlocksRefresh = false; recorderUploadPending = false; updateRefresh();
+    recorderBlocksRefresh = false; recorderUploadPending = false; recorderPostHoldIdle = false; updateRefresh();
     pendingRecordingAction?.abort(); pendingRecordingAction = null; consentPreparationPending = false; consentRecordAction = null; queuedConsentRecord = null; leaveAfterRecordingPreparation = false;
     listedDraftRefs.clear();
     stopSaveCheck?.(); stopSaveCheck = null; pendingDateOfBirth = null;
@@ -846,6 +851,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       recorderBlocksRefresh = ["recording", "uploading"].includes(snapshot.state)
         || ["stopping", "stop_unconfirmed"].includes(device.desktop?.phase ?? "")
         || ["pausing", "stopPending", "sealing"].includes(device.native?.phase ?? "");
+      // Align with holdsOrOpeningRecording: sealed/closed/processing idle only
+      // when native is not busy; closeRecorder alone must not block Delete.
+      recorderPostHoldIdle = device.native?.busy !== true
+        && (snapshot.state === "processing"
+          || device.native?.phase === "closed"
+          || device.native?.phase === "sealed");
       updateRefresh();
       const status = settledRecorderVisitStatus(snapshot), ref = activeContext.encounter.appointmentRef;
       if (status) recentStates.set(ref, { sessionId: id, status });

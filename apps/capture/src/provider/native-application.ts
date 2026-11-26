@@ -12,6 +12,8 @@ import { activateNativeScribe } from "./native-activation";
 import { clinicalStoresFromKeys, purgeLocalClinicalData } from "./purge-local-clinical";
 import {
   clearWriteOwnerAfterBackendDispose,
+  createAccountSelfDeleteScopeGate,
+  createDeleteAwareServerScopeRefresh,
   nativeAccountSelfDeleteWithRememberRetry,
 } from "./account-self-delete-host";
 
@@ -23,25 +25,42 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
     throw new Error("provider_native_application_unavailable");
   }
   let clinicalAccountId: string | undefined;
-  let refreshServerScope: () => Promise<string | undefined> = () => Promise.resolve(undefined);
+  const deleteScopeGate = createAccountSelfDeleteScopeGate();
+  let rawRefreshServerScope: () => Promise<string | undefined> = () => Promise.resolve(undefined);
+  // Single delete-aware wrapper; connect/dispose only rebind rawRefreshServerScope.
+  const refreshServerScope = createDeleteAwareServerScopeRefresh({
+    refresh: () => rawRefreshServerScope(),
+    deleteActive: () => deleteScopeGate.active(),
+  });
   const clearWriteOwnerIfMatches = async (sessionId: string | undefined): Promise<void> => {
     if (!sessionId || !isUuid(sessionId)) return;
     try {
       await SecureQueue.setActiveWriteAccount({ accountId: null, ifMatches: sessionId });
     } catch { /* best-effort after successful dispose/sign-out */ }
   };
-  const rememberClinicalAccount = async (accountId: string): Promise<void> => {
+  const writeClinicalAccount = async (accountId: string, permitted: () => boolean): Promise<void> => {
     if (!isUuid(accountId)) throw new Error("clinical_account_unavailable");
-    clinicalAccountId = accountId.toLowerCase();
+    if (!permitted()) return;
     const state = await native.getState();
+    if (!permitted()) return;
     if (state.phase !== "ready" || typeof state.accountIdentitySHA256 !== "string") {
       throw new Error("provider_session_unavailable");
     }
+    if (!permitted()) return;
+    const id = accountId.toLowerCase();
     await SecureQueue.rememberAccount({
-      accountId: clinicalAccountId,
+      accountId: id,
       accountIdentitySHA256: state.accountIdentitySHA256,
     });
-    await SecureQueue.setActiveWriteAccount({ accountId: clinicalAccountId });
+    if (!permitted()) return;
+    await SecureQueue.setActiveWriteAccount({ accountId: id });
+    if (!permitted()) return;
+    clinicalAccountId = id;
+  };
+  const rememberClinicalAccount = async (accountId: string): Promise<void> => {
+    // In-flight/confirmed delete must not overwrite clinical scope (Fable #566 NB).
+    if (deleteScopeGate.active()) return;
+    await writeClinicalAccount(accountId, () => !deleteScopeGate.active());
   };
   const resolveClinicalAccountId = async (): Promise<string> => {
     if (clinicalAccountId && isUuid(clinicalAccountId)) return clinicalAccountId.toLowerCase();
@@ -91,12 +110,33 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
     recordingOpen: listener => subscribeIOSRecordingOpen(native, listener),
     ...(typeof native.deleteAccount === "function" ? {
       accountSelfDelete: {
-        deleteAccount: (request, signal) => nativeAccountSelfDeleteWithRememberRetry({
-          nativeDelete: req => native.deleteAccount!(req),
-          remember: rememberClinicalAccount,
-          serverScope: () => refreshServerScope(),
-          request, signal,
-        }),
+        deleteAccount: async (request, signal) => {
+          const prior = await native.getState().catch(() => null);
+          deleteScopeGate.begin(
+            typeof prior?.accountIdentitySHA256 === "string" ? prior.accountIdentitySHA256 : undefined,
+          );
+          try {
+            const result = await nativeAccountSelfDeleteWithRememberRetry({
+              nativeDelete: req => native.deleteAccount!(req),
+              // Delete-time remember is allowed while in_flight; no-ops once confirmed.
+              remember: async scope => {
+                if (deleteScopeGate.confirmed()) return;
+                await writeClinicalAccount(scope, () => !deleteScopeGate.confirmed());
+              },
+              // Confirmed: share the delete-aware undefined; in-flight: raw one-shot fetch.
+              serverScope: async () => deleteScopeGate.confirmed()
+                ? refreshServerScope()
+                : rawRefreshServerScope(),
+              request, signal,
+            });
+            if (result.outcome === "deleted" || result.outcome === "gone") deleteScopeGate.confirm();
+            else deleteScopeGate.clear();
+            return result;
+          } catch (error) {
+            deleteScopeGate.clear();
+            throw error;
+          }
+        },
       },
     } : {}),
     connect: async signal => {
@@ -109,6 +149,10 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
           throw new Error("provider_session_unavailable");
         }
         const identity = typeof state?.accountIdentitySHA256 === "string" ? state.accountIdentitySHA256 : undefined;
+        // Confirmed delete belongs to the prior identity; a different native identity may remember.
+        if (deleteScopeGate.confirmed() && deleteScopeGate.deletedIdentity() !== identity) {
+          deleteScopeGate.reset();
+        }
         if (identity) {
           const remembered = await SecureQueue.rememberedAccount({ accountIdentitySHA256: identity });
           if (typeof remembered.accountId === "string" && isUuid(remembered.accountId)
@@ -125,7 +169,7 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
           try { await SecureQueue.setActiveWriteAccount({ accountId: null }); }
           catch (error) { throw new Error("provider_session_unavailable", { cause: error }); }
         }
-        refreshServerScope = async () => {
+        rawRefreshServerScope = async () => {
           try {
             await backend.listEncounters(AbortSignal.timeout(30_000));
             return backend.recoveryScope;
@@ -150,7 +194,7 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
               () => clearWriteOwnerIfMatches(sessionId),
             );
             clinicalAccountId = undefined;
-            refreshServerScope = () => Promise.resolve(undefined);
+            rawRefreshServerScope = () => Promise.resolve(undefined);
           },
         };
       }

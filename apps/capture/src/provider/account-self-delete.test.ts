@@ -197,6 +197,22 @@ describe("account self-delete interpret + flow", () => {
     expect(signOutFail.flow.acknowledge()).toBe(true);
   });
 
+  it("clinical_account_unavailable_after_remember keeps session: no purge, no credential clear", async () => {
+    const f = fixture({
+      client: {
+        deleteAccount: vi.fn(async () => {
+          throw new Error("clinical_account_unavailable_after_remember");
+        }),
+      },
+    });
+    f.flow.confirm("DELETE"); await f.flow.submit();
+    expect(f.purgeLocalClinicalData).not.toHaveBeenCalled();
+    expect(f.clearLocalCredentials).not.toHaveBeenCalled();
+    expect(f.flow.read()).toMatchObject({
+      phase: "failed", error: ACCOUNT_SELF_DELETE_MESSAGES.keepSession,
+    });
+  });
+
   it("clearCachedProviderPreferences removes only preference keys", () => {
     const storage = memoryStorage(); vi.stubGlobal("localStorage", storage);
     storage.setItem("scribe-preferences-v1:abc", "{}"); storage.setItem("unrelated", "keep");
@@ -205,3 +221,4 @@ describe("account self-delete interpret + flow", () => {
     expect(storage.getItem("unrelated")).toBe("keep");
   });
 });
+
