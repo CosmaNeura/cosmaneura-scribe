@@ -46,6 +46,8 @@ interface Scope {
   close?: Promise<void>;
 }
 
+const sessionReadTimeoutMs = 4_000;
+
 /** Own the standalone app's visible session and complete provider workspace.
  * Authentication policy remains in the native session owner. UI access closes
  * immediately on logout/revision change, while recorder ownership survives an
@@ -66,6 +68,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   let cancellationReceipt: CancellationReceipt | null = null, cancellationCheckedRevision: string | null = null;
   let cancellationCheck: AbortController | undefined;
   let notice = "", polling: Promise<void> | undefined, disposal: Promise<void> | undefined;
+  let checkingSession = false;
   let setup: ProviderSetup | undefined, setupAbort: AbortController | undefined;
   let activationAttemptedRevision: string | null = null, practiceHandoffRevision: string | null = null;
   let practiceReturned = false;
@@ -164,6 +167,10 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         recovery.innerHTML = button("open", "Check access");
       } else recovery.innerHTML = button("open", "Open workspace");
     }
+    if (checkingSession && !logoutPending && !stopUnconfirmed
+      && (phase === "unavailable" || phase === "disabled" || phase === "loading")) {
+      message.textContent = "Checking your secure session…";
+    }
     root.setAttribute("aria-busy", String(busy));
   };
   const invalidate = (): void => {
@@ -226,19 +233,31 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     if (disposed) return Promise.resolve();
     return polling ??= (async () => {
       const before = observations;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let timedOut = false;
       try {
-        const value = await host.session.getState();
+        const value = await Promise.race([
+          Promise.resolve().then(() => host.session.getState()),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              timedOut = true;
+              reject(new Error("provider_session_read_timeout"));
+            }, sessionReadTimeoutMs);
+          }),
+        ]);
         if (!disposed && before === observations) accept(value);
       } catch {
         if (!disposed && before === observations) {
           if (!accountDeleteInFlight) { closeDeletionDialog?.(); closeDeletionDialog = undefined; }
           setupAbort?.abort(); setup = undefined; practiceHandoffRevision = null;
-          state = null;
+          if (state?.phase !== "unavailable") state = null;
           accessClosed = true; invalidate(); closeInBackground();
-          notice = "Your secure session could not be checked. Your workspace is closed.";
+          notice = timedOut
+            ? "The session check timed out. Try again or reopen Scribe."
+            : "Your secure session could not be checked. Your workspace is closed.";
           render();
         }
-      } finally { polling = undefined; }
+      } finally { clearTimeout(timer); polling = undefined; }
     })();
   };
   const checkCancellation = async (): Promise<boolean> => {
@@ -328,6 +347,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     if (disposed || (action === "sign-out" ? signingOut : busy)) return;
     operations += 1; busy = true;
     if (action === "sign-out") signingOut = true;
+    if (action === "check") checkingSession = true;
     notice = ""; render();
     try {
       if (action === "sign-out") {
@@ -391,12 +411,18 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         activationAttemptedRevision = null; await open();
       } else if (action === "check-cancellation") { await checkCancellation(); }
       else if (action === "open") await open();
-      else if (action === "check") await read();
+      else if (action === "check") {
+        await read();
+        if (!notice && sessionState()?.phase === "unavailable") {
+          notice = "Your session is still unavailable. Sign in to start a new session.";
+        }
+      }
     } catch {
       if (!stopUnconfirmed) notice = "This action could not be confirmed. Check your session and try again.";
     } finally {
       operations -= 1; busy = operations > 0;
       if (action === "sign-out") signingOut = false;
+      if (action === "check") checkingSession = false;
       render();
       recheckPractice();
     }
