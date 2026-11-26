@@ -72,7 +72,7 @@ describe("native-application connect stale-owner clear", () => {
     sq.setActiveWriteAccount.mockResolvedValue(undefined);
     sq.rememberAccount.mockResolvedValue(undefined);
     listEncounters.mockResolvedValue([]);
-    getState.mockResolvedValue({ phase: "signed_out", revision: "rev", accountIdentitySHA256: undefined });
+    getState.mockResolvedValue({ phase: "signed_out", revision: "rev" });
     deleteAccount.mockResolvedValue({
       status: "deleted", practiceLeftOwnerless: false, clerkIdentityRemoved: true,
     });
