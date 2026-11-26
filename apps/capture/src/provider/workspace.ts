@@ -851,11 +851,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       recorderBlocksRefresh = ["recording", "uploading"].includes(snapshot.state)
         || ["stopping", "stop_unconfirmed"].includes(device.desktop?.phase ?? "")
         || ["pausing", "stopPending", "sealing"].includes(device.native?.phase ?? "");
-      // Align with holdsOrOpeningRecording: sealed/closed idle and accepted
-      // processing do not hold; closeRecorder alone must not block Delete.
-      recorderPostHoldIdle = snapshot.state === "processing"
-        || device.native?.phase === "closed"
-        || (device.native?.phase === "sealed" && device.native?.busy !== true);
+      // Align with holdsOrOpeningRecording: sealed/closed/processing idle only
+      // when native is not busy; closeRecorder alone must not block Delete.
+      recorderPostHoldIdle = device.native?.busy !== true
+        && (snapshot.state === "processing"
+          || device.native?.phase === "closed"
+          || device.native?.phase === "sealed");
       updateRefresh();
       const status = settledRecorderVisitStatus(snapshot), ref = activeContext.encounter.appointmentRef;
       if (status) recentStates.set(ref, { sessionId: id, status });

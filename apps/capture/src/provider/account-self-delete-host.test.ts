@@ -23,6 +23,7 @@ describe("nativeAccountSelfDeleteWithRememberRetry", () => {
     })).resolves.toMatchObject({ outcome: "deleted", status: "deleted" });
     expect(serverScope).toHaveBeenCalledOnce();
     expect(remember).toHaveBeenCalledWith(scope);
+    expect(remember).toHaveBeenCalledTimes(1);
     expect(nativeDelete).toHaveBeenCalledTimes(2);
   });
 
@@ -33,6 +34,7 @@ describe("nativeAccountSelfDeleteWithRememberRetry", () => {
       nativeDelete, remember, serverScope: async () => scope, request: { confirm: "DELETE" },
     })).rejects.toThrow(/clinical_account_unavailable_after_remember/);
     expect(remember).toHaveBeenCalledWith(scope);
+    expect(remember).toHaveBeenCalledTimes(1);
     expect(nativeDelete).toHaveBeenCalledTimes(2);
   });
 
@@ -69,16 +71,36 @@ describe("delete-aware refreshServerScope", () => {
     const serverScope = createDeleteAwareServerScopeRefresh({ refresh, deleteActive: () => gate.active() });
     await expect(serverScope()).resolves.toBe(scope);
     expect(refresh).toHaveBeenCalledOnce();
-    gate.begin();
+    gate.begin("a".repeat(64));
     await expect(serverScope()).resolves.toBeUndefined();
     expect(refresh).toHaveBeenCalledOnce();
     gate.clear();
     await expect(serverScope()).resolves.toBe(scope);
-    gate.begin();
+    gate.begin("a".repeat(64));
     gate.confirm();
+    expect(gate.confirmed()).toBe(true);
+    expect(gate.deletedIdentity()).toBe("a".repeat(64));
     await expect(serverScope()).resolves.toBeUndefined();
     gate.clear();
     await expect(serverScope()).resolves.toBeUndefined();
+    gate.reset();
+    await expect(serverScope()).resolves.toBe(scope);
+  });
+
+  it("confirmed identity survives confirm; reset clears it for a new identity", () => {
+    const gate = createAccountSelfDeleteScopeGate();
+    const deleted = "b".repeat(64);
+    gate.begin(deleted);
+    gate.confirm();
+    expect(gate.confirmed()).toBe(true);
+    expect(gate.deletedIdentity()).toBe(deleted);
+    gate.begin("c".repeat(64));
+    expect(gate.confirmed()).toBe(true);
+    expect(gate.deletedIdentity()).toBe(deleted);
+    gate.reset();
+    expect(gate.confirmed()).toBe(false);
+    expect(gate.active()).toBe(false);
+    expect(gate.deletedIdentity()).toBeUndefined();
   });
 });
 

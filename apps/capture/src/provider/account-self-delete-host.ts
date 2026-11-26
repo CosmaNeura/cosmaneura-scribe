@@ -56,18 +56,43 @@ export function createDeleteAwareServerScopeRefresh(options: {
   return async () => options.deleteActive() ? undefined : options.refresh();
 }
 
-export function createAccountSelfDeleteScopeGate(): {
-  begin(): void;
+export type AccountSelfDeleteScopeGate = {
+  begin(accountIdentitySHA256?: string): void;
   confirm(): void;
   clear(): void;
+  reset(): void;
   active(): boolean;
-} {
+  confirmed(): boolean;
+  deletedIdentity(): string | undefined;
+};
+
+/**
+ * Confirmed state belongs to the identity captured at begin(). connect() must
+ * reset() when the native identity differs so a new account can remember scope.
+ */
+export function createAccountSelfDeleteScopeGate(): AccountSelfDeleteScopeGate {
   let state: "open" | "in_flight" | "confirmed" = "open";
+  let deletedIdentity: string | undefined;
   return {
-    begin: () => { if (state !== "confirmed") state = "in_flight"; },
+    begin: (accountIdentitySHA256) => {
+      if (state === "confirmed") return;
+      state = "in_flight";
+      deletedIdentity = accountIdentitySHA256;
+    },
     confirm: () => { state = "confirmed"; },
-    clear: () => { if (state === "in_flight") state = "open"; },
+    clear: () => {
+      if (state === "in_flight") {
+        state = "open";
+        deletedIdentity = undefined;
+      }
+    },
+    reset: () => {
+      state = "open";
+      deletedIdentity = undefined;
+    },
     active: () => state !== "open",
+    confirmed: () => state === "confirmed",
+    deletedIdentity: () => deletedIdentity,
   };
 }
 
